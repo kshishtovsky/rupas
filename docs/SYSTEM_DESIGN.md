@@ -110,13 +110,23 @@ Trust boundaries: (1) юзерленд↔SYSTEM-сервис; (2) хост↔Т�
 - WinDivertSend сразу после обработки батча, никакого межслойного пайплайна;
 - одна goroutine на слой (capture NETWORK, REDIRECT), fan-out запрещён.
 
-### 3.3 Ветка REDIRECT (Telegram, UDP-медиа)
+### 3.3 Ветка TUNNEL-redirect (Telegram, UDP-медиа)
 
-    REDIRECT layer: dst rewrite → 127.0.0.1:rog0 (tproxy-like inbound)
-    flowtable хранит original dst; inbound спрашивает по src-4tuple.
+REDIRECT-layer в stock WinDivert 2.2 отсутствует (проверено живым Open: errno 87;
+экспорт-таблица DLL не содержит WinDivertRedirect*). Замена — NETWORK-layer NAT:
+
+    outbound: dst rewrite IP:port → 127.0.0.1:tproxy_port
+              (OrigDst/OrigPort сохранены в Flow; Address.Loopback учитывается)
+    inbound:  src rewrite 127.0.0.1:tproxy_port → OrigDst:OrigPort
+              (обратная трансляция по flow-таблице, TTL/checksum пересчёт)
+    tproxy-inbound слушает на loopback; original dst получает по 4-tuple клиента.
+
     TCP: прозрачно для TG-клиента (любой порт, MTProto на 443/80/5222).
-    UDP Discord (50000–65535): REDIRECT udp → tun-core, XUDP-инкапсуляция,
+    UDP Discord (50000–65535): тот же NAT → tun-core, XUDP-инкапсуляция,
     выход через VPS. Таймауты idle: TCP 5 мин, UDP 30 с.
+
+Fallback-альтернатива (если NAT-петля на loopback окажется капризной):
+wintun-адаптер + маршрут TG-CIDR → TUN (второй драйвер; решение при интеграции).
 
 ### 3.4 Бюджеты горячего пути
 

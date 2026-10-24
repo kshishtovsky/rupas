@@ -1,0 +1,362 @@
+// Package tunnel implements the TUNNEL branch of the Rupas hot path
+// (SYSTEM_DESIGN §3.3, §6): it accepts NAT-redirected TCP and UDP traffic on
+// a loopback listener at 127.0.0.1:tproxyPort, recovers the original
+// destination for each client 4-tuple from the capture-layer NAT flow table
+// (OriginalDstProvider) and carries the flow through a sing-box
+// VLESS+Reality tunnel (uTLS fingerprint from the config, XUDP for UDP).
+//
+// Layout:
+//
+//	tunnel.go   — public API, lifecycle, TCP accept loop
+//	udp.go      — UDP pseudo-session table (src 4-tuple keyed, 30 s idle GC)
+//	health.go   — marker probing and Healthy() transitions
+//	socks.go    — minimal SOCKS5 client speaking to the internal sing-box
+//	              mixed inbound (TCP CONNECT + UDP ASSOCIATE)
+//	sbconfig.go — config.TunnelEndpoint → sing-box options (JSON) mapping
+//	sbinstance.go — sing-box library lifecycle with a minimal protocol registry
+package tunnel
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/netip"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/rupas/rupas/internal/config"
+)
+
+// Tunnel is the tunnel-core contract consumed by the supervisor (§2, §6).
+type Tunnel interface {
+	// Start brings up the sing-box engine, the loopback tproxy listeners and
+	// the health probe loop. It returns once startup finished.
+	Start(ctx context.Context) error
+	// Stop tears everything down. It is idempotent.
+	Stop() error
+	// Healthy reports whether the marker probe succeeded through the tunnel
+	// recently: 3 consecutive failures flip it to false, one success flips it
+	// back to true.
+	Healthy() bool
+}
+
+// OriginalDstProvider is the NAT flow-table lookup of the capture layer
+// (§3.3): the NETWORK-layer NAT rewrote dst to 127.0.0.1:tproxyPort and
+// stored the original dst keyed by the client src 4-tuple. Addresses are
+// 16-byte; IPv4 is in IPv4-mapped form (as in flowtable.FlowKey).
+type OriginalDstProvider interface {
+	Lookup(srcIP [16]byte, srcPort uint16) (dstIP [16]byte, dstPort uint16, ok bool)
+}
+
+// Options carries tunnel collaborators.
+type Options struct {
+	// OriginalDstProvider resolves the pre-NAT destination of a redirected
+	// flow. If nil, every flow is dropped (tunnel runs, nothing passes).
+	OriginalDstProvider OriginalDstProvider
+	// MarkerURL is the health endpoint probed through the tunnel.
+	// Empty → DefaultMarkerURL.
+	MarkerURL string
+	// Logger defaults to slog.Default().
+	Logger *slog.Logger
+}
+
+const (
+	// DefaultMarkerURL is the default health marker (§6: GET …/204 every 30 s).
+	DefaultMarkerURL = "https://www.gstatic.com/generate_204"
+	// DefaultHealthInterval is the marker probe period.
+	DefaultHealthInterval = 30 * time.Second
+	// HealthFailThreshold consecutive failed probes mark the tunnel down.
+	HealthFailThreshold = 3
+	// DefaultUDPSessionTimeout is the idle timeout of a UDP pseudo-session
+	// (§3.3: UDP idle 30 s).
+	DefaultUDPSessionTimeout = 30 * time.Second
+	// markerTimeout bounds one probe round trip.
+	markerTimeout = 10 * time.Second
+)
+
+// NewTunnel builds a Tunnel for cfg. Configuration errors are reported by
+// Start so that a half-configured endpoint can still be constructed.
+func NewTunnel(cfg config.TunnelEndpoint, tproxyPort uint16, opts Options) Tunnel {
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
+	}
+	if opts.MarkerURL == "" {
+		opts.MarkerURL = DefaultMarkerURL
+	}
+	return &tunnel{
+		cfg:            cfg,
+		tproxyPort:     tproxyPort,
+		opts:           opts,
+		logger:         opts.Logger.With("component", "tunnel"),
+		healthInterval: DefaultHealthInterval,
+		udpTimeout:     DefaultUDPSessionTimeout,
+	}
+}
+
+type tunnel struct {
+	cfg        config.TunnelEndpoint
+	tproxyPort uint16
+	opts       Options
+	logger     *slog.Logger
+
+	// test knobs (package-internal)
+	healthInterval time.Duration
+	udpTimeout     time.Duration
+	// probeFunc overrides the marker probe in unit tests.
+	probeFunc func(ctx context.Context) error
+
+	sb *singbox
+	tr transport
+
+	tcpLn    net.Listener
+	udpConn  *net.UDPConn
+	sessions *udpTable
+
+	ctx       context.Context
+	cancelCtx context.CancelFunc
+	stopOnce  sync.Once
+	stopped   atomic.Bool
+	wg        sync.WaitGroup
+
+	healthy    atomic.Bool
+	failStreak atomic.Int32
+}
+
+var _ Tunnel = (*tunnel)(nil)
+
+// Start validates the endpoint, boots sing-box, then opens the loopback
+// tproxy listeners and the health loop.
+//
+// NOTE: sing-box gates Reality/uTLS behind the `with_utls` build tag; build
+// and test this package with -tags with_utls.
+func (t *tunnel) Start(ctx context.Context) error {
+	if err := validateEndpoint(t.cfg); err != nil {
+		return err
+	}
+	if t.stopped.Load() {
+		return errors.New("tunnel: Start after Stop is not supported")
+	}
+
+	mixedPort, err := freeTCPPort()
+	if err != nil {
+		return fmt.Errorf("tunnel: pick mixed port: %w", err)
+	}
+	opts := boxOptions(t.cfg, mixedPort)
+	sb, err := startSingbox(ctx, t.logger, opts)
+	if err != nil {
+		return fmt.Errorf("tunnel: start sing-box: %w", err)
+	}
+	sb.mixedPort = mixedPort
+	t.sb = sb
+	t.tr = sb
+	t.logger.Info("sing-box engine started", slog.String("mode", "vless+reality"),
+		slog.Uint64("mixed_port", uint64(mixedPort)))
+	return t.startCore()
+}
+
+// startCore opens the tproxy listeners and background loops; it is split
+// from Start so unit tests can substitute the transport.
+func (t *tunnel) startCore() error {
+	t.ctx, t.cancelCtx = context.WithCancel(context.Background())
+	addr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(t.tproxyPort)}
+	tcpLn, err := net.ListenTCP("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("tunnel: listen tcp %s: %w", addr, err)
+	}
+	t.tcpLn = tcpLn
+	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(t.tproxyPort)})
+	if err != nil {
+		tcpLn.Close()
+		return fmt.Errorf("tunnel: listen udp %s: %w", addr, err)
+	}
+	t.udpConn = udpConn
+	t.sessions = newUDPTable(t)
+
+	t.wg.Add(2)
+	go t.acceptLoop()
+	go t.udpLoop()
+	go t.healthLoop()
+
+	t.logger.Info("tproxy listeners up",
+		slog.String("addr", addr.String()), slog.String("marker", t.opts.MarkerURL))
+	return nil
+}
+
+// Stop closes listeners, sessions, active TCP relays and the sing-box engine.
+func (t *tunnel) Stop() error {
+	var err error
+	t.stopOnce.Do(func() {
+		t.stopped.Store(true)
+		if t.cancelCtx != nil {
+			t.cancelCtx()
+		}
+		if t.tcpLn != nil {
+			err = errors.Join(err, t.tcpLn.Close())
+		}
+		if t.sessions != nil {
+			t.sessions.closeAll()
+		}
+		if t.udpConn != nil {
+			err = errors.Join(err, t.udpConn.Close())
+		}
+		err = errors.Join(err, t.engineClose())
+		done := make(chan struct{})
+		go func() { t.wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.logger.Warn("Stop: timed out waiting for goroutines")
+		}
+		t.logger.Info("tunnel stopped")
+	})
+	return err
+}
+
+// Healthy implements Tunnel.
+func (t *tunnel) Healthy() bool { return t.healthy.Load() }
+
+// transport is the outbound path of the tunnel. The production
+// implementation wraps the embedded sing-box engine (fed via SOCKS5 from
+// its mixed inbound); unit tests substitute a fake.
+type transport interface {
+	// dial opens a TCP connection to dst through the tunnel.
+	dial(ctx context.Context, dst netip.AddrPort) (net.Conn, error)
+	// dialHost opens a TCP connection to host:port (host may be a domain,
+	// resolved at the tunnel exit).
+	dialHost(ctx context.Context, host string, port uint16) (net.Conn, error)
+	// udpAssociate starts a UDP pseudo-session relay.
+	udpAssociate(ctx context.Context) (packetRelay, error)
+}
+
+// packetRelay is one UDP pseudo-session's relay channel.
+type packetRelay interface {
+	send(dst netip.AddrPort, payload []byte) error
+	// receive reads one datagram from the relay; payload aliases buf and
+	// is valid until the next receive.
+	receive(buf []byte) (src netip.AddrPort, payload []byte, err error)
+	close()
+}
+
+// ensure tunnel satisfies Stop-with-nil-sb in unit tests.
+func (t *tunnel) engineClose() error {
+	if t.sb == nil {
+		return nil
+	}
+	return t.sb.close()
+}
+
+func (t *tunnel) acceptLoop() {
+	defer t.wg.Done()
+	for {
+		conn, err := t.tcpLn.Accept()
+		if err != nil {
+			if !t.stopped.Load() {
+				t.logger.Error("tcp accept failed", slog.Any("err", err))
+			}
+			return
+		}
+		if t.stopped.Load() {
+			conn.Close()
+			return
+		}
+		t.wg.Add(1)
+		go t.serveTCP(conn)
+	}
+}
+
+// serveTCP relays one NAT-redirected client connection: src 4-tuple →
+// original dst via the provider, then through the tunnel.
+func (t *tunnel) serveTCP(client net.Conn) {
+	defer t.wg.Done()
+	src := client.RemoteAddr()
+	srcIP, srcPort, ok := splitAddr(src)
+	if !ok {
+		t.logger.Warn("tcp: unparsable remote addr", slog.String("src", src.String()))
+		client.Close()
+		return
+	}
+	dstIP, dstPort, ok := t.lookupOriginalDst(srcIP, srcPort)
+	if !ok {
+		t.logger.Warn("tcp: no original dst for flow; dropping",
+			slog.String("src", src.String()))
+		client.Close()
+		return
+	}
+	dst := joinAddr(dstIP, dstPort)
+	upstream, err := t.tr.dial(ctxOrBackground(t.ctx), dst)
+	if err != nil {
+		t.logger.Warn("tcp: tunnel dial failed",
+			slog.String("src", src.String()), slog.String("dst", dst.String()),
+			slog.Any("err", err))
+		client.Close()
+		return
+	}
+	t.logger.Debug("tcp flow established",
+		slog.String("src", src.String()), slog.String("dst", dst.String()))
+	t.splice(client, upstream)
+}
+
+// splice copies both directions until either side closes.
+func (t *tunnel) splice(a, b net.Conn) {
+	defer a.Close()
+	defer b.Close()
+	done := make(chan struct{}, 2)
+	go func() {
+		io.Copy(b, a)             //nolint:errcheck // best-effort relay
+		b.SetDeadline(time.Now()) //nolint:errcheck // wake the other copier
+		done <- struct{}{}
+	}()
+	io.Copy(a, b)             //nolint:errcheck // best-effort relay
+	a.SetDeadline(time.Now()) //nolint:errcheck // wake the other copier
+	<-done
+}
+
+func splitAddr(addr net.Addr) ([16]byte, uint16, bool) {
+	var ip [16]byte
+	switch a := addr.(type) {
+	case *net.TCPAddr:
+		ip16 := a.IP.To16()
+		if ip16 == nil {
+			return ip, 0, false
+		}
+		copy(ip[:], ip16)
+		return ip, uint16(a.Port), true
+	case *net.UDPAddr:
+		ip16 := a.IP.To16()
+		if ip16 == nil {
+			return ip, 0, false
+		}
+		copy(ip[:], ip16)
+		return ip, uint16(a.Port), true
+	default:
+		return ip, 0, false
+	}
+}
+
+func joinAddr(ip [16]byte, port uint16) netip.AddrPort {
+	a := netip.AddrFrom16(ip)
+	if a.Is4In6() {
+		a = a.Unmap()
+	}
+	return netip.AddrPortFrom(a, port)
+}
+
+func ctxOrBackground(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
+// lookupOriginalDst consults the NAT provider; a nil provider drops the
+// flow (documented Options behavior) instead of panicking.
+func (t *tunnel) lookupOriginalDst(srcIP [16]byte, srcPort uint16) ([16]byte, uint16, bool) {
+	if t.opts.OriginalDstProvider == nil {
+		return [16]byte{}, 0, false
+	}
+	return t.opts.OriginalDstProvider.Lookup(srcIP, srcPort)
+}

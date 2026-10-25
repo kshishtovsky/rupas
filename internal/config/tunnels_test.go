@@ -260,3 +260,49 @@ func TestParsePaddingRange(t *testing.T) {
 		}
 	}
 }
+
+// TestTunnelMuxAndChainFlags parses the wave-6 knobs: per-endpoint mux and
+// the xhttp-in-chain opt-in.
+func TestTunnelMuxAndChainFlags(t *testing.T) {
+	cfg, err := Unmarshal([]byte(`
+profile: p
+rules:
+  - action: direct
+tunnels:
+  tcp:
+    kind: vless_tcp
+    host: 203.0.113.10
+    port: 12341
+    uuid: 0f4e1c2d-3b5d-4e6f-8a9b-0c1d2e3f4a5b
+    sni: vps.example.net
+    mux: "on"
+    mux_padding: true
+  udp:
+    kind: hysteria2
+    host: 203.0.113.10
+    port: 53552
+    password: "pw"
+    sni: vps.example.net
+  fallback:
+    kind: vless_xhttp
+    host: 203.0.113.10
+    port: 4443
+    uuid: 0f4e1c2d-3b5d-4e6f-8a9b-0c1d2e3f4a5b
+    sni: vps.example.net
+    path: /x
+  xhttp_fallback_in_chain: true
+`))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	plan := cfg.Tunnels
+	if plan == nil || plan.TCP == nil {
+		t.Fatal("no tcp endpoint")
+	}
+	if plan.TCP.Mux != "on" || !plan.TCP.MuxPadding {
+		t.Errorf("mux flags: %+v", plan.TCP)
+	}
+	if !plan.XHTTPFallbackInChain {
+		t.Error("xhttp_fallback_in_chain not parsed")
+	}
+}

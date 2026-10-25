@@ -279,10 +279,13 @@ func TestSBPortsForPlan(t *testing.T) {
 		cfg                 config.TunnelConfig
 		main, tcpfb, udpfb  bool
 	}{
-		{"user layout (vless+hy2+xhttp-fb)", config.TunnelConfig{TCP: vless, UDP: hy2, Fallback: xh}, true, false, true},
+		// Wave 6: a distinct hy2 endpoint doubles as the TCP fallback
+		// carrier when the configured fallback is xhttp (out of the
+		// default chain) or absent — hence tcpfb=true for these layouts.
+		{"user layout (vless+hy2+xhttp-fb)", config.TunnelConfig{TCP: vless, UDP: hy2, Fallback: xh}, true, true, true},
 		{"singbox fallback", config.TunnelConfig{TCP: vless, UDP: hy2, Fallback: reality}, true, true, true},
 		{"single endpoint", config.TunnelConfig{TCP: reality, UDP: reality}, true, false, false},
-		{"xhttp tcp + hy2 udp", config.TunnelConfig{TCP: xh, UDP: hy2}, true, false, false},
+		{"xhttp tcp + hy2 udp", config.TunnelConfig{TCP: xh, UDP: hy2}, true, true, false},
 		{"udp only", config.TunnelConfig{UDP: hy2}, true, false, false},
 	}
 	for _, c := range cases {

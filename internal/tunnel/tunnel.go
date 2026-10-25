@@ -79,6 +79,12 @@ type Stats struct {
 	// Dropped counts flows/datagrams refused: no original dst, dial
 	// failure or HOLD.
 	Dropped uint64
+	// MixedAddr is the loopback address of the main sing-box mixed
+	// inbound ("127.0.0.1:port"; "" when the plan has none). Direct
+	// SOCKS5/HTTP access to it is ALWAYS accepted regardless of the
+	// terminator's storm gate or the HOLD state (different layers —
+	// wave-6 acceptance gate for F5).
+	MixedAddr string
 }
 
 // OriginalDstProvider is the NAT flow-table lookup of the capture layer
@@ -116,6 +122,14 @@ type Options struct {
 	// NoHoldFlows disables the HOLD gate (diagnostics: relay new flows even
 	// while the marker is failing).
 	NoHoldFlows bool
+	// TCPFallbackFirstCIDRs lists destinations whose dials try the FALLBACK
+	// carrier before the primary. Wave-6 live finding: Telegram-DC
+	// destinations relayed through the primary vless_tcp connection
+	// trigger a TSPU quarantine of the whole primary endpoint (~5 min of
+	// silently dropped SYNs, marker included), while the same destinations
+	// ride hysteria2 TCP fine — so the app fills this with the config's
+	// tunnel-verdict CIDRs (the TG ranges).
+	TCPFallbackFirstCIDRs []netip.Prefix
 }
 
 const (
@@ -162,14 +176,14 @@ func NewTunnel(cfg config.TunnelConfig, tproxyPort uint16, opts Options) Tunnel 
 		opts.DialTimeout = DefaultDialTimeout
 	}
 	return &tunnel{
-		cfg:              cfg,
-		tproxyPort:       tproxyPort,
-		opts:             opts,
-		logger:           opts.Logger.With("component", "tunnel"),
-		healthInterval:   opts.HealthInterval,
+		cfg:               cfg,
+		tproxyPort:        tproxyPort,
+		opts:              opts,
+		logger:            opts.Logger.With("component", "tunnel"),
+		healthInterval:    opts.HealthInterval,
 		udpHealthInterval: opts.UDPHealthInterval,
-		dialTimeout:      opts.DialTimeout,
-		udpTimeout:       DefaultUDPSessionTimeout,
+		dialTimeout:       opts.DialTimeout,
+		udpTimeout:        DefaultUDPSessionTimeout,
 	}
 }
 
@@ -229,6 +243,12 @@ type tunnel struct {
 	tcpConns  atomic.Int64
 	udpDgrams atomic.Uint64
 	dropped   atomic.Uint64
+
+	// pathDown tracks per-carrier failure cooldowns (dialOrder fast
+	// failover; wave 6).
+	pathMu     sync.Mutex
+	pathDown   map[string]time.Time
+	pathTokens map[string]*tokenBucket
 }
 
 var _ Tunnel = (*tunnel)(nil)
@@ -260,11 +280,31 @@ func (t *tunnel) Start(ctx context.Context) error {
 		t.sb = sb
 	}
 
-	// TCP chain: primary, then the fallback.
+	// TCP chain (wave 6): primary, then the automatic fallbacks —
+	//   1. a sing-box-carried fallback endpoint when configured, else
+	//      the distinct hysteria2 endpoint (hy2 carries TCP streams);
+	//   2. the vless_xhttp fallback ONLY when explicitly opted in
+	//      (configs .xhttp_fallback_in_chain; default off — live finding
+	//      F3: TSPU blackholes the XHTTP port on this ISP and a dead
+	//      fallback adds a full dial-timeout penalty to every dial).
 	if plan.tcp != nil {
 		t.tcpPaths = append(t.tcpPaths, t.carrierTCP(plan.tcp))
 	}
-	if plan.fallback != nil {
+	fbSB := plan.fallback != nil && plan.fallback.SingBoxKind()
+	switch {
+	case fbSB:
+		t.tcpPaths = append(t.tcpPaths, t.carrierTCP(plan.fallback))
+	case ports.TCPFB != 0:
+		// The TCPFB mixed inbound routes to the distinct hy2 outbound
+		// (see boxOptions/fbRouteTag).
+		if plan.udp != nil && !sameEndpoint(plan.udp, plan.tcp) {
+			t.tcpPaths = append(t.tcpPaths, namedTCP{
+				name: endpointName(plan.udp) + "+tcp",
+				c:    socksPath{addr: t.sb.fbAddr()},
+			})
+		}
+	}
+	if plan.fallback != nil && !fbSB && t.cfg.XHTTPFallbackInChain {
 		t.tcpPaths = append(t.tcpPaths, t.carrierTCP(plan.fallback))
 	}
 	// UDP chain: the UDP endpoint (via the main mixed inbound, network
@@ -296,6 +336,8 @@ func (t *tunnel) Start(ctx context.Context) error {
 
 // carrierTCP builds the TCP carrier for one endpoint: the sing-box SOCKS5
 // feeder for sing-box kinds, the in-package XHTTP client for vless_xhttp.
+// VLESS carriers are paced (one network connection per dial; the TSPU
+// quarantines the endpoint after ~3 rapid connections — wave 6).
 func (t *tunnel) carrierTCP(ep *config.Endpoint) namedTCP {
 	name := endpointName(ep)
 	if ep.SingBoxKind() {
@@ -305,7 +347,8 @@ func (t *tunnel) carrierTCP(ep *config.Endpoint) namedTCP {
 		} else {
 			addr = t.sb.fbAddr()
 		}
-		return namedTCP{name: name, c: socksPath{addr: addr}}
+		paced := ep.Kind == config.KindVLESSTCP || ep.Kind == config.KindVLESSReality
+		return namedTCP{name: name, c: socksPath{addr: addr}, paced: paced}
 	}
 	return namedTCP{name: name, c: &lazyXHTTP{ep: *ep, logger: t.logger}}
 }
@@ -464,6 +507,10 @@ func (t *tunnel) held() bool {
 
 // Stats implements Tunnel.
 func (t *tunnel) Stats() Stats {
+	mixed := ""
+	if t.sb != nil && t.sb.ports.Main != 0 {
+		mixed = t.sb.mainAddr()
+	}
 	return Stats{
 		Healthy:     t.healthy.Load(),
 		Held:        t.held(),
@@ -477,6 +524,7 @@ func (t *tunnel) Stats() Stats {
 		UDPSessions: int64(t.sessions.len()),
 		UDPDgrams:   t.udpDgrams.Load(),
 		Dropped:     t.dropped.Load(),
+		MixedAddr:   mixed,
 	}
 }
 
@@ -559,21 +607,31 @@ func (t *tunnel) serveTCP(client net.Conn) {
 }
 
 // dialTCPFlow runs the §6 fallback chain for one TCP flow (HOLD gate +
-// primary endpoint, then the fallback). Returns nil when every path
-// failed. Shared by the tproxy relay (handleTCP) and the wave-5c
-// terminator (TCPDialer).
+// primary endpoint, then the fallback). Returns nil when every path failed.
+// Shared by the tproxy relay (handleTCP) and the wave-5c terminator
+// (TCPDialer).
 func (t *tunnel) dialTCPFlow(src string, dst netip.AddrPort) net.Conn {
 	ctx, cancel := context.WithTimeout(ctxOrBackground(t.ctx), t.dialTimeout)
 	defer cancel()
 	var upstream net.Conn
-	for _, path := range t.tcpChain() {
+	multi := len(t.tcpChain()) > 1
+	for _, path := range t.dialOrder(dst) {
+		if multi && path.paced && !t.takePathToken(path.name) {
+			// Rate-limited this instant: overflow rides the next carrier
+			// (wave 6: >3 rapid vless connections quarantine the
+			// endpoint). Single-path plans never pace — nothing to
+			// overflow to.
+			continue
+		}
 		conn, err := path.c.dial(ctx, dst)
 		if err != nil {
 			t.logger.Warn("tcp: path dial failed",
 				slog.String("path", path.name), slog.String("dst", dst.String()),
 				slog.Any("err", err))
+			t.markPathFailure(path.name)
 			continue
 		}
+		t.markPathSuccess(path.name)
 		upstream = conn
 		break
 	}
@@ -588,6 +646,136 @@ func (t *tunnel) dialTCPFlow(src string, dst netip.AddrPort) net.Conn {
 	return upstream
 }
 
+// dialOrder returns the TCP carrier chain in try order for dst: fallbacks
+// first for TCPFallbackFirstCIDR destinations (wave-6: TG destinations
+// poison the primary endpoint), with paths in known-failure cooldown moved
+// after healthy ones (fast failover instead of a per-path dial timeout).
+// Rate pacing (takePathToken) is applied by the dial loops when a paced
+// path is about to be dialed.
+func (t *tunnel) dialOrder(dst netip.AddrPort) []namedTCP {
+	return t.orderedChain(false, dst)
+}
+
+// orderedChain is dialOrder generalized for the marker probe (domain dials
+// never match CIDR rules).
+func (t *tunnel) orderedChain(forDomain bool, dst netip.AddrPort) []namedTCP {
+	chain := t.tcpChain()
+	if len(chain) < 2 {
+		// Single-path plan: pacing must not make the tunnel unusable.
+		return chain
+	}
+	fbFirst := !forDomain && t.fallbackFirst(dst)
+	// Preference order: [fallbacks..., primary] when the destination must
+	// avoid the primary, else the configured order.
+	idx := make([]int, 0, len(chain))
+	if fbFirst {
+		for i := 1; i < len(chain); i++ {
+			idx = append(idx, i)
+		}
+		idx = append(idx, 0)
+	} else {
+		for i := range chain {
+			idx = append(idx, i)
+		}
+	}
+	now := time.Now()
+	ready := make([]namedTCP, 0, len(chain))
+	var cooled []namedTCP
+	for _, i := range idx {
+		p := chain[i]
+		if now.Before(t.pathDownAt(p.name)) {
+			cooled = append(cooled, p)
+		} else {
+			ready = append(ready, p)
+		}
+	}
+	return append(ready, cooled...)
+}
+
+// path pacing (wave 6): the TSPU silently drops new SYNs to a vless
+// endpoint after ~3 rapid connections (quarantine ~2-5 min, marker
+// included). The token bucket keeps the dial rate under the observed
+// threshold; overflow dials ride the (unpaced) hysteria2 carrier instead —
+// hy2 multiplexes every stream over ONE QUIC association and is immune.
+const (
+	pathTokenRate  = 0.5 // sustained paced dials/second
+	pathTokenBurst = 2   // rapid paced dials before pacing kicks in
+)
+
+func (t *tunnel) takePathToken(name string) bool {
+	t.pathMu.Lock()
+	defer t.pathMu.Unlock()
+	if t.pathTokens == nil {
+		t.pathTokens = map[string]*tokenBucket{}
+	}
+	b := t.pathTokens[name]
+	if b == nil {
+		b = &tokenBucket{tokens: pathTokenBurst, last: time.Now()}
+		t.pathTokens[name] = b
+	}
+	now := time.Now()
+	b.tokens += now.Sub(b.last).Seconds() * pathTokenRate
+	if b.tokens > pathTokenBurst {
+		b.tokens = pathTokenBurst
+	}
+	b.last = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
+}
+
+type tokenBucket struct {
+	tokens float64
+	last   time.Time
+}
+
+// pathDownAt returns the cooldown deadline of a failed path (zero time when
+// healthy).
+func (t *tunnel) pathDownAt(name string) time.Time {
+	t.pathMu.Lock()
+	defer t.pathMu.Unlock()
+	return t.pathDown[name]
+}
+
+// fallbackFirst reports whether dst matches a TCPFallbackFirstCIDRs prefix.
+func (t *tunnel) fallbackFirst(dst netip.AddrPort) bool {
+	for _, p := range t.opts.TCPFallbackFirstCIDRs {
+		if p.Contains(dst.Addr()) {
+			return true
+		}
+	}
+	return false
+}
+
+// pathCooldown is how long a failed carrier is deprioritized (its SYNs to
+// the VPS are being silently dropped — live finding wave 6: retrying into
+// the quarantine only extends it).
+const pathCooldown = 60 * time.Second
+
+func (t *tunnel) markPathFailure(name string) {
+	t.pathMu.Lock()
+	if t.pathDown == nil {
+		t.pathDown = map[string]time.Time{}
+	}
+	t.pathDown[name] = time.Now().Add(pathCooldown)
+	t.pathMu.Unlock()
+}
+
+func (t *tunnel) markPathSuccess(name string) {
+	t.pathMu.Lock()
+	delete(t.pathDown, name)
+	t.pathMu.Unlock()
+}
+
+func (t *tunnel) pathDownUntil(name string) (time.Time, bool) {
+	t.pathMu.Lock()
+	defer t.pathMu.Unlock()
+	until, ok := t.pathDown[name]
+	return until, ok
+}
+
 // TCPDialer exposes the §6 TCP carrier chain (HOLD gate + fallback) to the
 // wave-5c userspace terminator.
 func (t *tunnel) TCPDialer() func(ctx context.Context, dst string) (net.Conn, error) {
@@ -600,14 +788,20 @@ func (t *tunnel) TCPDialer() func(ctx context.Context, dst string) (net.Conn, er
 			return nil, err
 		}
 		var c net.Conn
-		for _, path := range t.tcpChain() {
+		multi := len(t.tcpChain()) > 1
+		for _, path := range t.dialOrder(ap) {
+			if multi && path.paced && !t.takePathToken(path.name) {
+				continue // rate-limited: overflow rides the next carrier
+			}
 			conn, err := path.c.dial(ctx, ap)
 			if err != nil {
 				t.logger.Warn("term: path dial failed",
 					slog.String("path", path.name), slog.String("dst", dst),
 					slog.Any("err", err))
+				t.markPathFailure(path.name)
 				continue
 			}
+			t.markPathSuccess(path.name)
 			c = conn
 			break
 		}
@@ -615,8 +809,34 @@ func (t *tunnel) TCPDialer() func(ctx context.Context, dst string) (net.Conn, er
 			return nil, errors.New("term: every tunnel path failed")
 		}
 		t.tcpFlows.Add(1)
-		return c, nil
+		// Relay bytes through the terminator count into the tunnel rx/tx
+		// counters (wave 6: the acceptance gates assert rx > 0 on the
+		// full-engine TG loop, which rides this dialer).
+		return &countingConn{Conn: c, rx: &t.rxBytes, tx: &t.txBytes}, nil
 	}
+}
+
+// countingConn feeds the tunnel byte counters from a relayed carrier
+// connection (terminator path — the tproxy splice counts in splice()).
+type countingConn struct {
+	net.Conn
+	rx, tx *atomic.Uint64
+}
+
+func (c *countingConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 {
+		c.rx.Add(uint64(n))
+	}
+	return n, err
+}
+
+func (c *countingConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if n > 0 {
+		c.tx.Add(uint64(n))
+	}
+	return n, err
 }
 
 // drop counts one refused flow/datagram.

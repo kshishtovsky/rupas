@@ -440,6 +440,9 @@ func (c *termConn) feed(p TermPkt) {
 		// pump too.
 		if int32(p.Ack-c.serverUna) > 0 {
 			c.serverUna = p.Ack
+			c.tm.log.Debug("term: client acked our data",
+				slog.String("flow", c.flowDesc()),
+				slog.Uint64("ack", uint64(p.Ack)), slog.Uint64("serverNext", uint64(c.serverNext)))
 		}
 		if c.clientWin != p.Window {
 			c.clientWin = p.Window
@@ -573,12 +576,16 @@ func (c *termConn) sendData(b []byte) bool {
 		c.serverNext += uint32(n)
 		ack := c.clientNext
 		pkt := c.craft(seq, ack, termACK|termPSH, b[:n])
+		una := c.serverUna
 		c.mu.Unlock()
 		if err := c.tm.send.SendInboundTCP(pkt, c.ifIdx(), c.subIfIdx()); err != nil {
 			c.tm.log.Warn("term: data inject failed", slog.String("err", err.Error()))
 			c.kill(false)
 			return false
 		}
+		c.tm.log.Debug("term: data injected",
+			slog.String("flow", c.flowDesc()), slog.Int("len", n),
+			slog.Uint64("seq", uint64(seq)), slog.Uint64("una", uint64(una)))
 		b = b[n:]
 	}
 	return true

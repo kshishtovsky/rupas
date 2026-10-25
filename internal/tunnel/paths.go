@@ -35,10 +35,14 @@ type transport interface {
 }
 
 // namedTCP/namedUDP attach a human-readable endpoint name to a carrier for
-// logs and stats.
+// logs and stats. paced marks carriers whose transport opens ONE network
+// connection per dial and is therefore rate-limited by the TSPU (vless:
+// ~3 rapid connections → ~2-5 min silent-SYN quarantine of the endpoint,
+// live finding wave 6).
 type namedTCP struct {
-	name string
-	c    tcpCarrier
+	name  string
+	c     tcpCarrier
+	paced bool
 }
 
 type namedUDP struct {

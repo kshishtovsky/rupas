@@ -126,14 +126,20 @@ func boxOptions(cfg config.TunnelConfig, ports sbPorts) option.Options {
 
 	// Route rules (evaluated in order):
 	//  1. UDP fallback inbound → the TCP endpoint's outbound (xudp).
-	//  2. TCP fallback inbound → the fallback outbound.
+	//  2. TCP fallback inbound → the fallback outbound, or — when the
+	//     configured fallback is not sing-box-carried (vless_xhttp or
+	//     none) — the hysteria2 UDP endpoint's outbound (hy2 carries TCP
+	//     streams too; wave 6: the default TCP chain is vless_tcp → hy2).
 	//  3. network udp → the UDP endpoint (applies to the main mixed
 	//     inbound, whose TCP flows fall through to route final = TCP).
 	if ports.UDPFB != 0 {
 		rules = append(rules, routeRule(routeInbound(mixedUFBTag), tcpTag))
 	}
 	if ports.TCPFB != 0 {
-		rules = append(rules, routeRule(routeInbound(mixedFBTag), fbTag))
+		fbRoute := fbRouteTag(plan, udpSB)
+		if fbRoute != "" {
+			rules = append(rules, routeRule(routeInbound(mixedFBTag), fbRoute))
+		}
 	}
 	if udpSB && tcpSB {
 		rules = append(rules, routeRule(routeNetworkUDP(), udpTag))
@@ -165,6 +171,20 @@ func boxOptions(cfg config.TunnelConfig, ports sbPorts) option.Options {
 			AutoDetectInterface:   true,
 		},
 	}
+}
+
+// fbRouteTag returns the outbound tag the TCP-fallback mixed inbound routes
+// to: the configured fallback when sing-box carries it, else the distinct
+// hysteria2 endpoint's outbound (hy2 carries TCP streams — wave-6 default
+// chain vless_tcp → hy2). Empty when neither exists.
+func fbRouteTag(plan tunnelPlan, udpSB bool) string {
+	if plan.fallback != nil && plan.fallback.SingBoxKind() {
+		return fbTag
+	}
+	if udpSB {
+		return udpTag
+	}
+	return ""
 }
 
 // mixedInbound builds one loopback mixed (SOCKS5+HTTP) inbound.
@@ -276,23 +296,42 @@ func endpointOutbound(ep config.Endpoint, tag string) option.Outbound {
 				ShortID:   ep.RealitySID,
 			}
 		}
-		return option.Outbound{
-			Type: "vless",
-			Tag:  tag,
-			Options: &option.VLESSOutboundOptions{
-				ServerOptions: option.ServerOptions{Server: ep.Host, ServerPort: ep.Port},
-				UUID:           ep.UUID,
-				Flow:           flow,
-				PacketEncoding: &packetEncoding,
-				DialerOptions: option.DialerOptions{
-					AbstractDialerOptions: option.AbstractDialerOptions{
-						DomainResolver: &option.DomainResolveOptions{Server: dnsTag},
-					},
+		vlessOpts := &option.VLESSOutboundOptions{
+			ServerOptions:  option.ServerOptions{Server: ep.Host, ServerPort: ep.Port},
+			UUID:           ep.UUID,
+			Flow:           flow,
+			PacketEncoding: &packetEncoding,
+			DialerOptions: option.DialerOptions{
+				AbstractDialerOptions: option.AbstractDialerOptions{
+					DomainResolver: &option.DomainResolveOptions{Server: dnsTag},
 				},
-				OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{TLS: tls},
 			},
+			OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{TLS: tls},
 		}
+		if muxOf(ep) {
+			// Wave 6 (live finding 2026-10-25): multiplex every stream
+			// over ONE long-lived TLS connection. Un-multiplexed, each
+			// CONNECT opens a fresh TLS connection to the VPS and the
+			// TSPU quarantines the endpoint (~2 min silent SYN drop)
+			// after a handful of connections — the TG connect storms
+			// killed the whole carrier this way. MaxConnections pins the
+			// pool to a single connection; h2mux is the Xray-compatible
+			// protocol.
+			vlessOpts.Multiplex = &option.OutboundMultiplexOptions{
+				Enabled:        true,
+				Protocol:       "h2mux",
+				MaxConnections: 1,
+				Padding:        ep.MuxPadding,
+			}
+		}
+		return option.Outbound{Type: "vless", Tag: tag, Options: vlessOpts}
 	}
+}
+
+// muxOf reports whether the endpoint's VLESS outbound multiplexes streams.
+// Opt-in ("on"); xray servers do not demux sing-mux (live finding wave 6).
+func muxOf(ep config.Endpoint) bool {
+	return strings.ToLower(strings.TrimSpace(ep.Mux)) == "on"
 }
 
 func alpnOf(ep config.Endpoint) badoption.Listable[string] {
@@ -367,13 +406,27 @@ func sbPortsForPlan(cfg config.TunnelConfig) (sbPorts, error) {
 		}
 		p.TCPFB = port
 	}
+	// Wave 6: when the configured fallback is NOT sing-box-carried
+	// (vless_xhttp — excluded from the default chain, live finding F3 —
+	// or absent), a DISTINCT hysteria2 endpoint becomes the automatic TCP
+	// fallback (hy2 carries TCP streams; its outbound already exists for
+	// the UDP path), riding the same TCPFB mixed inbound.
+	fbSB := plan.fallback != nil && plan.fallback.SingBoxKind()
+	udpDistinct := plan.udp != nil && plan.udp.SingBoxKind() && !sameEndpoint(plan.udp, plan.tcp)
+	if !fbSB && udpDistinct && p.TCPFB == 0 {
+		port, err := freeTCPPort()
+		if err != nil {
+			return p, fmt.Errorf("tunnel: pick hy2-fallback mixed port: %w", err)
+		}
+		p.TCPFB = port
+	}
 	// UDP fallback (xudp over the TCP endpoint) exists when the UDP path is
 	// a DISTINCT sing-box endpoint and the TCP endpoint is a VLESS one
 	// sing-box carries (XUDP rides the VLESS outbound).
-	udpDistinct := plan.udp != nil && plan.tcp != nil && !sameEndpoint(plan.udp, plan.tcp) && plan.udp.SingBoxKind()
+	udpXUDP := plan.udp != nil && plan.tcp != nil && !sameEndpoint(plan.udp, plan.tcp) && plan.udp.SingBoxKind()
 	tcpIsVLESS := plan.tcp != nil && plan.tcp.SingBoxKind() &&
 		(plan.tcp.Kind == config.KindVLESSTCP || plan.tcp.Kind == config.KindVLESSReality)
-	if udpDistinct && tcpIsVLESS {
+	if udpXUDP && tcpIsVLESS {
 		port, err := freeTCPPort()
 		if err != nil {
 			return p, fmt.Errorf("tunnel: pick udp-fallback mixed port: %w", err)

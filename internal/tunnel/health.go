@@ -71,9 +71,12 @@ func (t *tunnel) probe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	chain := t.tcpChain()
+	chain := t.orderedChain(true, netip.AddrPort{})
 	var lastErr error
 	for i, path := range chain {
+		// NOTE: the marker probe is never token-paced — it is sequential
+		// and low-rate by design (§6); cooled paths are merely demoted
+		// to the back so a healthy fallback answers fast.
 		client := &http.Client{
 			Transport: &http.Transport{
 				DisableKeepAlives: true,

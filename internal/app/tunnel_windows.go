@@ -5,6 +5,8 @@ package app
 import (
 	"log"
 	"log/slog"
+	"net/netip"
+	"os"
 	"sync/atomic"
 
 	"github.com/rupas/rupas/internal/capture"
@@ -37,10 +39,16 @@ func (p *natProvider) Lookup(srcIP [16]byte, srcPort uint16) ([16]byte, uint16, 
 }
 
 // slogBridge routes the tunnel's structured logs into the daemon's
-// *log.Logger (one line per record, the slog text format).
+// *log.Logger (one line per record, the slog text format). RUPAS_LOG_DEBUG=1
+// drops the level to DEBUG (live diagnostics: terminator resets, window
+// stalls, inject failures).
 func slogBridge(l *log.Logger) *slog.Logger {
+	level := slog.LevelInfo
+	if os.Getenv("RUPAS_LOG_DEBUG") != "" {
+		level = slog.LevelDebug
+	}
 	return slog.New(slog.NewTextHandler(logWriter{l}, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: level,
 	}))
 }
 
@@ -57,15 +65,31 @@ func tunnelEndpointConfigured(cfg *config.Config) bool {
 	return cfg.TunnelPlan().Configured()
 }
 
+// tunnelFallbackFirstPrefixes parses the config's TUNNEL-action CIDR rules
+// (the destinations the TSPU blackholes — Telegram DC ranges) into prefixes.
+// Wave 6: their tunnel dials try the fallback carrier FIRST (relaying them
+// through the primary vless_tcp connection triggers a ~5-min TSPU quarantine
+// of the whole primary endpoint — live finding 2026-10-25).
+func tunnelFallbackFirstPrefixes(cfg *config.Config) []netip.Prefix {
+	var out []netip.Prefix
+	for _, cidr := range tunnelCIDRs(cfg.Rules) {
+		if p, err := netip.ParsePrefix(cidr); err == nil {
+			out = append(out, p.Masked())
+		}
+	}
+	return out
+}
+
 // newTunnel builds the real tunnel-core for cfg's endpoint plan (not
 // started).
 func newTunnel(cfg *config.Config, tproxyPort uint16, provider *natProvider, logger *log.Logger, o tunnelRunOpts) tunnel.Tunnel {
 	return tunnel.NewTunnel(cfg.TunnelPlan(), tproxyPort, tunnel.Options{
-		OriginalDstProvider: provider,
-		MarkerURL:           o.markerURL,
-		Logger:              slogBridge(logger),
-		HealthInterval:      o.healthInterval,
-		DialTimeout:         o.dialTimeout,
+		OriginalDstProvider:   provider,
+		MarkerURL:             o.markerURL,
+		Logger:                slogBridge(logger),
+		HealthInterval:        o.healthInterval,
+		DialTimeout:           o.dialTimeout,
+		TCPFallbackFirstCIDRs: tunnelFallbackFirstPrefixes(cfg),
 	})
 }
 

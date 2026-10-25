@@ -157,6 +157,15 @@ type Endpoint struct {
 	// UDPMode selects the VLESS UDP packet encoding (xudp|packetaddr;
 	// default xudp).
 	UDPMode string `yaml:"udp_mode,omitempty"`
+	// Mux toggles sing-mux multiplexing (h2mux; one long-lived TLS
+	// connection carries every stream) on VLESS endpoints. Needs SERVER
+	// support (sing-box server; xray does NOT demux sing-mux — live-
+	// verified wave 6: every stream dies with EOF ~1.3 s against xray).
+	// Default off; set "on" against sing-box servers.
+	Mux string `yaml:"mux,omitempty"`
+	// MuxPadding enables sing-mux padding (anti-length-analysis; needs
+	// server support — xray ≥ 1.8.6 / sing-box). Default off.
+	MuxPadding bool `yaml:"mux_padding,omitempty"`
 }
 
 // IsZero reports whether no meaningful field of the endpoint is set.
@@ -287,6 +296,13 @@ type TunnelConfig struct {
 	UDP *Endpoint `yaml:"udp,omitempty"`
 	// Fallback is the backup TCP path (dialed when TCP's dial fails).
 	Fallback *Endpoint `yaml:"fallback,omitempty"`
+	// XHTTPFallbackInChain opts a vless_xhttp fallback endpoint into the
+	// automatic TCP dial chain. Default false (wave 6, live finding F3):
+	// on TSPU networks the XHTTP port is commonly blackholed outright and a
+	// dead fallback adds a full dial-timeout penalty to every attempt, so
+	// the automatic chain is [tcp → hysteria2-tcp] and the XHTTP client
+	// stays a manual/diagnostic path.
+	XHTTPFallbackInChain bool `yaml:"xhttp_fallback_in_chain,omitempty"`
 }
 
 // Configured reports whether any endpoint is set.

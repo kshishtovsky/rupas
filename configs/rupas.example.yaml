@@ -70,6 +70,12 @@ desync:
 #     sni: vps.example.net
 #     alpn: [h2, http/1.1]
 #     fingerprint: chrome         # uTLS client fingerprint
+#     # mux: on                   # sing-mux (one long-lived TLS connection).
+#                                 # Opt-in: needs a sing-box SERVER; xray
+#                                 # does not demux sing-mux (live-verified
+#                                 # wave 6 — every stream dies with EOF).
+#                                 # mux_padding: true adds anti-length
+#                                 # padding when the server supports it.
 #   udp:
 #     kind: hysteria2
 #     host: 203.0.113.10
@@ -77,6 +83,12 @@ desync:
 #     password: "hy2-secret"
 #     sni: vps.example.net
 #     alpn: [h3]
+#     # NOTE (wave 6): when the TCP fallback below is absent or is
+#     # vless_xhttp, this hysteria2 endpoint AUTOMATICALLY doubles as the
+#     # TCP fallback carrier (hy2 carries TCP streams). Live-verified:
+#     # TG-DC TCP through hy2 answers in ~120-160 ms, and CIDR-rule
+#     # destinations dial the fallback FIRST (relaying them through
+#     # vless_tcp triggers a ~5-min TSPU quarantine of the primary).
 #   fallback:
 #     kind: vless_xhttp
 #     host: 203.0.113.10
@@ -86,6 +98,13 @@ desync:
 #     path: /xhttp-path
 #     mode: packet-up
 #     x_padding_bytes: 100-1000
+#     # vless_xhttp is NOT part of the automatic dial chain anymore
+#     # (default chain: tcp → hysteria2-tcp). On TSPU networks the XHTTP
+#     # port is commonly blackholed outright (live finding F3: ClientHello
+#     # to :4443 dropped, i/o timeout on the VPS side) and a dead fallback
+#     # adds a full dial-timeout penalty to every dial. Set the flag below
+#     # to put it back in the chain explicitly:
+#     # (top level, next to `tunnels:`) xhttp_fallback_in_chain: true
 # ---------------------------------------------------------------------------
 tunnels: {}
 

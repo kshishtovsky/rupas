@@ -140,7 +140,16 @@ func parseClientHello(b []byte) (Result, error) {
 				res.ALPN, _ = parseALPNExt(body[off : off+elen])
 			}
 		case extECH, extECHLegacy:
-			res.ECH = true
+			// GREASE ECH (draft-ietf-tls-esni §6.1): ECH-capable
+			// clients attach a single 0x00 byte to nearly EVERY
+			// ClientHello, including to non-ECH sites. Treating it as
+			// real ECH forces those flows into the tunnel (live field
+			// incident 2026-10-25: 2/3 of all browser CHs tunneled).
+			// Real ECH carries an HPKE-encrypted inner CH — hundreds
+			// of bytes; a payload > 1 byte is genuine.
+			if elen > 1 {
+				res.ECH = true
+			}
 		}
 		off += elen
 	}

@@ -18,6 +18,7 @@ func TestActionUnmarshal(t *testing.T) {
 		{"desync", ActionDesync, false},
 		{"tunnel", ActionTunnel, false},
 		{"direct", ActionDirect, false},
+		{"block", ActionBlock, false},
 		{"  DIRECT ", ActionDirect, false},
 		{"Desync", ActionDesync, false},
 		{"proxy", 0, true},
@@ -42,7 +43,7 @@ func TestActionUnmarshal(t *testing.T) {
 }
 
 func TestActionStringRoundTrip(t *testing.T) {
-	for _, a := range []Action{ActionDesync, ActionTunnel, ActionDirect} {
+	for _, a := range []Action{ActionDesync, ActionTunnel, ActionDirect, ActionBlock} {
 		out, err := yaml.Marshal(a)
 		if err != nil {
 			t.Fatalf("Marshal(%v): %v", a, err)
@@ -141,6 +142,9 @@ func TestUnmarshalErrors(t *testing.T) {
 		{"bad tunnel proto", validTunnel("protocol: vmess"), "only \"vless\""},
 		{"tunnel missing field", validTunnel("uuid: \"\""), "tunnel requires"},
 		{"bad exclusion cidr", "profile: p\nexclusions:\n  cidrs: [\"nope\"]\n", "exclusion cidr"},
+		{"bad proto", "profile: p\nrules:\n  - ports: \"443\"\n    proto: sctp\n    action: block\n", "proto"},
+		{"proto on default rule", "profile: p\nrules:\n  - proto: udp\n    action: block\n", "default rule"},
+		{"proto needs matcher", "profile: p\nrules:\n  - proto: udp\n    action: block\n  - {action: direct}\n", "default rule"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -152,6 +156,59 @@ func TestUnmarshalErrors(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err.Error(), tt.want)
 			}
 		})
+	}
+}
+
+// TestUnmarshalProtoRule validates the proto selector and the block action
+// end-to-end through the YAML schema (PRD §5 QUIC block).
+func TestUnmarshalProtoRule(t *testing.T) {
+	const yml = `profile: p
+rules:
+  - ports: "443"
+    proto: udp
+    action: block
+  - ports: "8080"
+    proto: TCP
+    action: tunnel
+  - action: direct
+`
+	cfg, err := Unmarshal([]byte(yml))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if cfg.Rules[0].Proto != ProtoUDP || cfg.Rules[0].Action != ActionBlock {
+		t.Errorf("rule 0 = %+v, want proto udp + block", cfg.Rules[0])
+	}
+	// Selector is case-insensitive and normalized to lower case.
+	if cfg.Rules[1].Proto != ProtoTCP || cfg.Rules[1].Action != ActionTunnel {
+		t.Errorf("rule 1 = %+v, want proto tcp + tunnel", cfg.Rules[1])
+	}
+}
+
+// TestRepoConfigsLoad parses the repository's real config files (strict
+// schema): the committed example always, the user's rupas.yaml when it
+// exists locally (gitignored; contents are never logged). The QUIC block
+// rule (PRD §5) must be present in both.
+func TestRepoConfigsLoad(t *testing.T) {
+	for _, p := range []string{"../../configs/rupas.example.yaml", "../../configs/rupas.yaml"} {
+		if _, err := os.Stat(p); err != nil {
+			t.Logf("%s absent, skipping", p)
+			continue
+		}
+		cfg, err := Load(p)
+		if err != nil {
+			t.Errorf("%s: %v", p, err)
+			continue
+		}
+		found := false
+		for _, r := range cfg.Rules {
+			if r.Ports == "443" && r.Proto == ProtoUDP && r.Action == ActionBlock {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s: no udp/443 block rule (PRD §5 QUIC fallback)", p)
+		}
 	}
 }
 
@@ -212,23 +269,43 @@ func TestDefaultValid(t *testing.T) {
 
 func TestDefaultContent(t *testing.T) {
 	cfg := Default()
-	want := []Rule{
+	// Structural invariants (the wave-7 SNI list may grow): every rule
+	// has exactly one matcher or is THE default rule, which is last and
+	// DIRECT; key rules are pinned below.
+	for i, r := range cfg.Rules {
+		matchers := 0
+		for _, s := range []string{r.CIDR, r.SNI, r.Ports} {
+			if s != "" {
+				matchers++
+			}
+		}
+		if matchers > 1 {
+			t.Errorf("rule %d has %d matchers: %+v", i, matchers, r)
+		}
+		if matchers == 0 && i != len(cfg.Rules)-1 {
+			t.Errorf("default rule at %d is not last", i)
+		}
+		if matchers == 0 && r.Action != ActionDirect {
+			t.Errorf("default action = %v, want DIRECT", r.Action)
+		}
+	}
+	pin := []Rule{
 		{SNI: "www.youtube.com", Action: ActionDesync},
 		{SNI: "*.googlevideo.com", Action: ActionDesync},
-		{SNI: "discord.com", Action: ActionDesync},
-		{SNI: "gateway.discord.gg", Action: ActionDesync},
 		{CIDR: "149.154.160.0/20", Action: ActionTunnel},
 		{CIDR: "91.108.0.0/16", Action: ActionTunnel},
-		{CIDR: "95.161.76.100/32", Action: ActionTunnel},
 		{Ports: "50000-65535", Action: ActionTunnel},
-		{Action: ActionDirect},
 	}
-	if len(cfg.Rules) != len(want) {
-		t.Fatalf("rules len = %d, want %d", len(cfg.Rules), len(want))
-	}
-	for i, w := range want {
-		if cfg.Rules[i] != w {
-			t.Errorf("rule %d = %+v, want %+v", i, cfg.Rules[i], w)
+	for _, w := range pin {
+		found := false
+		for _, r := range cfg.Rules {
+			if r == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("pinned rule %+v missing from Default()", w)
 		}
 	}
 	if cfg.Desync.TTL != 13 || cfg.Desync.TTLMargin != 2 || cfg.Desync.Repeats != 6 {

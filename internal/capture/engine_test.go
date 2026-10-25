@@ -430,8 +430,9 @@ func tunnelTestConfig() *config.Config {
 	}
 }
 
-// TestNATRoundtripTCP drives a full redirect life cycle:
-// SYN (first pass, verdict needs the CH) → CH redirected → SYN retransmit
+// TestNATRoundtripTCP drives a full redirect life cycle under the §3.2
+// reset-and-redial verdict: SYN (first pass, verdict unknown) → CH TUNNEL →
+// forged RST + dst cached (the CH itself never egresses) → re-dial SYN
 // redirected → data redirected → loopback reply reverse-translated →
 // OrigDst preserved all along → FIN tears everything down.
 func TestNATRoundtripTCP(t *testing.T) {
@@ -441,37 +442,58 @@ func TestNATRoundtripTCP(t *testing.T) {
 	syn := buildTCP(testClientIP, testClientPort, testTGIP, 443, 9000, 0, tcpFlagSYN, nil)
 	feed(t, e, syn, outboundAddr())
 
-	// 2. ClientHello: CIDR rule → TUNNEL → dst rewritten to 127.0.0.1:9443.
+	// 2. ClientHello: CIDR rule → TUNNEL → §3.2 reset-and-redial. The CH
+	// never leaves; the client gets a forged RST from the real server.
 	ch := buildClientHello("telegram.zzz", false) // SNI matches nothing; CIDR decides
 	chPkt := buildTCP(testClientIP, testClientPort, testTGIP, 443, 9001, 1, tcpFlagACK|tcpFlagPSH, ch)
 	feed(t, e, chPkt, outboundAddr())
 
 	sent := ft.Sent()
-	if len(sent) != 1 {
-		t.Fatalf("sent %d, want 1 (SYN passed untouched)", len(sent))
+	if len(sent) != 2 { // SYN + forged RST
+		t.Fatalf("sent %d, want 2 (SYN + forged RST)", len(sent))
 	}
-	// The NAT legs re-inject through the loopback handle (live matrix
-	// finding: only the inbound loopback path delivers them).
-	loSent := loop.Sent()
-	if len(loSent) != 1 {
-		t.Fatalf("loopback sent %d, want 1 (NAT'd ClientHello)", len(loSent))
-	}
-	natPkt := loSent[0].Data
-	p, ok := parsePkt(natPkt)
+	rp, ok := parsePkt(sent[1].Data)
 	if !ok {
-		t.Fatal("NAT packet unparseable")
+		t.Fatal("forged RST unparseable")
 	}
-	if p.dst4 != parseIP4(testClientIP, [4]byte{}) {
-		t.Fatalf("NAT dst = %v, want 127.0.0.1", p.dst4)
+	if rp.src4 != parseIP4(testTGIP, [4]byte{}) || rp.srcPort != 443 ||
+		rp.dst4 != parseIP4(testClientIP, [4]byte{}) || rp.dstPort != testClientPort {
+		t.Fatalf("forged RST addresses = %v:%d→%v:%d", rp.src4, rp.srcPort, rp.dst4, rp.dstPort)
 	}
-	if p.dstPort != testTProxyPort {
-		t.Fatalf("NAT dstPort = %d, want %d", p.dstPort, testTProxyPort)
+	if rp.flags&tcpFlagRST == 0 || rp.flags&tcpFlagACK == 0 {
+		t.Fatalf("forged RST flags = 0x%02x", rp.flags)
 	}
-	if p.src4 != fakeIP4() || p.srcPort != testClientPort {
-		t.Fatalf("NAT src changed: %v:%d", p.src4, p.srcPort)
+	if rp.seq != 1 || rp.ackNum != 9001+uint32(len(ch)) {
+		t.Fatalf("forged RST seq/ack = %d/%d, want 1/%d", rp.seq, rp.ackNum, 9001+uint32(len(ch)))
 	}
-	if !checksumsValid(natPkt) {
-		t.Fatal("NAT packet checksums invalid")
+	if !checksumsValid(sent[1].Data) {
+		t.Fatal("forged RST checksums invalid")
+	}
+	if sent[1].Addr.Outbound() {
+		t.Fatal("forged RST must be injected INBOUND")
+	}
+	if lo := loop.Sent(); len(lo) != 0 {
+		t.Fatalf("loopback sent %d, want 0 (the CH is never NAT'd)", len(lo))
+	}
+	if _, ok := flowOf(e, testTGIP, 443); ok {
+		t.Fatal("flow table kept the reset flow")
+	}
+	if got := e.TunnelRedirects(); got != 1 {
+		t.Fatalf("tunnel redirects = %d, want 1", got)
+	}
+	if !e.tcache.get(parseIP4(testTGIP, [4]byte{}), 443) {
+		t.Fatal("dst not cached for redial")
+	}
+
+	// 3. Re-dial SYN (the browser's retry after the RST): cached dst →
+	// tunnel fast path → NAT-redirected (§3.2 "next SYN via redirect").
+	feed(t, e, syn, outboundAddr())
+	if n := len(loop.Sent()); n != 1 {
+		t.Fatalf("loopback sent %d after re-dial SYN, want 1", n)
+	}
+	np, _ := parsePkt(loop.Sent()[0].Data)
+	if np.dst4 != parseIP4(testClientIP, [4]byte{}) || np.dstPort != testTProxyPort {
+		t.Fatal("re-dial SYN not redirected")
 	}
 
 	f, ok := flowOf(e, testTGIP, 443)
@@ -486,20 +508,12 @@ func TestNATRoundtripTCP(t *testing.T) {
 		t.Fatalf("OrigDst/OrigPort = %v:%d", f.OrigDst, f.OrigPort)
 	}
 
-	// 3. SYN retransmission of a TUNNEL flow is re-redirected (§3.2).
-	feed(t, e, syn, outboundAddr())
-	last := loop.Sent()
-	np, _ := parsePkt(last[len(last)-1].Data)
-	if np.dst4 != parseIP4(testClientIP, [4]byte{}) || np.dstPort != testTProxyPort {
-		t.Fatal("SYN retransmit not redirected")
-	}
-
 	// 4. Subsequent data is redirected too. (Keep a pristine copy: the
 	// engine edits the packet buffer in place on the NAT path.)
 	data := buildTCP(testClientIP, testClientPort, testTGIP, 443, 9001+uint32(len(ch)), 1, tcpFlagACK|tcpFlagPSH, []byte("MTProtoData"))
 	dataPristine := append([]byte(nil), data...)
 	feed(t, e, data, outboundAddr())
-	last = loop.Sent()
+	last := loop.Sent()
 	np, _ = parsePkt(last[len(last)-1].Data)
 	if np.dst4 != parseIP4(testClientIP, [4]byte{}) || np.dstPort != testTProxyPort {
 		t.Fatal("tunnel data segment not redirected")
@@ -514,10 +528,10 @@ func TestNATRoundtripTCP(t *testing.T) {
 	e.processLoopback(loop, reply, ptrOf(inboundAddr()))
 
 	loopSent := loop.Sent()
-	if len(loopSent) != 4 { // CH + SYN-retrans + data NAT legs + the reverse leg
-		t.Fatalf("loopback sent %d, want 4", len(loopSent))
+	if len(loopSent) != 3 { // re-dial SYN + data NAT legs + the reverse leg
+		t.Fatalf("loopback sent %d, want 3", len(loopSent))
 	}
-	rp, ok := parsePkt(loopSent[len(loopSent)-1].Data)
+	rp, ok = parsePkt(loopSent[len(loopSent)-1].Data)
 	if !ok {
 		t.Fatal("reverse-NAT packet unparseable")
 	}
@@ -526,9 +540,6 @@ func TestNATRoundtripTCP(t *testing.T) {
 	}
 	if rp.dst4 != parseIP4(testClientIP, [4]byte{}) || rp.dstPort != testClientPort {
 		t.Fatalf("reverse-NAT dst = %v:%d, want client", rp.dst4, rp.dstPort)
-	}
-	if !checksumsValid(loopSent[0].Data) {
-		t.Fatal("reverse-NAT checksums invalid")
 	}
 	// OrigDst must survive the round-trip unchanged.
 	f2, _ := flowOf(e, testTGIP, 443)
@@ -552,15 +563,15 @@ func TestNATRoundtripTCP(t *testing.T) {
 	stray := buildTCP("127.0.0.1", testTProxyPort, "198.18.0.1", testClientPort, 1, 1, tcpFlagACK, nil)
 	e.processLoopback(loop, stray, ptrOf(inboundAddr()))
 	loopSent = loop.Sent()
-	if len(loopSent) != 6 { // 4 NAT/reverse legs + FIN + the stray passthrough
+	if len(loopSent) != 5 { // 3 NAT/reverse legs + FIN + the stray passthrough
 		t.Fatalf("stray loopback packet: %d sent", len(loopSent))
 	}
 	if sp, _ := parsePkt(loopSent[len(loopSent)-1].Data); sp.src4 != loopback4 {
 		t.Fatal("stray loopback packet was reverse-NATed without a flow")
 	}
 
-	if c := e.Counters(); c.PacketsRedir != 4 { // CH + SYN-retrans + data + FIN
-		t.Fatalf("redirect counter = %d, want 4: %+v", c.PacketsRedir, c)
+	if c := e.Counters(); c.PacketsRedir != 3 { // re-dial SYN + data + FIN
+		t.Fatalf("redirect counter = %d, want 3: %+v", c.PacketsRedir, c)
 	}
 }
 
@@ -602,7 +613,10 @@ func TestNATUDPRelay(t *testing.T) {
 }
 
 // TestECHForcesTunnel: a desync-matched SNI still goes to the tunnel when
-// the ClientHello carries an ECH extension.
+// the ClientHello carries an ECH extension — via §3.2 reset-and-redial:
+// the CH (and any held segments) never egress, the client gets a forged
+// RST from the real server and the dst joins the redial cache, so the
+// browser's re-dial SYN enters the tunnel fast path.
 func TestECHForcesTunnel(t *testing.T) {
 	cfg := &config.Config{
 		Profile: "test",
@@ -610,26 +624,58 @@ func TestECHForcesTunnel(t *testing.T) {
 			{SNI: "blocked.example", Action: config.ActionDesync},
 		},
 	}
-	e, _, loop := newTestEngine(t, cfg, testDesyncParams("fake", 0), true)
+	e, ft, loop := newTestEngine(t, cfg, testDesyncParams("fake", 0), true)
 
 	ch := buildClientHello("blocked.example", true)
 	pkt := buildTCP(testClientIP, testClientPort, testServerIP, 443, 1000, 1, tcpFlagACK|tcpFlagPSH, ch)
 	feed(t, e, pkt, outboundAddr())
 
-	sent := loop.Sent()
+	if sent := loop.Sent(); len(sent) != 0 {
+		t.Fatalf("loopback sent %d, want 0 (ECH CH never NAT'd/egresses)", len(sent))
+	}
+	sent := ft.Sent()
 	if len(sent) != 1 {
-		t.Fatalf("sent %d, want 1 (NAT-redirected, no fakes)", len(sent))
+		t.Fatalf("sent %d, want 1 (forged RST)", len(sent))
 	}
-	p, _ := parsePkt(sent[0].Data)
-	if p.dst4 != parseIP4(testClientIP, [4]byte{}) || p.dstPort != testTProxyPort {
-		t.Fatal("ECH flow not redirected to the tunnel")
+	p, ok := parsePkt(sent[0].Data)
+	if !ok {
+		t.Fatal("forged RST unparseable")
 	}
-	if c := e.Counters(); c.PacketsDesync != 0 || c.PacketsRedir != 1 {
+	if p.src4 != parseIP4(testServerIP, [4]byte{}) || p.srcPort != 443 ||
+		p.dst4 != parseIP4(testClientIP, [4]byte{}) || p.dstPort != testClientPort {
+		t.Fatalf("forged RST addresses = %v:%d→%v:%d", p.src4, p.srcPort, p.dst4, p.dstPort)
+	}
+	if p.flags&tcpFlagRST == 0 || p.flags&tcpFlagACK == 0 {
+		t.Fatalf("forged RST flags = 0x%02x", p.flags)
+	}
+	if p.seq != 1 || p.ackNum != 1000+uint32(len(ch)) {
+		t.Fatalf("forged RST seq/ack = %d/%d", p.seq, p.ackNum)
+	}
+	if !checksumsValid(sent[0].Data) {
+		t.Fatal("forged RST checksums invalid")
+	}
+	if sent[0].Addr.Outbound() {
+		t.Fatal("forged RST must be injected INBOUND")
+	}
+	if c := e.Counters(); c.PacketsDesync != 0 || c.PacketsDrop != 1 {
 		t.Fatalf("counters: %+v", c)
 	}
-	f, _ := flowOf(e, testServerIP, 443)
-	if !f.ECH || f.State.Load() != flowtable.FlowTunnel {
-		t.Fatalf("flow ECH=%v state=%d", f.ECH, f.State.Load())
+	if got := e.TunnelRedirects(); got != 1 {
+		t.Fatalf("tunnel redirects = %d, want 1", got)
+	}
+	if !e.tcache.get(parseIP4(testServerIP, [4]byte{}), 443) {
+		t.Fatal("dst not cached for redial")
+	}
+	if _, ok := flowOf(e, testServerIP, 443); ok {
+		t.Fatal("flow table kept the reset flow")
+	}
+	// The re-dial SYN rides the cached fast path straight into the tunnel.
+	h := &hookRecorder{}
+	e.SetTunnelTCP(h)
+	feed(t, e, buildTCP(testClientIP, testClientPort+1, testServerIP, 443, 7000, 0, tcpFlagSYN, nil), outboundAddr())
+	fed := h.fed()
+	if len(fed) != 1 || fed[0].Flags != tcpFlagSYN || fed[0].DstPort != 443 {
+		t.Fatalf("re-dial SYN not fast-pathed into the tunnel: %+v", fed)
 	}
 }
 
@@ -730,7 +776,10 @@ func TestRunStopGraceful(t *testing.T) {
 
 // TestConcurrentLoopsRace drives the main receive loop and the loopback
 // (reverse-NAT) loop concurrently — pinned for the race detector: both
-// goroutines touch the nat/streams maps.
+// goroutines touch the nat/streams maps. The §3.2 reset-and-redial cycle
+// populates the tables: SYN pass → CH verdict (RST + cache) → re-dial SYN
+// (fast-path NAT leg) → data (fast-path NAT leg), then loopback reply +
+// FIN reverse legs from the loop goroutine.
 func TestConcurrentLoopsRace(t *testing.T) {
 	e, ft, loop := newTestEngine(t, tunnelTestConfig(), testDesyncParams("fake", 0), true)
 
@@ -740,6 +789,7 @@ func TestConcurrentLoopsRace(t *testing.T) {
 	data := buildTCP(testClientIP, testClientPort, testTGIP, 443, 1001+uint32(len(ch)), 1, tcpFlagACK|tcpFlagPSH, []byte("payload"))
 	ft.Enqueue(syn, true)
 	ft.Enqueue(chPkt, true)
+	ft.Enqueue(syn, true) // re-dial SYN: cached dst → fast-path NAT leg
 	ft.Enqueue(data, true)
 
 	reply := buildTCP("127.0.0.1", testTProxyPort, "198.18.0.1", testClientPort, 1, 1200, tcpFlagACK|tcpFlagPSH, []byte("srv-data"))
@@ -795,3 +845,216 @@ func TestNewValidation(t *testing.T) {
 }
 
 func ptrOf(a windivert.Address) *windivert.Address { return &a }
+
+// ---------------------------------------------------------------------------
+// §3.2 reset-and-redial: CH-verdict TUNNEL
+// ---------------------------------------------------------------------------
+
+// tunnelRedialTestConfig routes one SNI to TUNNEL (the SNI-rule shape the
+// ECH finding produces; the CIDR shape is covered by TestNATRoundtripTCP).
+func tunnelRedialTestConfig() *config.Config {
+	return &config.Config{
+		Profile: "test",
+		Rules: []config.Rule{
+			{SNI: "ech.example", Action: config.ActionTunnel},
+			{Action: config.ActionDirect},
+		},
+	}
+}
+
+// TestTunnelVerdictResetsRedial (a): a multi-segment CH resolving TUNNEL
+// must (1) inject exactly one forged inbound RST|ACK from the real dst,
+// (2) cache the dst, (3) let NO held segment and NOT the CH itself egress,
+// (4) free the flow's state and (5) bump tunnelRedirect.
+func TestTunnelVerdictResetsRedial(t *testing.T) {
+	e, ft, loop := newTestEngine(t, tunnelRedialTestConfig(), testDesyncParams("fake", 0), true)
+
+	syn := buildTCP(testClientIP, testClientPort, testServerIP, 443, 1000, 0, tcpFlagSYN, nil)
+	feed(t, e, syn, outboundAddr()) // pre-verdict SYN passes to the REAL server
+
+	// Multi-segment CH: the first segment is held, the completing one
+	// fires the TUNNEL verdict.
+	ch := buildClientHello("ech.example", true)
+	cut := 10
+	seg1 := buildTCP(testClientIP, testClientPort, testServerIP, 443, 1001, 1, tcpFlagACK|tcpFlagPSH, ch[:cut])
+	seg2 := buildTCP(testClientIP, testClientPort, testServerIP, 443, 1001+uint32(cut), 1, tcpFlagACK|tcpFlagPSH, ch[cut:])
+	feed(t, e, seg1, outboundAddr())
+	if got := ft.Sent(); len(got) != 1 { // only the SYN so far
+		t.Fatalf("held CH segment leaked: %d sent", len(got)-1)
+	}
+	feed(t, e, seg2, outboundAddr())
+
+	sent := ft.Sent()
+	if len(sent) != 2 { // SYN + forged RST — held seg1 and the CH NEVER egress
+		t.Fatalf("sent %d packets, want 2 (SYN + RST); held segments must not relay", len(sent))
+	}
+	rst, ok := parsePkt(sent[1].Data)
+	if !ok {
+		t.Fatal("forged RST unparseable")
+	}
+	srv := parseIP4(testServerIP, [4]byte{})
+	cli := parseIP4(testClientIP, [4]byte{})
+	if rst.src4 != srv || rst.srcPort != 443 || rst.dst4 != cli || rst.dstPort != testClientPort {
+		t.Fatalf("RST addresses = %v:%d→%v:%d", rst.src4, rst.srcPort, rst.dst4, rst.dstPort)
+	}
+	if rst.flags&tcpFlagRST == 0 || rst.flags&tcpFlagACK == 0 {
+		t.Fatalf("RST flags = 0x%02x, want RST|ACK", rst.flags)
+	}
+	if rst.seq != 1 { // client's current ack = server's send-next
+		t.Fatalf("RST seq = %d, want 1", rst.seq)
+	}
+	if rst.ackNum != 1001+uint32(len(ch)) { // clientNext = seg2.seq + payload
+		t.Fatalf("RST ack = %d, want %d", rst.ackNum, 1001+uint32(len(ch)))
+	}
+	if !checksumsValid(sent[1].Data) {
+		t.Fatal("forged RST checksums invalid")
+	}
+	if sent[1].Addr.Outbound() || sent[1].Addr.Impostor() {
+		t.Fatal("forged RST must be inbound and not impostor-flagged")
+	}
+	if len(loop.Sent()) != 0 {
+		t.Fatalf("loopback legs for a reset flow: %d", len(loop.Sent()))
+	}
+	if !e.tcache.get(srv, 443) {
+		t.Fatal("dst not cached after the TUNNEL verdict")
+	}
+	if _, ok := flowOf(e, testServerIP, 443); ok {
+		t.Fatal("reset flow left in the flow table")
+	}
+	if e.TunnelRedirects() != 1 {
+		t.Fatalf("tunnel redirects = %d, want 1", e.TunnelRedirects())
+	}
+}
+
+// TestTunnelCacheFastPathSYN (b): a NEW client connection (fresh source
+// port — the browser's re-dial) to a cached tunnel dst enters the tunnel
+// fast path from its first SYN, with no CH exchange on the real leg.
+func TestTunnelCacheFastPathSYN(t *testing.T) {
+	e, ft, _ := newTestEngine(t, tunnelRedialTestConfig(), testDesyncParams("fake", 0), false)
+	h := &hookRecorder{}
+	e.SetTunnelTCP(h)
+
+	// Verdict pass: CH → TUNNEL → RST + cache.
+	chPkt := buildTCP(testClientIP, testClientPort, testServerIP, 443, 1000, 1, tcpFlagACK|tcpFlagPSH, buildClientHello("ech.example", true))
+	feed(t, e, chPkt, outboundAddr())
+	if n := len(ft.Sent()); n != 1 {
+		t.Fatalf("precondition: %d sent, want 1 (forged RST)", n)
+	}
+
+	// Re-dial from a NEW client port: straight into the terminator.
+	redial := buildTCP(testClientIP, testClientPort+1, testServerIP, 443, 7000, 0, tcpFlagSYN, nil)
+	feed(t, e, redial, outboundAddr())
+
+	fed := h.fed()
+	if len(fed) != 1 {
+		t.Fatalf("hook fed %d packets, want 1 (the re-dial SYN)", len(fed))
+	}
+	p := fed[0]
+	if p.Flags != tcpFlagSYN || p.SrcPort != testClientPort+1 || p.DstPort != 443 ||
+		p.Seq != 7000 || p.DstIP != parseIP4(testServerIP, [4]byte{}) {
+		t.Fatalf("hook packet = %+v", p)
+	}
+	if n := len(ft.Sent()); n != 1 {
+		t.Fatalf("re-dial SYN leaked to the network: %d sent", n)
+	}
+	k := flowtable.FlowKey{
+		SrcIP:   v4mapped(parseIP4(testClientIP, [4]byte{})),
+		DstIP:   v4mapped(parseIP4(testServerIP, [4]byte{})),
+		SrcPort: testClientPort + 1, DstPort: 443, Proto: protoTCP,
+	}
+	if f, ok := e.Flows().Get(k); !ok || f.State.Load() != flowtable.FlowTunnel {
+		t.Fatalf("re-dial flow state = %v ok=%v, want FlowTunnel", f, ok)
+	}
+}
+
+// TestTunnelCacheExpiryFallsBackToInspect (c): once the cache entry's
+// deadline passed, a SYN to the same dst takes the ordinary branch again
+// (flow NEW, passed to the network, terminator NOT fed).
+func TestTunnelCacheExpiryFallsBackToInspect(t *testing.T) {
+	e, ft, _ := newTestEngine(t, tunnelRedialTestConfig(), testDesyncParams("fake", 0), false)
+	h := &hookRecorder{}
+	e.SetTunnelTCP(h)
+
+	chPkt := buildTCP(testClientIP, testClientPort, testServerIP, 443, 1000, 1, tcpFlagACK|tcpFlagPSH, buildClientHello("ech.example", true))
+	feed(t, e, chPkt, outboundAddr())
+	if !e.tcache.get(parseIP4(testServerIP, [4]byte{}), 443) {
+		t.Fatal("precondition: dst not cached")
+	}
+
+	// Force the deadline into the past (package-internal: expire the entry
+	// exactly as the 60s TTL would).
+	srv := parseIP4(testServerIP, [4]byte{})
+	past := time.Now().Add(-time.Second).UnixNano()
+	for bi := range e.tcache.buckets {
+		for wi := range e.tcache.buckets[bi] {
+			if ent := &e.tcache.buckets[bi][wi]; ent.ip == srv && ent.port == 443 {
+				ent.exp.Store(past)
+			}
+		}
+	}
+
+	late := buildTCP(testClientIP, testClientPort+1, testServerIP, 443, 8000, 0, tcpFlagSYN, nil)
+	feed(t, e, late, outboundAddr())
+
+	if fed := h.fed(); len(fed) != 0 {
+		t.Fatalf("expired cache entry fast-pathed the SYN: %d fed", len(fed))
+	}
+	sent := ft.Sent()
+	if len(sent) != 2 { // forged RST + the late SYN passed through
+		t.Fatalf("sent %d packets, want 2 (RST + passed SYN)", len(sent))
+	}
+	if sp, ok := parsePkt(sent[1].Data); !ok || sp.seq != 8000 || !sp.syn() {
+		t.Fatal("late SYN not passed through the ordinary branch")
+	}
+	k := flowtable.FlowKey{
+		SrcIP:   v4mapped(parseIP4(testClientIP, [4]byte{})),
+		DstIP:   v4mapped(srv),
+		SrcPort: testClientPort + 1, DstPort: 443, Proto: protoTCP,
+	}
+	if f, ok := e.Flows().Get(k); !ok || f.State.Load() != flowtable.FlowNew {
+		t.Fatalf("late SYN flow state = %v ok=%v, want FlowNew (inspect pipeline)", f, ok)
+	}
+}
+
+// TestProcessUDPBlockQuic443 verifies the PRD §5 QUIC block end-to-end on
+// the capture hot path: a udp/443 datagram under a proto-scoped block rule
+// is DROPPED (counted, never re-injected — the browser falls back to TCP),
+// while udp on another port and a TCP:443 SYN are passed untouched.
+func TestProcessUDPBlockQuic443(t *testing.T) {
+	cfg := &config.Config{
+		Profile: "quic-block",
+		Rules: []config.Rule{
+			{Ports: "443", Proto: config.ProtoUDP, Action: config.ActionBlock},
+			{Action: config.ActionDirect},
+		},
+	}
+	e, ft, _ := newTestEngine(t, cfg, testDesyncParams("fake", 0), false)
+
+	// QUIC Initial to :443 → BLOCK → drop.
+	quic := buildUDP(testClientIP, testClientPort, testServerIP, 443, []byte("fake-quic-initial"))
+	feed(t, e, quic, outboundAddr())
+	// UDP to another port → pass.
+	dns := buildUDP(testClientIP, testClientPort, testServerIP, 53, []byte("dns-query"))
+	feed(t, e, dns, outboundAddr())
+	// TCP:443 SYN → the udp rule is invisible to the TCP path → pass.
+	syn := buildTCP(testClientIP, testClientPort, testServerIP, 443, 1000, 0, tcpFlagSYN, nil)
+	feed(t, e, syn, outboundAddr())
+
+	sent := ft.Sent()
+	if len(sent) != 2 {
+		t.Fatalf("sent %d packets, want 2 (dns + syn; the QUIC datagram must be dropped)", len(sent))
+	}
+	if got := sent[0].Data; len(got) != len(dns) {
+		t.Errorf("sent[0] is not the udp:53 datagram (%d bytes)", len(got))
+	}
+	if got := sent[1].Data; len(got) != len(syn) {
+		t.Errorf("sent[1] is not the tcp:443 SYN (%d bytes)", len(got))
+	}
+	cnt := e.Counters()
+	if cnt.PacketsDrop != 1 {
+		t.Errorf("PacketsDrop = %d, want 1", cnt.PacketsDrop)
+	}
+	if cnt.PacketsPass != 2 {
+		t.Errorf("PacketsPass = %d, want 2", cnt.PacketsPass)
+	}
+}

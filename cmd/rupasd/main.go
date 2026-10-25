@@ -13,17 +13,43 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
+	"unsafe"
 
 	"github.com/rupas/rupas/internal/app"
 	"github.com/rupas/rupas/internal/config"
 	"github.com/rupas/rupas/internal/rpc"
 )
 
+// acquireSingleInstanceLock refuses to start a second rupasd on the same
+// machine: two daemons share one WinDivert stack and one control pipe
+// (named pipes allow unlimited instances), splitting commands/statuses at
+// random and fighting over interception - a live field incident.
+const singleInstanceMutex = "Global\\rupasd-single"
+
+var kernel32SI = syscall.NewLazyDLL("kernel32.dll")
+
+func acquireSingleInstanceLock(name string) bool {
+	p, _ := syscall.UTF16PtrFromString(name)
+	r1, _, err := kernel32SI.NewProc("CreateMutexW").Call(0, 1, uintptr(unsafe.Pointer(p)))
+	if r1 == 0 {
+		return false
+	}
+	// Proc.Call's err is the thread's last-error value; for an existing mutex
+	// it is ERROR_ALREADY_EXISTS (GetLastError() is unreliable after Call).
+	if err == syscall.ERROR_ALREADY_EXISTS {
+		syscall.CloseHandle(syscall.Handle(r1))
+		return false
+	}
+	return true
+}
+
 func main() {
 	configPath := flag.String("config", "", "path to the rupas YAML config (default: ./config.yaml, falling back to the built-in profile)")
 	pipePath := flag.String("pipe", rpc.DefaultPipe, "control named pipe path")
 	tunnel := flag.String("tunnel", "on", "tunnel branch: on = NAT-redirect TUNNEL-rule flows (TG CIDRs, UDP relay, ECH) to the loopback tproxy and relay them through the configured VLESS+Reality endpoint (empty endpoint: TUNNEL rules escalate to sni→desync / cidr,port→direct, logged and counted); off = demote TUNNEL rules to direct, no NAT")
 	verbose := flag.Bool("verbose", false, "chatty logging on stderr")
+	chlog := flag.Bool("chlog", true, "log every ClientHello decision (sni/ech/dst/verdict) — TSPU-shape diagnostics; TEMPORARY verbose mode, default ON for the debugging phase (pass -chlog=false to silence the hot path)")
 	flag.Parse()
 
 	var tunnelOn bool
@@ -38,6 +64,10 @@ func main() {
 	}
 
 	logger := log.New(os.Stderr, "rupasd ", log.LstdFlags|log.Lmicroseconds)
+	if !acquireSingleInstanceLock(singleInstanceMutex) {
+		logger.Printf("another rupasd instance is already running; exiting - stop it first (rupasctl off, then close the old daemon)")
+		os.Exit(3)
+	}
 	if *verbose {
 		logger.SetFlags(log.LstdFlags | log.Lmicroseconds | log.Lshortfile)
 	}
@@ -51,6 +81,7 @@ func main() {
 	// app's Pipeline; probes classify the path and re-profile desync.
 	application, err := app.New(cfg, logger, app.Options{
 		Tunnel: tunnelOn,
+		ChLog:  *chlog,
 	})
 	if err != nil {
 		logger.Fatalf("app: %v", err)

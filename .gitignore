@@ -1,6 +1,24 @@
-build/lab/
+# Build artifacts: binaries only — build/ also holds runtime assets
+# (WinDivert.dll/.sys, desync fake templates) that MUST stay tracked.
+*.exe
+*.exe~
+*.dll
+*.sys
+!build/WinDivert.dll
+!build/WinDivert64.sys
+!build/windivert/**
+
+# Runtime logs, diagnostics captures, ad-hoc dumps.
+*.log
+*.out
+*.err
+*.txt
 *.pcap
-configs/rupas.yaml
-build/*.log
-configs/diag.yaml
+build/lab/
 goroutines.txt
+
+# Real configs and their backups carry secrets (uuid / password).
+configs/rupas.yaml
+configs/rupas.yaml.bak
+configs/*.bak
+configs/diag.yaml

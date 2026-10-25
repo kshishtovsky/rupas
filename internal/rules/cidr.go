@@ -14,13 +14,15 @@ import (
 type cidrNode struct {
 	child [2]*cidrNode
 	act   config.Action
+	proto protoID // protocol scope of the rule that set act
 	has   bool
 }
 
-// insertCIDR parses cidr and inserts act for its prefix. IPv4 prefixes
-// (including v4-mapped notation) go into the v4 trie, IPv6 into the v6
-// trie. If the same prefix is inserted twice, the first insertion wins.
-func (t *Table) insertCIDR(cidr string, act config.Action) error {
+// insertCIDR parses cidr and inserts act for its prefix, scoped to proto
+// (protoAnyID / protoTCPID / protoUDPID). IPv4 prefixes (including
+// v4-mapped notation) go into the v4 trie, IPv6 into the v6 trie. If the
+// same prefix is inserted twice, the first insertion wins.
+func (t *Table) insertCIDR(cidr string, act config.Action, proto protoID) error {
 	_, ipnet, err := net.ParseCIDR(cidr)
 	if err != nil {
 		return err
@@ -37,14 +39,14 @@ func (t *Table) insertCIDR(cidr string, act config.Action) error {
 		}
 	}
 	if len(ip) == net.IPv4len {
-		t.root4 = insertPrefix(t.root4, ip, ones, act)
+		t.root4 = insertPrefix(t.root4, ip, ones, act, proto)
 	} else {
-		t.root6 = insertPrefix(t.root6, ip, ones, act)
+		t.root6 = insertPrefix(t.root6, ip, ones, act, proto)
 	}
 	return nil
 }
 
-func insertPrefix(root *cidrNode, ip []byte, ones int, act config.Action) *cidrNode {
+func insertPrefix(root *cidrNode, ip []byte, ones int, act config.Action, proto protoID) *cidrNode {
 	if root == nil {
 		root = &cidrNode{}
 	}
@@ -53,7 +55,7 @@ func insertPrefix(root *cidrNode, ip []byte, ones int, act config.Action) *cidrN
 	for _, b := range ip {
 		for i := 7; i >= 0; i-- {
 			if bit == ones {
-				setIfFree(n, act)
+				setIfFree(n, act, proto)
 				return root
 			}
 			d := (b >> uint(i)) & 1
@@ -64,24 +66,26 @@ func insertPrefix(root *cidrNode, ip []byte, ones int, act config.Action) *cidrN
 			bit++
 		}
 	}
-	setIfFree(n, act)
+	setIfFree(n, act, proto)
 	return root
 }
 
-func setIfFree(n *cidrNode, act config.Action) {
+func setIfFree(n *cidrNode, act config.Action, proto protoID) {
 	if !n.has {
 		n.has = true
 		n.act = act
+		n.proto = proto
 	}
 }
 
 // matchCIDR dispatches to the v4 trie for v4-mapped addresses, else to
-// the v6 trie, and returns the longest matching prefix's action.
-func (t *Table) matchCIDR(ip [16]byte) (config.Action, bool) {
+// the v6 trie, and returns the action of the deepest prefix whose proto
+// scope answers query q.
+func (t *Table) matchCIDR(ip [16]byte, q protoID) (config.Action, bool) {
 	if isV4Mapped(ip) {
-		return matchTrie(t.root4, ip[12:])
+		return matchTrie(t.root4, ip[12:], q)
 	}
-	return matchTrie(t.root6, ip[:])
+	return matchTrie(t.root6, ip[:], q)
 }
 
 func isV4Mapped(ip [16]byte) bool {
@@ -103,15 +107,17 @@ func isV4MappedBytes(ip []byte) bool {
 }
 
 // matchTrie walks the trie bit by bit remembering the deepest node that
-// carries an action (longest-prefix match). Allocation-free.
-func matchTrie(root *cidrNode, ip []byte) (config.Action, bool) {
+// carries an action whose proto scope answers query q (longest-prefix
+// match; a proto-scoped node is skipped for a query of the other protocol
+// and the walk continues toward shorter prefixes). Allocation-free.
+func matchTrie(root *cidrNode, ip []byte, q protoID) (config.Action, bool) {
 	n := root
 	if n == nil {
 		return 0, false
 	}
 	var best config.Action
 	var found bool
-	if n.has {
+	if n.has && protoOK(q, n.proto) {
 		best, found = n.act, true
 	}
 	for _, b := range ip {
@@ -120,7 +126,7 @@ func matchTrie(root *cidrNode, ip []byte) (config.Action, bool) {
 			if n == nil {
 				return best, found
 			}
-			if n.has {
+			if n.has && protoOK(q, n.proto) {
 				best, found = n.act, true
 			}
 		}

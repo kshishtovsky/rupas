@@ -22,35 +22,46 @@ func Compile(cfg *config.Config) (*Table, error) {
 		return nil, fmt.Errorf("rules: invalid config: %w", err)
 	}
 	t := &Table{
-		sniExact: make(map[string]config.Action),
-		sniWild:  make(map[string]config.Action),
+		sniExact: make(map[sniKey]config.Action),
+		sniWild:  make(map[sniKey]config.Action),
 		def:      config.ActionDirect,
 	}
 	for i, cidr := range cfg.Exclusions.CIDRs {
-		if err := t.insertCIDR(cidr, config.ActionDirect); err != nil {
+		if err := t.insertCIDR(cidr, config.ActionDirect, protoAnyID); err != nil {
 			return nil, fmt.Errorf("rules: exclusion cidr %d: %w", i, err)
 		}
 	}
 	for _, d := range cfg.Exclusions.Domains {
-		t.addSNI(d, config.ActionDirect)
+		t.addSNI(d, config.ActionDirect, protoAnyID)
 	}
 	defaults := 0
-	var spans []portSpan
+	var spansAny, spansTCP, spansUDP []portSpan
 	for i, r := range cfg.Rules {
+		proto, err := protoIDOf(r.Proto)
+		if err != nil {
+			return nil, fmt.Errorf("rules: rule %d: %v", i, err)
+		}
 		switch {
 		case r.CIDR != "":
-			if err := t.insertCIDR(r.CIDR, r.Action); err != nil {
+			if err := t.insertCIDR(r.CIDR, r.Action, proto); err != nil {
 				return nil, fmt.Errorf("rules: rule %d: bad cidr %q: %v", i, r.CIDR, err)
 			}
 		case r.SNI != "":
-			t.addSNI(r.SNI, r.Action)
+			t.addSNI(r.SNI, r.Action, proto)
 		case r.Ports != "":
 			rs, err := config.ParsePortSpec(r.Ports)
 			if err != nil {
 				return nil, fmt.Errorf("rules: rule %d: %v", i, err)
 			}
+			dst := &spansAny
+			switch proto {
+			case protoTCPID:
+				dst = &spansTCP
+			case protoUDPID:
+				dst = &spansUDP
+			}
 			for _, pr := range rs {
-				spans = append(spans, portSpan{lo: pr.Lo, hi: pr.Hi, act: r.Action})
+				*dst = append(*dst, portSpan{lo: pr.Lo, hi: pr.Hi, act: r.Action})
 			}
 		default:
 			defaults++
@@ -60,30 +71,47 @@ func Compile(cfg *config.Config) (*Table, error) {
 	if defaults > 1 {
 		return nil, errors.New("rules: multiple default rules")
 	}
-	if len(spans) > 0 {
-		sort.Slice(spans, func(i, j int) bool { return spans[i].lo < spans[j].lo })
-		for i := 1; i < len(spans); i++ {
-			if spans[i].lo <= spans[i-1].hi {
-				return nil, fmt.Errorf("rules: overlapping port spans [%d,%d] and [%d,%d]",
-					spans[i-1].lo, spans[i-1].hi, spans[i].lo, spans[i].hi)
-			}
+	// Overlap is an error only WITHIN a bucket: same-protocol spans must
+	// be disjoint (ambiguous resolution), while spans of different scopes
+	// may share ports by design (e.g. udp:443 block next to tcp:443).
+	for name, spans := range map[string][]portSpan{"ports": spansAny, "tcp ports": spansTCP, "udp ports": spansUDP} {
+		if err := sortAndCheck(spans); err != nil {
+			return nil, fmt.Errorf("rules: %s: %v", name, err)
 		}
 	}
-	t.ports = spans
+	t.ports, t.portsTCP, t.portsUDP = spansAny, spansTCP, spansUDP
 	return t, nil
 }
 
+// sortAndCheck sorts spans by lo and rejects overlaps (the resolution
+// within one bucket would otherwise be order-dependent).
+func sortAndCheck(spans []portSpan) error {
+	if len(spans) < 2 {
+		return nil
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i].lo < spans[j].lo })
+	for i := 1; i < len(spans); i++ {
+		if spans[i].lo <= spans[i-1].hi {
+			return fmt.Errorf("overlapping port spans [%d,%d] and [%d,%d]",
+				spans[i-1].lo, spans[i-1].hi, spans[i].lo, spans[i].hi)
+		}
+	}
+	return nil
+}
+
 // addSNI registers sni (already validated and lower-cased) as an exact
-// entry or, for "*.suffix" form, as a wildcard-suffix entry. On a
-// duplicate key the first registration wins.
-func (t *Table) addSNI(sni string, act config.Action) {
+// entry or, for "*.suffix" form, as a wildcard-suffix entry, scoped to
+// proto. On a duplicate key the first registration wins.
+func (t *Table) addSNI(sni string, act config.Action, proto protoID) {
+	key := sniKey{sni: sni, proto: proto}
 	if suffix, ok := strings.CutPrefix(sni, "*."); ok {
-		if _, exists := t.sniWild[suffix]; !exists {
-			t.sniWild[suffix] = act
+		key.sni = suffix
+		if _, exists := t.sniWild[key]; !exists {
+			t.sniWild[key] = act
 		}
 		return
 	}
-	if _, exists := t.sniExact[sni]; !exists {
-		t.sniExact[sni] = act
+	if _, exists := t.sniExact[key]; !exists {
+		t.sniExact[key] = act
 	}
 }

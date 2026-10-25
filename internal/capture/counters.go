@@ -12,17 +12,18 @@ import (
 // increment is a single atomic add, no locks, no allocation. Snapshot()
 // renders it into the plain struct consumed by rpc/diag (cold path).
 type counters struct {
-	packetsTotal  atomic.Uint64
-	packetsPass   atomic.Uint64
-	packetsDesync atomic.Uint64
-	packetsRedir  atomic.Uint64
-	packetsDrop   atomic.Uint64
-	handshakeOK   atomic.Uint64
-	handshakeFail atomic.Uint64
-	tunnelRx      atomic.Uint64
-	tunnelTx      atomic.Uint64
-	sendErrors    atomic.Uint64
-	parseErrors   atomic.Uint64
+	packetsTotal   atomic.Uint64
+	packetsPass    atomic.Uint64
+	packetsDesync  atomic.Uint64
+	packetsRedir   atomic.Uint64
+	packetsDrop    atomic.Uint64
+	handshakeOK    atomic.Uint64
+	handshakeFail  atomic.Uint64
+	tunnelRx       atomic.Uint64
+	tunnelTx       atomic.Uint64
+	tunnelRedirect atomic.Uint64
+	sendErrors     atomic.Uint64
+	parseErrors    atomic.Uint64
 }
 
 // countVerdict bumps the per-verdict counters for a processed packet.

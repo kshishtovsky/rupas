@@ -10,17 +10,39 @@ rules:
   - sni: "*.googlevideo.com"
     action: desync
   - sni: discord.com
-    action: desync
+    action: tunnel
+  - sni: updates.discord.com
+    action: tunnel
   - sni: gateway.discord.gg
-    action: desync
+    action: tunnel
+  - sni: discord.gg
+    action: tunnel
+  - sni: "*.discord.gg"
+    action: tunnel
+  - sni: discordapp.com
+    action: tunnel
+  - sni: "*.discordapp.com"
+    action: tunnel
+  - sni: discordapp.net
+    action: tunnel
+  - sni: "*.discordapp.net"
+    action: tunnel
   - cidr: 149.154.160.0/20    # Telegram: IP-blackholed → tunnel (§3.3)
     action: tunnel
   - cidr: 91.108.0.0/16
+    action: tunnel
+  - cidr: 91.105.192.0/23     # Telegram media servers → tunnel
+    action: tunnel
+  - cidr: 185.76.151.0/24     # Telegram media servers → tunnel
     action: tunnel
   - cidr: 95.161.76.100/32
     action: tunnel
   - ports: 50000-65535        # Discord voice UDP is dead → tunnel (XUDP)
     action: tunnel
+  # QUIC: TSPU blackholes googlevideo with 420s residual censorship — force browsers to TCP (PRD §5)
+  - ports: 443
+    proto: udp
+    action: block
   - action: direct            # default rule (at most one)
 
 desync:

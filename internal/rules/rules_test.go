@@ -48,7 +48,10 @@ func TestMatchDefaultProfile(t *testing.T) {
 		{"wildcard two labels deep", v4(1, 2, 3, 4), "rr2---sn-ab.googlevideo.com", 443, config.ActionDesync},
 		// Wildcards match at label boundaries only.
 		{"wildcard no bare apex", v4(1, 2, 3, 4), "googlevideo.com", 443, config.ActionDirect},
-		{"wildcard no substring", v4(1, 2, 3, 4), "xgateway.discord.gg", 443, config.ActionDirect},
+		// "xgateway.discord.gg" does NOT substring-match the
+		// gateway.discord.gg exact entry — but the wave-7 "*.discord.gg"
+		// wildcard legitimately hits the discord.gg label boundary.
+		{"no exact substring", v4(1, 2, 3, 4), "xgateway.discord.gg", 443, config.ActionDesync},
 		{"no sni youtube video cdn", v4(142, 250, 185, 78), "example.com", 443, config.ActionDirect},
 		// Discord voice UDP range.
 		{"udp 50000", v4(66, 22, 224, 1), "", 50000, config.ActionTunnel},
@@ -267,4 +270,113 @@ func TestMatchConcurrent(t *testing.T) {
 		}(g)
 	}
 	wg.Wait()
+}
+
+// TestMatchProtoSpecificity locks the proto dimension: a rule scoped to
+// udp fires ONLY for UDP queries, tcp only for TCP; unscoped rules match
+// both; an any-query (legacy Match) sees every entry.
+func TestMatchProtoSpecificity(t *testing.T) {
+	cfg := &config.Config{
+		Profile: "proto",
+		Rules: []config.Rule{
+			{Ports: "443", Proto: config.ProtoUDP, Action: config.ActionBlock},
+			{Ports: "8080", Proto: config.ProtoTCP, Action: config.ActionTunnel},
+			{CIDR: "10.0.0.0/8", Proto: config.ProtoUDP, Action: config.ActionTunnel},
+			{SNI: "udp-only.example.com", Proto: config.ProtoUDP, Action: config.ActionBlock},
+			{SNI: "*.any-proto.example", Action: config.ActionTunnel},
+			{Action: config.ActionDirect},
+		},
+	}
+	tbl, err := Compile(cfg)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	ip := v4(93, 184, 216, 34)
+	ten := v4(10, 1, 2, 3)
+	tests := []struct {
+		name  string
+		ip    [16]byte
+		sni   string
+		port  uint16
+		proto string
+		want  config.Action
+	}{
+		{"udp 443 blocked", ip, "", 443, config.ProtoUDP, config.ActionBlock},
+		{"tcp 443 ignores udp rule", ip, "", 443, config.ProtoTCP, config.ActionDirect},
+		{"any 443 sees block", ip, "", 443, config.ProtoAny, config.ActionBlock},
+		{"tcp 8080 tunnel", ip, "", 8080, config.ProtoTCP, config.ActionTunnel},
+		{"udp 8080 ignores tcp rule", ip, "", 8080, config.ProtoUDP, config.ActionDirect},
+		{"udp cidr hit", ten, "", 1234, config.ProtoUDP, config.ActionTunnel},
+		{"tcp skips udp cidr (default)", ten, "", 1234, config.ProtoTCP, config.ActionDirect},
+		{"udp sni hit", ip, "udp-only.example.com", 9999, config.ProtoUDP, config.ActionBlock},
+		{"tcp skips udp sni", ip, "udp-only.example.com", 9999, config.ProtoTCP, config.ActionDirect},
+		{"tcp any-proto wildcard", ip, "a.any-proto.example", 9999, config.ProtoTCP, config.ActionTunnel},
+		{"udp any-proto wildcard", ip, "a.any-proto.example", 9999, config.ProtoUDP, config.ActionTunnel},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tbl.MatchProto(tt.ip, tt.sni, tt.port, tt.proto); got != tt.want {
+				t.Errorf("MatchProto(%v, %q, %d, %q) = %v, want %v",
+					tt.ip, tt.sni, tt.port, tt.proto, got, tt.want)
+			}
+		})
+	}
+	// Legacy Match (any-proto) still answers and sees scoped entries.
+	if got := tbl.Match(ip, "", 443); got != config.ActionBlock {
+		t.Errorf("Match any 443 = %v, want BLOCK", got)
+	}
+}
+
+// TestCIDRBeatsScopedPorts locks §4.2 order across the proto dimension:
+// a CIDR rule resolves BEFORE a proto-scoped ports rule, so UDP:443 to a
+// TG CIDR stays TUNNEL even with the QUIC block on udp/443 (PRD §5).
+func TestCIDRBeatsScopedPorts(t *testing.T) {
+	cfg := &config.Config{
+		Profile: "cidr-vs-quic",
+		Rules: []config.Rule{
+			{CIDR: "149.154.160.0/20", Action: config.ActionTunnel},
+			{Ports: "443", Proto: config.ProtoUDP, Action: config.ActionBlock},
+			{Action: config.ActionDirect},
+		},
+	}
+	tbl, err := Compile(cfg)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	tg := v4(149, 154, 167, 51)
+	other := v4(93, 184, 216, 34)
+	if got := tbl.MatchProto(tg, "", 443, config.ProtoUDP); got != config.ActionTunnel {
+		t.Errorf("udp 443 inside TG CIDR = %v, want TUNNEL (CIDR before ports)", got)
+	}
+	if got := tbl.MatchProto(tg, "", 443, config.ProtoTCP); got != config.ActionTunnel {
+		t.Errorf("tcp 443 inside TG CIDR = %v, want TUNNEL", got)
+	}
+	if got := tbl.MatchProto(other, "", 443, config.ProtoUDP); got != config.ActionBlock {
+		t.Errorf("udp 443 outside TG CIDR = %v, want BLOCK", got)
+	}
+	if got := tbl.MatchProto(other, "", 443, config.ProtoTCP); got != config.ActionDirect {
+		t.Errorf("tcp 443 outside TG CIDR = %v, want DIRECT (default)", got)
+	}
+}
+
+// TestCompileScopedPortOverlap: overlapping spans are an error only within
+// the same proto scope; udp:443 and tcp:443 coexist.
+func TestCompileScopedPortOverlap(t *testing.T) {
+	base := []config.Rule{
+		{Ports: "443", Proto: config.ProtoUDP, Action: config.ActionBlock},
+		{Ports: "443", Proto: config.ProtoTCP, Action: config.ActionTunnel},
+		{Action: config.ActionDirect},
+	}
+	cfg := &config.Config{Profile: "scoped-443", Rules: base}
+	if _, err := Compile(cfg); err != nil {
+		t.Fatalf("same port, different scopes: unexpected error %v", err)
+	}
+	cfg = &config.Config{Profile: "same-scope", Rules: []config.Rule{
+		{Ports: "443", Proto: config.ProtoUDP, Action: config.ActionBlock},
+		{Ports: "443", Proto: config.ProtoUDP, Action: config.ActionDirect},
+		{Action: config.ActionDirect},
+	}}
+	if _, err := Compile(cfg); err == nil || !strings.Contains(err.Error(), "overlapping") {
+		t.Fatalf("same-scope overlap: expected overlapping error, got %v", err)
+	}
 }

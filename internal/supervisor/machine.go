@@ -101,6 +101,7 @@ const (
 	evProbeDone                    // core.EventProbeDone / internal probe completion
 	evProbeDue                     // internal: backoff/initial probe timer fired
 	evReload                       // internal: config reload (intercepted by the loop)
+	evFastStart                    // internal: cmdOn with a fresh persisted profile (§4.3)
 )
 
 func (k eventKind) String() string {
@@ -123,6 +124,8 @@ func (k eventKind) String() string {
 		return "probeDue"
 	case evReload:
 		return "reload"
+	case evFastStart:
+		return "fastStart"
 	}
 	return "unknown"
 }
@@ -138,11 +141,14 @@ type ProbeOutcome struct {
 
 // event is what drives the machine. cfg is only used by evReload, which the
 // supervisor loop intercepts before step(); the machine itself never reads it.
+// fast is only used by evFastStart: the supervisor loop reads it to start the
+// pipeline with the persisted desync parameters.
 type event struct {
 	kind    eventKind
 	note    string
 	outcome ProbeOutcome
 	cfg     *config.Config
+	fast    *FastStart
 }
 
 type actionKind uint8
@@ -156,6 +162,9 @@ const (
 	actStopPipeline
 	// actStartProbe launches a probe cycle now.
 	actStartProbe
+	// actStartRevalidate launches the light background revalidation
+	// probe after a fast start (one control probe on the saved t*).
+	actStartRevalidate
 	// actScheduleProbe arms the one-shot probe timer; delay is the base
 	// delay before jitter.
 	actScheduleProbe
@@ -169,6 +178,8 @@ func (a actionKind) String() string {
 		return "stopPipeline"
 	case actStartProbe:
 		return "startProbe"
+	case actStartRevalidate:
+		return "startRevalidate"
 	case actScheduleProbe:
 		return "scheduleProbe"
 	}
@@ -247,6 +258,20 @@ func (m *machine) escalated(h Hysteresis) bool {
 //     through DEGRADED (classification is already in flight).
 func step(m machine, ev event, now time.Time, h Hysteresis) (machine, []action, bool) {
 	switch ev.kind {
+	case evFastStart:
+		// cmdOn with a fresh persisted profile (§4.3 fast start): skip
+		// PROBING entirely — the pipeline starts with the saved desync
+		// parameters and a background revalidation probe (§7.3) either
+		// confirms the profile or arrives as a normal degradation event
+		// scheduling the full recalibration.
+		switch m.state {
+		case StateOff:
+			m2 := m.to(StateActive, now)
+			return m2, []action{{kind: actStartPipeline}, {kind: actStartRevalidate}}, true
+		default: // already on: nothing to fast-start
+			return m, nil, false
+		}
+
 	case evCmdOn:
 		switch m.state {
 		case StateOff:

@@ -396,16 +396,21 @@ func TestFeedSynthetic(t *testing.T) {
 			wantECH:  true,
 		},
 		{
-			name:    "ech_legacy_ff0d",
+			name:    "ech_grease_single_byte_ff0d_not_ech",
 			ch:      synthCH{exts: extBytes(extECHLegacy, []byte{0})}.build(),
-			wantECH: true,
+			wantECH: false,
 		},
 		{
-			name: "both_ech_codepoints",
+			name: "ech_grease_single_bytes_both_codepoints_not_ech",
 			ch: synthCH{exts: concat(
 				extBytes(extECH, []byte{0}),
 				extBytes(extECHLegacy, []byte{0}),
 			)}.build(),
+			wantECH: false,
+		},
+		{
+			name:    "ech_real_payload_is_ech",
+			ch:      synthCH{exts: extBytes(extECH, make([]byte, 256))}.build(),
 			wantECH: true,
 		},
 		{

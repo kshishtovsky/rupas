@@ -329,6 +329,45 @@ func TestGCSweep(t *testing.T) {
 	}
 }
 
+// TestGCTunnelFlowsSurvive verifies the wave-7 exemption: a TUNNEL flow
+// that has gone idle is NOT collected by gcSweep (it must live until
+// FIN/RST teardown or the terminator clears it), while idle DIRECT and
+// never-touched flows are reaped exactly as before.
+func TestGCTunnelFlowsSurvive(t *testing.T) {
+	ft := NewWithShardBits(2) // 4 shards: full ring pass like TestGCSweep
+	const idle = 10 * time.Millisecond
+	for nowNanos() < 2*int64(idle) {
+		time.Sleep(idle / 2)
+	}
+
+	tunnel := ft.GetOrCreate(genKey(21)) // idle TUNNEL — must survive
+	tunnel.State.Store(FlowTunnel)
+	old := nowNanos() - 3*idle.Nanoseconds()
+	tunnel.SynT, tunnel.DataT, tunnel.EstT = old, old, old
+
+	idleDirect := ft.GetOrCreate(genKey(22)) // idle DIRECT — reaped
+	idleDirect.State.Store(FlowDirect)
+
+	ft.GetOrCreate(genKey(23)) // never-touched — reaped
+
+	removed := ft.gcSweep(idle) // full ring pass over all 4 shards
+	removed += ft.gcSweep(idle) // shard 1
+	removed += ft.gcSweep(idle) // shard 2
+	removed += ft.gcSweep(idle) // shard 3
+	if removed != 2 {
+		t.Errorf("gcSweep removed %d flows, want 2 (idle-direct + never-touched)", removed)
+	}
+	if _, ok := ft.Get(genKey(21)); !ok {
+		t.Error("idle TUNNEL flow was collected — wave-7 GC exemption missing")
+	}
+	if _, ok := ft.Get(genKey(22)); ok {
+		t.Error("idle DIRECT flow survived GC")
+	}
+	if _, ok := ft.Get(genKey(23)); ok {
+		t.Error("never-touched flow survived GC")
+	}
+}
+
 func TestGCBackground(t *testing.T) {
 	ft := NewWithShardBits(1)
 	const idle = 20 * time.Millisecond

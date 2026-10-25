@@ -31,6 +31,9 @@ const (
 	ActionTunnel
 	// ActionDirect passes the flow through untouched.
 	ActionDirect
+	// ActionBlock drops the matched packet (PRD §5: block QUIC/UDP so
+	// browsers fall back to TCP). Never re-injected.
+	ActionBlock
 )
 
 // String returns the canonical upper-case action name.
@@ -42,6 +45,8 @@ func (a Action) String() string {
 		return "TUNNEL"
 	case ActionDirect:
 		return "DIRECT"
+	case ActionBlock:
+		return "BLOCK"
 	default:
 		return "INVALID"
 	}
@@ -50,7 +55,7 @@ func (a Action) String() string {
 // MarshalYAML encodes the action as a lower-case YAML string.
 func (a Action) MarshalYAML() (any, error) {
 	switch a {
-	case ActionDesync, ActionTunnel, ActionDirect:
+	case ActionDesync, ActionTunnel, ActionDirect, ActionBlock:
 		return strings.ToLower(a.String()), nil
 	default:
 		return nil, fmt.Errorf("config: cannot marshal invalid action %d", uint8(a))
@@ -70,8 +75,10 @@ func (a *Action) UnmarshalYAML(value *yaml.Node) error {
 		*a = ActionTunnel
 	case "direct":
 		*a = ActionDirect
+	case "block":
+		*a = ActionBlock
 	default:
-		return fmt.Errorf("config: invalid action %q (want desync|tunnel|direct)", s)
+		return fmt.Errorf("config: invalid action %q (want desync|tunnel|direct|block)", s)
 	}
 	return nil
 }
@@ -348,12 +355,34 @@ type Exclusions struct {
 
 // Rule routes traffic to an Action by exactly one matcher: cidr, sni or
 // ports. A rule with no matcher is the default rule (at most one allowed).
-// Resolution order is fixed by SYSTEM_DESIGN §4.2: CIDR → SNI → port → default.
+// Proto narrows the rule to one transport protocol ("tcp" | "udp"); empty
+// matches both. Resolution order is fixed by SYSTEM_DESIGN §4.2:
+// CIDR → SNI → port → default.
 type Rule struct {
 	CIDR   string `yaml:"cidr,omitempty"`
 	SNI    string `yaml:"sni,omitempty"`   // exact name or "*.suffix" wildcard
 	Ports  string `yaml:"ports,omitempty"` // "443", "50000-65535", "53,123"
+	Proto  string `yaml:"proto,omitempty"` // "", "tcp" or "udp"
 	Action Action `yaml:"action"`
+}
+
+// Transport protocol selector values for Rule.Proto.
+const (
+	// ProtoAny is the empty selector: the rule matches both transports.
+	ProtoAny = ""
+	// ProtoTCP matches TCP flows only.
+	ProtoTCP = "tcp"
+	// ProtoUDP matches UDP datagrams only (e.g. QUIC — PRD §5).
+	ProtoUDP = "udp"
+)
+
+// ProtoOK reports whether selector s is valid.
+func ProtoOK(s string) bool {
+	switch s {
+	case ProtoAny, ProtoTCP, ProtoUDP:
+		return true
+	}
+	return false
 }
 
 // Config is the root configuration object.
@@ -407,6 +436,11 @@ func (c *Config) Validate() error {
 	needDesync := false
 	for i := range c.Rules {
 		r := &c.Rules[i]
+		r.Proto = strings.ToLower(strings.TrimSpace(r.Proto))
+		if !ProtoOK(r.Proto) {
+			return fmt.Errorf("config: rule %d: proto %q: want %q, %q or %q",
+				i, r.Proto, ProtoAny, ProtoTCP, ProtoUDP)
+		}
 		matchers := 0
 		for _, s := range []string{r.CIDR, r.SNI, r.Ports} {
 			if s != "" {
@@ -434,6 +468,11 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("config: rule %d: %v", i, err)
 			}
 		default:
+			if r.Proto != "" {
+				// A matcher-less rule IS the default rule; the table has
+				// a single default action with no proto dimension.
+				return fmt.Errorf("config: rule %d: proto %q is not allowed on the default rule (set cidr/sni/ports)", i, r.Proto)
+			}
 			defaults++
 		}
 		if r.Action == ActionDesync {

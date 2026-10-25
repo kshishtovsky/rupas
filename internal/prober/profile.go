@@ -2,6 +2,11 @@ package prober
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/rupas/rupas/internal/config"
@@ -177,4 +182,145 @@ func (r *Result) ToDesyncParams() config.DesyncParams {
 		p.Strategy = StrategyFakeSplit
 	}
 	return p
+}
+
+// ---------------------------------------------------------------------------
+// Persisted profile (SYSTEM_DESIGN §4.3/§7.3 fast start)
+// ---------------------------------------------------------------------------
+
+// ProfileSchemaVersion is the on-disk profile schema version. LoadProfile
+// rejects files with a different version: a stale schema must never be
+// silently applied as a fresh calibration.
+const ProfileSchemaVersion = 1
+
+// DefaultProfileMaxAge is how long a persisted profile stays fresh
+// (owner requirement: fast start from a profile younger than ~72 h).
+const DefaultProfileMaxAge = 72 * time.Hour
+
+// PersistedProfile is the calibrated provider profile saved to disk after
+// a successful PROBING→ACTIVE cycle and loaded on the next start to skip
+// the full 3–5 min calibration (SYSTEM_DESIGN §4.3).
+type PersistedProfile struct {
+	// SchemaVersion guards on-disk compatibility (ProfileSchemaVersion).
+	SchemaVersion int `json:"schema_version"`
+	// Classification evidence from the last full probe run.
+	SNIBlackhole []string      `json:"sni_blackhole,omitempty"`
+	IPBlackhole  []string      `json:"ip_blackhole,omitempty"`
+	UDPDead      []UDPEndpoint `json:"udp_dead,omitempty"`
+	// TTLStar is the minimal calibrated fake TTL (t*); the runtime
+	// desync engine programs TTL = t* + TTLMargin itself, so TTLMargin
+	// is stored separately (design profile: +2).
+	TTLStar   int `json:"ttl_star"`
+	TTLMargin int `json:"ttl_margin,omitempty"`
+	// Strategy is the desync strategy the profile was calibrated for.
+	Strategy string `json:"strategy,omitempty"`
+	// CalIP/CalSNI identify the target the TTL window was calibrated on
+	// (the background revalidation control probe re-runs exactly this
+	// pair at t*).
+	CalIP  string `json:"calibrated_ip,omitempty"`
+	CalSNI string `json:"calibrated_sni,omitempty"`
+	// Targets lists the SNI hosts the classification covered.
+	Targets []string `json:"targets,omitempty"`
+	// CalibratedAt is the UTC completion time of the calibration (the
+	// freshness anchor; refreshed by every confirmed revalidation).
+	CalibratedAt time.Time `json:"calibrated_at"`
+}
+
+// DefaultProfilePath returns %ProgramData%/rupas/profile.json.
+func DefaultProfilePath() string {
+	base := os.Getenv("ProgramData")
+	if base == "" {
+		base = "."
+	}
+	return filepath.Join(base, "rupas", "profile.json")
+}
+
+// SaveProfile atomically writes the profile (temp file + rename in the
+// target directory) and fills in the schema version / timestamp defaults.
+func SaveProfile(path string, p *PersistedProfile) error {
+	if p == nil {
+		return errors.New("prober: nil profile")
+	}
+	if p.SchemaVersion == 0 {
+		p.SchemaVersion = ProfileSchemaVersion
+	}
+	if p.CalibratedAt.IsZero() {
+		p.CalibratedAt = time.Now().UTC()
+	}
+	b, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return fmt.Errorf("prober: marshal profile: %w", err)
+	}
+	b = append(b, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("prober: profile dir: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return fmt.Errorf("prober: write profile: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("prober: rename profile: %w", err)
+	}
+	return nil
+}
+
+// LoadProfile reads a persisted profile. Missing, corrupt and
+// wrong-schema files are errors — the caller must treat them as "no
+// profile" and fall back to the full calibration path.
+func LoadProfile(path string) (*PersistedProfile, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("prober: read profile: %w", err)
+	}
+	var p PersistedProfile
+	if err := json.Unmarshal(b, &p); err != nil {
+		return nil, fmt.Errorf("prober: parse profile %s: %w", path, err)
+	}
+	if p.SchemaVersion != ProfileSchemaVersion {
+		return nil, fmt.Errorf("prober: profile %s: schema version %d, want %d", path, p.SchemaVersion, ProfileSchemaVersion)
+	}
+	if p.TTLStar < 0 || p.TTLStar > 255 {
+		return nil, fmt.Errorf("prober: profile %s: ttl_star %d out of range", path, p.TTLStar)
+	}
+	return &p, nil
+}
+
+// Fresh reports whether the profile is young enough for a fast start.
+// A zero CalibratedAt is never fresh.
+func (p *PersistedProfile) Fresh(maxAge time.Duration, now time.Time) bool {
+	if p == nil || p.CalibratedAt.IsZero() {
+		return false
+	}
+	age := now.Sub(p.CalibratedAt)
+	return age >= 0 && age < maxAge
+}
+
+// Usable reports whether the profile carries a calibrated TTL window
+// (the precondition for the fake strategy and thus for a fast start).
+func (p *PersistedProfile) Usable() bool {
+	return p != nil && p.TTLStar > 0
+}
+
+// DesyncParams maps the persisted profile onto the runtime desync
+// parameters. TTL carries the raw t*: the engine adds TTLMargin exactly
+// once (desync.New computes InjectFake.TTL = TTL + TTLMargin).
+func (p *PersistedProfile) DesyncParams() config.DesyncParams {
+	margin := p.TTLMargin
+	if margin <= 0 {
+		margin = DefaultTTLMargin
+	}
+	st := p.Strategy
+	if st == "" {
+		st = StrategyFake
+	}
+	repeats := DefaultRepeats
+	return config.DesyncParams{
+		Strategy:     st,
+		FakeTemplate: DefaultFakeTemplate,
+		TTL:          p.TTLStar,
+		TTLMargin:    margin,
+		Repeats:      repeats,
+	}
 }

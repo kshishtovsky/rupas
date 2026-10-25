@@ -68,6 +68,15 @@ type Options struct {
 	// ProbeAttempts overrides classification attempts per target
 	// (0 = prober default 3).
 	ProbeAttempts int
+	// ChLog turns on the per-ClientHello decision diagnostics (wave 7):
+	// ONE log line per inspected ClientHello ("CH sni=… ech=… dst=…
+	// verdict=…") — TSPU-shape diagnostics. Off by default: the capture
+	// hot path pays nothing (nil formatter = silent).
+	ChLog bool
+	// ProfilePath overrides the persisted probe profile location (§4.3
+	// fast start). Empty → %ProgramData%/rupas/profile.json. Tests point
+	// it at a temp dir.
+	ProfilePath string
 }
 
 // App is the assembled Rupas runtime.
@@ -116,7 +125,8 @@ func New(cfg *config.Config, logger *log.Logger, opts Options) (*App, error) {
 			healthInterval: opts.TunnelHealthInterval,
 			dialTimeout:    opts.TunnelDialTimeout,
 		},
-		log: logger,
+		chLog: opts.ChLog,
+		log:   logger,
 	})
 	a.prober = newProbeRunner(probeDeps{
 		log:           logger,
@@ -126,14 +136,16 @@ func New(cfg *config.Config, logger *log.Logger, opts Options) (*App, error) {
 		attempts:      opts.ProbeAttempts,
 		inj:           newFakeInjector(tpl, logger),
 		noCalibration: opts.NoCalibration,
+		profilePath:   opts.ProfilePath,
 	})
 	a.evlog = supervisor.NewEventLog(100)
 	a.sup = supervisor.New(supervisor.Deps{
-		Pipeline: a.pipeline,
-		Prober:   a.prober,
-		Config:   cfg,
-		Logger:   logger,
-		EventLog: a.evlog,
+		Pipeline:  a.pipeline,
+		Prober:    a.prober,
+		Config:    cfg,
+		Logger:    logger,
+		EventLog:  a.evlog,
+		FastStart: a.prober,
 		// Tunnel health watch (§6): the tunnel's own marker loop flips
 		// Healthy() after 3×30 s failures; the supervisor turns a
 		// persistent failure into its existing degradation path. An
@@ -231,6 +243,8 @@ func (a *App) Snapshot() core.Snapshot {
 		s.Tunnel.TCPConns = st.Tunnel.TCPConns
 		s.Tunnel.UDPSessions = st.Tunnel.UDPSessions
 		s.Tunnel.UDPDgrams = st.Tunnel.UDPDgrams
+		s.Tunnel.UDPHealthy = st.Tunnel.UDPHealthy
+		s.Tunnel.UDPFallback = st.Tunnel.UDPFallback
 		s.Tunnel.Dropped = st.Tunnel.Dropped
 		s.TunnelHealthy = st.Tunnel.Healthy
 	}

@@ -50,6 +50,12 @@ type TunnelStatus struct {
 	// UDPSessions: live UDP pseudo-sessions; UDPDgrams: total datagrams.
 	UDPSessions int64  `json:"udp_sessions"`
 	UDPDgrams   uint64 `json:"udp_dgrams"`
+	// UDPHealthy/UDPFallback (wave 7): voice-relay observability.
+	// UDPHealthy mirrors the periodic UDP endpoint probe (false = probe
+	// failed — voice likely down); UDPFallback reports whether datagrams
+	// are currently escaping via the DESYNC fallback path.
+	UDPHealthy  bool `json:"udp_healthy"`
+	UDPFallback bool `json:"udp_fallback"`
 	// Dropped: flows/datagrams refused (no orig-dst, dial failure, HOLD).
 	Dropped uint64 `json:"dropped"`
 	// EscalatedRules: TUNNEL rules rewritten by the escalation fallback.

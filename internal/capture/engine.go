@@ -38,6 +38,10 @@ const (
 	defaultPacketSize = 65575
 	defaultIdleTTL    = 5 * time.Minute
 	gcTick            = time.Second
+
+	// ipTTLDefault is the TTL of crafted packets sent verbatim to the
+	// client (resetClientFlow's forged RST); fakes lower their own TTL.
+	ipTTLDefault = 64
 )
 
 // Options configures an Engine. Rules and the desync profile come from the
@@ -49,10 +53,22 @@ type Options struct {
 	FakeTemplate []byte              // fake ClientHello template bytes
 	TProxyPort   uint16              // local tproxy port; must not be 443 or in [50000,65535]
 	TGCIDRs      []string            // Telegram CIDRs, widen the capture filter
-	BatchSize    int                 // recv batch slots; 0 = 64
-	PacketSize   int                 // per-slot buffer; 0 = 65575
-	FlowIdleTTL  time.Duration       // flow GC idle timeout; 0 = 5 min
-	SniffMode    bool                // open real handles with FlagSniff (diagnostics only)
+	// TermFilter443 declares that SNI-rule TUNNEL flows to :443 (YouTube/
+	// Discord, wave 7) will be served by the terminator: the factory relay
+	// (Options.TunnelTCP) is then installed even without TG CIDRs and
+	// BuildTermFilter gains the tcp.SrcPort == 443 clause (the forged
+	// packets use the ORIGINAL destination as their source — src port 443).
+	TermFilter443 bool
+	BatchSize     int           // recv batch slots; 0 = 64
+	PacketSize    int           // per-slot buffer; 0 = 65575
+	FlowIdleTTL   time.Duration // flow GC idle timeout; 0 = 5 min
+	SniffMode     bool          // open real handles with FlagSniff (diagnostics only)
+
+	// CHLog, when set, receives ONE line per ClientHello routing decision
+	// ("CH sni=%q ech=%v dst=%s:%d verdict=%s") — TSPU-shape diagnostics.
+	// NIL = silent: the hot path pays nothing for diagnostics (per-flow
+	// cold call, never per steady-state segment).
+	CHLog func(format string, args ...any)
 
 	// TunnelTCP, when set, replaces the NAT→tproxy forward leg for TCP with
 	// the userspace terminator (wave 5c): the engine opens a third handle
@@ -109,7 +125,7 @@ type Engine struct {
 	tunnelTCP     TunnelTCP
 
 	// tgPrefixes mirrors opts.TGCIDRs for the §4.2 TCP fast path.
-	tgPrefixes []netip.Prefix
+	tgPrefixes    []netip.Prefix
 	ownsTransport bool
 
 	streams    map[flowtable.FlowKey]*inspector.Stream
@@ -126,6 +142,12 @@ type Engine struct {
 
 	batches sync.Pool // *batchBuf
 	scratch sync.Pool // *[]byte
+
+	// Tunnel-redial cache (§3.2 "TUNNEL → следующий SYN пересоздаём"):
+	// destinations whose CH-verdict flowed to TUNNEL (live: real ECH that
+	// TSPU drops) — the client's next SYN (browser re-dial after the RST)
+	// then takes the fast path straight into the tunnel. Zero value ready.
+	tcache tunnelCache
 
 	cnt counters
 
@@ -232,8 +254,18 @@ func (e *Engine) SetTunnelTCP(hook TunnelTCP) {
 	e.mu.Unlock()
 }
 
+// TermFilter443Enabled reports whether the engine was configured for the
+// terminator filter's tcp.SrcPort == 443 clause (wave 7 SNI-rule TUNNEL
+// flows). The options are not otherwise observable after New — the app
+// wiring tests assert the tunnel-live gate through this accessor.
+func (e *Engine) TermFilter443Enabled() bool { return e.opts.TermFilter443 }
+
 // Counters returns a point-in-time snapshot of the engine counters.
 func (e *Engine) Counters() core.Counters { return e.cnt.snapshot() }
+
+// TunnelRedirects counts §3.2 reset-and-redial verdicts: CH-decided TUNNEL
+// flows that got the forged RST and whose dst joined the redial cache.
+func (e *Engine) TunnelRedirects() uint64 { return e.cnt.tunnelRedirect.Load() }
 
 // Flows exposes the flow table for diagnostics.
 func (e *Engine) Flows() *flowtable.FlowTable { return e.flows }
@@ -465,6 +497,7 @@ func (e *Engine) openTransports() error {
 	if err != nil {
 		return fmt.Errorf("capture: open main handle: %w", err)
 	}
+	raiseQueueParams(h)
 	e.transport = NewWinTransport(h)
 	e.ownsTransport = true
 	if e.tproxyOn {
@@ -479,12 +512,15 @@ func (e *Engine) openTransports() error {
 			e.closeTransports()
 			return fmt.Errorf("capture: open loopback handle: %w", err)
 		}
+		raiseQueueParams(lh)
 		e.loopTransport = NewWinTransport(lh)
 	}
 	// Wave 5c: the terminator's dedicated inbound send handle. Its filter
-	// matches the forged packets (inbound, TG CIDR sources) — the live
-	// matrix only proved delivery through content-matching handles.
-	if e.opts.TunnelTCP != nil && len(e.opts.TGCIDRs) > 0 {
+	// matches the forged packets (inbound, TG CIDR / src-port-443 sources)
+	// — the live matrix only proved delivery through content-matching
+	// handles. Wave 7: SNI-rule TUNNEL flows (YouTube/Discord on :443) also
+	// ride it, so TermFilter443 installs the handle without any TG CIDRs.
+	if e.opts.TunnelTCP != nil && (len(e.opts.TGCIDRs) > 0 || e.opts.TermFilter443) {
 		tf, err := BuildTermFilter(e.opts.TGCIDRs)
 		if err != nil {
 			e.closeTransports()
@@ -495,6 +531,7 @@ func (e *Engine) openTransports() error {
 			e.closeTransports()
 			return fmt.Errorf("capture: open terminator handle: %w", err)
 		}
+		raiseQueueParams(th)
 		e.termTransport = NewWinTransport(th)
 		e.tunnelTCP = e.opts.TunnelTCP(e.termTransport)
 	}
@@ -515,6 +552,21 @@ func (e *Engine) closeTransports() {
 	if tm != nil {
 		_ = tm.Close()
 	}
+}
+
+// raiseQueueParams lifts the driver's internal capture-queue bounds to
+// the WinDivert 2.2 maximums (stock defaults: 4096 packets / 4 MB /
+// 2000 ms). Live upload finding 2026-10-25: the drain loop is a single
+// goroutine whose per-packet work includes a synchronous injected-ACK
+// send (Terminator.FeedTCP → termConn.feed → SendInboundTCP), so on a
+// busy uplink the default queue overflows — and the driver's overflow
+// drop is SILENT (no error ever reaches Recv): the segment simply never
+// arrives and the terminator sees a sequence hole. SetParam failures
+// are non-fatal: the defaults still work, just with less headroom.
+func raiseQueueParams(h *windivert.Handle) {
+	_ = h.SetParam(windivert.ParamQueueLength, 16384)
+	_ = h.SetParam(windivert.ParamQueueSize, 33554432) // 32 MB (driver max)
+	_ = h.SetParam(windivert.ParamQueueTime, 16000)    // ms (driver max)
 }
 
 // getBatch / putBatch recycle receive batches through the pool.
@@ -586,7 +638,11 @@ func (e *Engine) processOutbound(pkt []byte, addr *windivert.Address, p *pktInfo
 	// ClientHello — MTProto and other non-TLS Telegram traffic never
 	// produces one (live finding: such dials leaked DIRECT into the TSPU
 	// blackhole). SNI/port rules still run the CH pipeline below.
-	if e.tgFastTunnel(p) {
+	// §3.2 redial: a dst cached by a CH-verdict TUNNEL (resetTunnelRedial)
+	// rides the same fast path from its FIRST SYN — the browser's re-dial
+	// after the forged RST enters the tunnel without touching the real
+	// (ECH-blackholed) server again.
+	if e.tgFastTunnel(p) || e.tcache.get(p.dst4, p.dstPort) {
 		f := e.flows.GetOrCreate(key)
 		if f.State.Load() != flowtable.FlowTunnel {
 			f.State.Store(flowtable.FlowTunnel)
@@ -595,12 +651,13 @@ func (e *Engine) processOutbound(pkt []byte, addr *windivert.Address, p *pktInfo
 		return
 	}
 
-	// Hard connection teardown: clean up and forward (tunnel flows still
-	// need the NAT rewrite so the tproxy sees the close).
+	// Hard connection teardown: the tunnel-verdict flow must close on the
+	// SAME leg it rode (wave 7: the userspace terminator forges the FIN/RST
+	// relay; the NAT fallback only when no terminator is installed).
 	if p.rst() || p.fin() {
 		if f, ok := e.flows.Get(key); ok {
 			if f.State.Load() == flowtable.FlowTunnel {
-				e.natOutbound(pkt, p, key, f, addr)
+				e.relayTunnelTCP(pkt, addr, p, key, f)
 			} else {
 				e.passVerdict(pkt, addr, core.VerdictPass)
 			}
@@ -612,13 +669,13 @@ func (e *Engine) processOutbound(pkt []byte, addr *windivert.Address, p *pktInfo
 	}
 
 	// SYN (no ACK): create the flow. A SYN retransmission of a flow that
-	// already went TUNNEL is re-redirected (§3.2: "next SYN via redirect").
+	// already went TUNNEL is re-relayed (§3.2: "next SYN via redirect").
 	if p.syn() && !p.ack() {
 		f := e.flows.GetOrCreate(key)
 		f.TouchSyn()
 		f.ClientISN = p.seq // wave 4A: fake CH builds on ISN+1 (winws parity)
 		if f.State.Load() == flowtable.FlowTunnel {
-			e.natOutbound(pkt, p, key, f, addr)
+			e.relayTunnelTCP(pkt, addr, p, key, f)
 		} else {
 			e.passVerdict(pkt, addr, core.VerdictPass)
 		}
@@ -630,7 +687,7 @@ func (e *Engine) processOutbound(pkt []byte, addr *windivert.Address, p *pktInfo
 		f.TouchData()
 		switch f.State.Load() {
 		case flowtable.FlowTunnel:
-			e.natOutbound(pkt, p, key, f, addr)
+			e.relayTunnelTCP(pkt, addr, p, key, f)
 		case flowtable.FlowDirect, flowtable.FlowDesynced, flowtable.FlowEstablished:
 			e.passVerdict(pkt, addr, core.VerdictPass)
 		default: // FlowNew: first(ish) data segment → ClientHello pipeline
@@ -639,9 +696,9 @@ func (e *Engine) processOutbound(pkt []byte, addr *windivert.Address, p *pktInfo
 		return
 	}
 
-	// Pure ACK / window probe.
+	// Pure ACK / window probe: relayed on the same leg as the flow's data.
 	if f, ok := e.flows.Get(key); ok && f.State.Load() == flowtable.FlowTunnel {
-		e.natOutbound(pkt, p, key, f, addr)
+		e.relayTunnelTCP(pkt, addr, p, key, f)
 		return
 	}
 	e.passVerdict(pkt, addr, core.VerdictPass)
@@ -689,13 +746,14 @@ func (e *Engine) inspectClientHello(pkt []byte, addr *windivert.Address, p *pktI
 	if err != nil || !res.IsTLS {
 		// Not a TLS ClientHello (or malformed): nothing to decide on.
 		f.State.Store(flowtable.FlowDirect)
+		e.chLog(p, res.SNI, res.ECH, "DIRECT")
 		e.releaseHeld(held)
 		e.passVerdict(pkt, addr, core.VerdictPass)
 		return
 	}
 	f.ECH = res.ECH
 
-	action := e.rules.Match(v4mapped(p.dst4), unsafeString(res.SNI), p.dstPort)
+	action := e.rules.MatchProto(v4mapped(p.dst4), unsafeString(res.SNI), p.dstPort, config.ProtoTCP)
 	if res.ECH {
 		// Encrypted Client Hello: desync is pointless (lab: Schannel-ECH
 		// не пробивается) — route to the tunnel instead.
@@ -704,17 +762,134 @@ func (e *Engine) inspectClientHello(pkt []byte, addr *windivert.Address, p *pktI
 
 	switch action {
 	case config.ActionDirect:
+		e.chLog(p, res.SNI, res.ECH, action.String())
 		f.State.Store(flowtable.FlowDirect)
 		e.releaseHeld(held)
 		e.passVerdict(pkt, addr, core.VerdictPass)
 	case config.ActionDesync:
+		e.chLog(p, res.SNI, res.ECH, action.String())
 		e.applyDesync(pkt, p, addr, res.SNI, held)
 		f.State.Store(flowtable.FlowDesynced)
-	default: // ActionTunnel (and any invalid value): NAT-redirect
+	case config.ActionBlock:
+		// PRD §5: administratively dropped (e.g. proto-scoped QUIC
+		// block). The packet AND any held CH segments die here — never
+		// re-injected, so a TCP block cannot leak through the hold path.
+		e.chLog(p, res.SNI, res.ECH, action.String())
+		e.putHold(held)
+		e.cnt.countVerdict(core.VerdictDrop)
+	default: // ActionTunnel (and any invalid value): §3.2 reset-and-redial.
+		// Live finding 2026-10-25: relaying the CH into the tunnel branch
+		// here (termHeld+relayTunnelTCP) hangs the browser forever — the
+		// terminator only terminates from the SYN state, and THIS flow
+		// already completed its handshake with the REAL server (the SYN
+		// egressed before any verdict existed), so no carrier dial ever
+		// happens. Instead: cache the dst, recycle the held segments
+		// (never egress — the TSPU drops ECH), forge an RST from the real
+		// destination so the client re-dials at once, and let the fresh
+		// SYN take the cached fast path into the tunnel (processOutbound).
+		e.chLog(p, res.SNI, res.ECH, action.String())
 		f.State.Store(flowtable.FlowTunnel)
-		e.natHeld(held, key, f)
-		e.natOutbound(pkt, p, key, f, addr)
+		e.resetTunnelRedial(p, addr, key, held)
 	}
+}
+
+// resetTunnelRedial executes the §3.2 "TUNNEL → следующий SYN пересоздаём"
+// verdict for one CH-decided flow: (a) the destination joins the redial
+// cache, (b) the held CH segments (and the completing one) are recycled —
+// no byte of this ECH ClientHello ever reaches the TSPU, (c) the client is
+// reset with a forged RST|ACK from the real destination, (d) the dead
+// flow's state (stream/hold/flow-table entries) is freed. One INFO line.
+func (e *Engine) resetTunnelRedial(p *pktInfo, addr *windivert.Address, key flowtable.FlowKey, held *chHold) {
+	e.tcache.add(p.dst4, p.dstPort)
+	if held != nil {
+		e.putHold(held) // recycle, never relay
+	}
+	e.resetClientFlow(p, addr)
+	e.cnt.tunnelRedirect.Add(1)
+	// The CH segment itself never egresses (that is the point — the TSPU
+	// drops ECH): accounted as a drop, like the BLOCK branch.
+	e.cnt.countVerdict(core.VerdictDrop)
+	if e.opts.CHLog != nil {
+		e.opts.CHLog("term: ech/tunnel reset, dst cached for redial dst=%d.%d.%d.%d:%d",
+			p.dst4[0], p.dst4[1], p.dst4[2], p.dst4[3], p.dstPort)
+	}
+	// The RST kills the flow on the client side too: free every table
+	// entry (mirrors the FIN/RST teardown in processOutbound).
+	e.cleanupFlow(natKey{ip: v4mapped(fakeIP4()), port: p.srcPort, proto: p.proto}, key)
+}
+
+// resetClientFlow forges and injects one inbound RST|ACK that appears to
+// come from the flow's real destination: the client socket dies at once and
+// the application re-dials (§3.2 reset-and-redial) instead of hanging until
+// its own timeout.
+//
+// Header values (server-side view): src = the flow's ORIGINAL destination
+// (the server the client thinks it talks to), seq = the client's current
+// ack (the server's send-next as far as the client knows), ack = the
+// client's next byte (its seq + this segment's payload), flags RST|ACK,
+// window 0 — the same shape the terminator's reset uses (tcpterm.craft:
+// termRST|termACK, seq = serverNext, ack = clientNext).
+//
+// Injection follows the crafted-send doctrine (ops.go #4/#5): checksums
+// precomputed into the bytes through FixChecksums, a synthetic address with
+// every checksum-valid flag SET and NO impostor flag, direction INBOUND on
+// the client's captured interface — the only shape the live matrix proved
+// delivers to a client socket. Sent through the terminator's dedicated
+// handle when installed (its filter matches inbound src-port-443 / TG-src
+// traffic), else through the main handle.
+func (e *Engine) resetClientFlow(p *pktInfo, addr *windivert.Address) {
+	buf := e.getScratch(40)
+	b := buf[:40]
+	for i := range b {
+		b[i] = 0
+	}
+	// IPv4 header.
+	b[0] = 0x45 // v4, IHL 5
+	binary.BigEndian.PutUint16(b[2:4], 40)
+	b[8] = ipTTLDefault
+	b[9] = protoTCP
+	copy(b[12:16], p.dst4[:]) // src = real destination
+	copy(b[16:20], p.src4[:]) // dst = client
+	// TCP header.
+	binary.BigEndian.PutUint16(b[20:22], p.dstPort)
+	binary.BigEndian.PutUint16(b[22:24], p.srcPort)
+	binary.BigEndian.PutUint32(b[24:28], p.ackNum) // server seq = client's ack
+	binary.BigEndian.PutUint32(b[28:32], p.seq+uint32(len(p.payload)))
+	b[32] = 0x50 // data offset 5 words
+	b[33] = tcpFlagRST | tcpFlagACK
+	// window 0, checksum/urgent zeroed above.
+	rstAddr := inboundSendAddr(addr)
+	t := e.termTransport
+	if t == nil {
+		t = e.transport
+	}
+	if err := t.FixChecksums(b, &rstAddr); err != nil {
+		e.cnt.sendErrors.Add(1)
+		e.putScratch(buf)
+		return
+	}
+	if err := t.Send(b, &rstAddr); err != nil {
+		e.cnt.sendErrors.Add(1)
+	}
+	e.putScratch(buf)
+}
+
+// inboundSendAddr is fakeSendAddr's inbound twin (crafted-send doctrine
+// #5): zeroed address, checksum-valid flags SET, the captured packet's
+// interface — but direction INBOUND, not loopback, which is the shape the
+// client stack accepts from a foreign "server" (live matrix: self-sourced
+// or outbound-flagged re-injections never deliver).
+func inboundSendAddr(captured *windivert.Address) windivert.Address {
+	a := windivert.Address{}
+	a.Layer = captured.Layer
+	a.SetOutbound(false)
+	a.SetLoopback(false)
+	a.SetIPChecksum(true)
+	a.SetTCPChecksum(true)
+	a.SetUDPChecksum(true)
+	na, ca := a.Network(), captured.Network()
+	na.IfIdx, na.SubIfIdx = ca.IfIdx, ca.SubIfIdx
+	return a
 }
 
 // ---------------------------------------------------------------------------
@@ -803,20 +978,15 @@ func (e *Engine) releaseHeld(h *chHold) {
 	e.putHold(h)
 }
 
-// natHeld applies the tunnel NAT-redirect to held segments (cold path,
-// re-parses each segment).
-func (e *Engine) natHeld(h *chHold, key flowtable.FlowKey, f *flowtable.Flow) {
-	if h == nil {
+// chLog emits the one-line ClientHello routing record (wave 7: TSPU-shape
+// diagnostics) — at most once per flow, never on the steady-state segment
+// path. Nil formatter = silent, so the hot path pays a single nil check.
+func (e *Engine) chLog(p *pktInfo, sni []byte, ech bool, verdict string) {
+	if e.opts.CHLog == nil {
 		return
 	}
-	for i := 0; i < h.n; i++ {
-		if p, ok := parsePkt(h.seg(i)); ok {
-			e.natOutbound(h.seg(i), &p, key, f, &h.addr[i])
-		} else {
-			e.passVerdict(h.seg(i), &h.addr[i], core.VerdictPass)
-		}
-	}
-	e.putHold(h)
+	e.opts.CHLog("CH sni=%q ech=%v dst=%d.%d.%d.%d:%d verdict=%s",
+		sni, ech, p.dst4[0], p.dst4[1], p.dst4[2], p.dst4[3], p.dstPort, verdict)
 }
 
 func (e *Engine) putHold(h *chHold) {
@@ -825,17 +995,23 @@ func (e *Engine) putHold(h *chHold) {
 }
 
 // processUDP applies the tunnel branch to UDP relay traffic (ADR-5): no
-// inspector, rules decide by CIDR/port; TUNNEL → NAT, everything else passes.
+// inspector, rules decide by CIDR/port. A proto-scoped udp rule (e.g. the
+// PRD §5 QUIC block) resolves only here; TUNNEL → NAT, BLOCK → drop (the
+// datagram is counted and silently discarded — the browser falls back to
+// TCP), everything else passes.
 func (e *Engine) processUDP(pkt []byte, addr *windivert.Address, p *pktInfo) {
 	key := flowKeyOut(p)
-	action := e.rules.Match(v4mapped(p.dst4), "", p.dstPort)
-	if action != config.ActionTunnel {
+	action := e.rules.MatchProto(v4mapped(p.dst4), "", p.dstPort, config.ProtoUDP)
+	switch action {
+	case config.ActionTunnel:
+		f := e.flows.GetOrCreate(key)
+		f.State.Store(flowtable.FlowTunnel)
+		e.natOutbound(pkt, p, key, f, addr)
+	case config.ActionBlock:
+		e.cnt.countVerdict(core.VerdictDrop)
+	default:
 		e.passVerdict(pkt, addr, core.VerdictPass)
-		return
 	}
-	f := e.flows.GetOrCreate(key)
-	f.State.Store(flowtable.FlowTunnel)
-	e.natOutbound(pkt, p, key, f, addr)
 }
 
 // tgFastTunnel reports the §4.2 fast-path verdict: the destination is in a
@@ -846,15 +1022,18 @@ func (e *Engine) tgFastTunnel(p *pktInfo) bool {
 	}
 	dst := netip.AddrFrom4(p.dst4)
 	for _, px := range e.tgPrefixes {
-		if px.Contains(dst) && e.rules.Match(v4mapped(p.dst4), "", p.dstPort) == config.ActionTunnel {
+		if px.Contains(dst) && e.rules.MatchProto(v4mapped(p.dst4), "", p.dstPort, config.ProtoTCP) == config.ActionTunnel {
 			return true
 		}
 	}
 	return false
 }
 
-// relayTunnelTCP carries one tunnel-verdict TCP packet: to the userspace
-// terminator when installed (wave 5c), else to the legacy NAT→tproxy leg.
+// relayTunnelTCP carries one tunnel-verdict TCP packet (wave 7): to the
+// userspace terminator when installed, else to the legacy NAT→tproxy leg —
+// but ONLY with a configured tproxy port (live finding: that forward leg
+// cannot deliver TCP, so without both we pass honestly; a DstPort=0
+// rewrite in port-0 mode would silently blackhole the flow).
 func (e *Engine) relayTunnelTCP(pkt []byte, addr *windivert.Address, p *pktInfo, key flowtable.FlowKey, f *flowtable.Flow) {
 	if e.tunnelTCP != nil {
 		win := uint16(0)
@@ -877,7 +1056,17 @@ func (e *Engine) relayTunnelTCP(pkt []byte, addr *windivert.Address, p *pktInfo,
 		}
 		return
 	}
-	e.natOutbound(pkt, p, key, f, addr)
+	if e.tproxyOn {
+		e.natOutbound(pkt, p, key, f, addr)
+		// §3.2 teardown parity with the terminator branch: a FIN/RST that
+		// rode the fast path (TG CIDR or cached tunnel dst) must free the
+		// flow even when no terminator is installed (NAT→tproxy leg).
+		if p.fin() || p.rst() {
+			e.cleanupFlow(natKey{ip: v4mapped(fakeIP4()), port: p.srcPort, proto: p.proto}, key)
+		}
+		return
+	}
+	e.passVerdict(pkt, addr, core.VerdictPass)
 }
 
 // processInbound handles packets captured in the server→client direction
@@ -999,16 +1188,114 @@ func BuildLoopbackFilter(tproxyPort uint16) (string, error) {
 	return "(((" + tcpFwd + ") or (" + tcpRev + ")) or ((" + udpFwd + ") or (" + udpRev + ")))", nil
 }
 
-// BuildTermFilter renders the terminator handle's filter: the INBOUND leg
-// of TG-CIDR TCP traffic — exactly the forged packets the terminator
-// injects (src = original TG destination). The live matrix only proved
+// BuildTermFilter renders the terminator handle's filter: the INBOUND legs
+// its own injections occupy — TG-CIDR TCP (src = original TG destination)
+// and, wave 7, tcp.SrcPort == 443 (src = ORIGINAL :443 destination of the
+// SNI-rule TUNNEL flows: YouTube/Discord). The 443 clause is unconditional:
+// TermFilter443 opts in without TG CIDRs. The live matrix only proved
 // delivery through handles whose filter MATCHES the injected content, so
 // the filter doubles as the send-path contract. Everything else it can
-// capture is foreign inbound TG traffic, relayed untouched by termRecv.
+// capture is foreign inbound traffic, relayed untouched by termRecv
+// (same-handle Send is never re-captured — no loop).
 func BuildTermFilter(tgCIDRs []string) (string, error) {
-	f, err := windivert.NewFilter().Inbound().TCP().SrcCIDRs(tgCIDRs...).Build()
+	f443, err := windivert.NewFilter().Inbound().TCP().SrcPorts(443).Build()
 	if err != nil {
 		return "", fmt.Errorf("capture: terminator filter: %w", err)
 	}
-	return "(" + f + ")", nil
+	parts := []string{"(" + f443 + ")"}
+	if len(tgCIDRs) > 0 {
+		cidr, err := windivert.NewFilter().Inbound().TCP().SrcCIDRs(tgCIDRs...).Build()
+		if err != nil {
+			return "", fmt.Errorf("capture: terminator filter: %w", err)
+		}
+		parts = append(parts, "("+cidr+")")
+	}
+	return strings.Join(parts, " or "), nil
+}
+
+// ---------------------------------------------------------------------------
+// Tunnel-redial cache (§3.2 "TUNNEL → следующий SYN пересоздаём")
+// ---------------------------------------------------------------------------
+
+// The redial cache turns a CH-verdict TUNNEL into a first-SYN tunnel entry:
+// after resetTunnelRedial RSTs the client, the browser's re-dial SYN hits
+// the fast path (processOutbound) and enters the userspace terminator —
+// which only terminates from the SYN state, so the fresh connection is the
+// one that gets served. Entries live tunnelCacheTTL (long enough for the
+// browser's instant re-dial, short enough not to pin a dst whose rules
+// changed).
+//
+// Shape: a 4-way set-associative array of atomic entries (128 entries).
+// The SYN fast-path lookup is a handful of loads — no locks, no allocations
+// (§3.2 hot-path budget; pinned by TestAllocsPerRunZero). Writers are the
+// capture hot-loop goroutine; entries are atomics so stray concurrent
+// readers (diagnostics, tests) stay race-free. On a full bucket the OLDEST
+// entry (lowest insertion tick) is evicted.
+const (
+	tunnelCacheWays    = 4
+	tunnelCacheBuckets = 32 // 4-way → 128 entries
+	tunnelCacheTTL     = 60 * time.Second
+)
+
+type tunnelEntry struct {
+	ip   [4]byte
+	port uint16
+	exp  atomic.Int64  // unixNano deadline; 0 = free slot
+	tick atomic.Uint64 // insertion order (eviction victim choice)
+}
+
+type tunnelCache struct {
+	ins     atomic.Uint64
+	buckets [tunnelCacheBuckets][tunnelCacheWays]tunnelEntry
+}
+
+// tunnelCacheHash spreads (ip, port) over the buckets. Pure arithmetic on
+// the caller's values — zero allocations.
+func tunnelCacheHash(ip [4]byte, port uint16) int {
+	h := uint32(ip[0]) | uint32(ip[1])<<8 | uint32(ip[2])<<16 | uint32(ip[3])<<24
+	h = (h ^ uint32(port)) * 16777619
+	h ^= h >> 16
+	return int(h & (tunnelCacheBuckets - 1))
+}
+
+// add records dst as tunnel-redial until now+tunnelCacheTTL.
+func (c *tunnelCache) add(ip [4]byte, port uint16) {
+	b := &c.buckets[tunnelCacheHash(ip, port)]
+	now := time.Now().UnixNano()
+	tick := c.ins.Add(1)
+	var victim *tunnelEntry
+	oldest := ^uint64(0)
+	for i := range b {
+		e := &b[i]
+		if e.port == port && e.ip == ip {
+			victim = e // refresh in place
+			break
+		}
+		if d := e.exp.Load(); d == 0 || d <= now {
+			victim = e // free/expired slot beats eviction
+			break
+		}
+		if t := e.tick.Load(); t < oldest {
+			oldest, victim = t, e
+		}
+	}
+	// Key first, deadline last: a torn write can only ever delay a hit,
+	// never fake one against a different dst.
+	victim.ip = ip
+	victim.port = port
+	victim.exp.Store(now + int64(tunnelCacheTTL))
+	victim.tick.Store(tick)
+}
+
+// get reports whether (ip, port) is a cached tunnel-redial destination and
+// its deadline has not passed.
+func (c *tunnelCache) get(ip [4]byte, port uint16) bool {
+	b := &c.buckets[tunnelCacheHash(ip, port)]
+	now := time.Now().UnixNano()
+	for i := range b {
+		if e := &b[i]; e.port == port && e.ip == ip {
+			return e.exp.Load() > now
+		}
+	}
+	return false
 }

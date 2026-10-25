@@ -91,14 +91,17 @@ func TestNATWarmPathAllocs(t *testing.T) {
 	out := outboundAddr()
 	in := inboundAddr()
 	ch := buildClientHello("x.y", false)
+	syn2 := buildTCP(testClientIP, testClientPort, testTGIP, 443, 900, 0, tcpFlagSYN, nil)
 	chPkt := buildTCP(testClientIP, testClientPort, testTGIP, 443, 1000, 1, tcpFlagACK|tcpFlagPSH, ch)
 	dataPkt := buildTCP(testClientIP, testClientPort, testTGIP, 443, 1000+uint32(len(ch)), 1, tcpFlagACK|tcpFlagPSH, []byte("more mtproto"))
 	ackPkt := buildTCP(testClientIP, testClientPort, testTGIP, 443, 1100, 1, tcpFlagACK, nil)
 	reply := buildTCP("127.0.0.1", testTProxyPort, testClientIP, testClientPort, 1, 1100, tcpFlagACK|tcpFlagPSH, []byte("srv"))
 
-	// Warm-up: create the flow + NAT entry (CH → redirect), one loopback
-	// reverse translation, one data redirect.
+	// Warm-up: CH → §3.2 reset-and-redial (RST + dst cached), then the
+	// re-dial SYN creates the flow + NAT entry via the fast path, one
+	// loopback reverse translation, one data redirect.
 	e.processPacket(chPkt, &out)
+	e.processPacket(syn2, &out)
 	e.processLoopback(noopTransport{}, reply, &in)
 	e.processPacket(dataPkt, &out)
 	e.processPacket(ackPkt, &out)

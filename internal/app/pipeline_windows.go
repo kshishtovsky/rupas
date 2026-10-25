@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rupas/rupas/internal/capture"
@@ -39,7 +40,10 @@ type pipelineDeps struct {
 	tunnel     bool
 	tproxyPort uint16
 	tunnelOpts tunnelRunOpts
-	log        *log.Logger
+	// chLog mirrors app.Options.ChLog: per-ClientHello decision logging
+	// (wave 7). False = the engine's CHLog stays nil (silent hot path).
+	chLog bool
+	log   *log.Logger
 	// engineHook runs after capture.New on every start segment, before
 	// Run (tests inject fake transports there). Nil in production.
 	engineHook func(*capture.Engine)
@@ -69,6 +73,7 @@ type capturePipeline struct {
 	tunnel     bool
 	tproxyPort uint16
 	tunnelOpts tunnelRunOpts
+	chLog      bool
 	engineHook func(*capture.Engine)
 	provider   *natProvider
 
@@ -83,7 +88,17 @@ type capturePipeline struct {
 	running    bool
 	gen        uint64
 	onRunErr   func(note string)
+
+	// Tunnel admission-gate observability (called from the capture hot
+	// path — atomics, not mu):
+	gateRejected atomic.Uint64 // SYNs dropped while the tunnel is unhealthy
+	gateLastLog  atomic.Int64  // unix nanos of the last gate-reject log line
 }
+
+// gateLogInterval rate-limits the tunnel-gate rejection warning: the
+// first rejection logs immediately, then at most once per interval with
+// the cumulative rejected_total.
+const gateLogInterval = 5 * time.Second
 
 var (
 	_ supervisor.Pipeline = (*capturePipeline)(nil)
@@ -104,6 +119,7 @@ func newPipeline(d pipelineDeps) pipelineControl {
 		tunnel:     d.tunnel,
 		tproxyPort: port,
 		tunnelOpts: d.tunnelOpts,
+		chLog:      d.chLog,
 		engineHook: d.engineHook,
 		provider:   &natProvider{},
 	}
@@ -218,6 +234,28 @@ func (p *capturePipeline) Stats() pipelineStats {
 	return st
 }
 
+// admissionGate wraps the tunnel health marker as the tcpterm admission
+// gate and makes its rejections observable: a SYN dropped while the
+// tunnel is not yet healthy bumps the cumulative counter and logs WARN
+// at most once per gateLogInterval (the first rejection immediately).
+// Runs on the capture hot path — atomics only.
+func (p *capturePipeline) admissionGate(hl tunnel.Tunnel) func() bool {
+	return func() bool {
+		if hl.Healthy() {
+			return true
+		}
+		total := p.gateRejected.Add(1)
+		now := time.Now().UnixNano()
+		last := p.gateLastLog.Load()
+		if last == 0 || now-last >= int64(gateLogInterval) {
+			if p.gateLastLog.CompareAndSwap(last, now) {
+				p.log.Printf("app: WARN tunnel gate: SYN rejected (tunnel not healthy yet) (rejected_total=%d)", total)
+			}
+		}
+		return false
+	}
+}
+
 // startLocked creates a fresh engine (and tunnel, when applicable) and
 // launches it. Caller holds mu.
 func (p *capturePipeline) startLocked(cfg *config.Config) error {
@@ -234,7 +272,12 @@ func (p *capturePipeline) startLocked(cfg *config.Config) error {
 		mode        = tunnelModeOff
 		escal       int
 		termFactory capture.TunnelTCPFactory
+		// Wave 7: CH decision diagnostics (nil = silent hot path).
+		chLogf func(format string, args ...any)
 	)
+	if p.chLog {
+		chLogf = p.log.Printf
+	}
 	switch {
 	case !p.tunnel:
 		// Tunnel branch off: TUNNEL rules would NAT flows to a dead
@@ -275,7 +318,7 @@ func (p *capturePipeline) startLocked(cfg *config.Config) error {
 				hl := tun // Healthy() comes with the Tunnel interface
 				termFactory = func(send capture.Transport) capture.TunnelTCP {
 					term := tunnel.NewTerminator(inboundSender{t: send}, dial, tl)
-					term.SetAdmission(func() bool { return hl.Healthy() })
+					term.SetAdmission(p.admissionGate(hl))
 					return termAdapter{tm: term}
 				}
 			}
@@ -295,6 +338,9 @@ func (p *capturePipeline) startLocked(cfg *config.Config) error {
 		}
 		return fmt.Errorf("app: %w", err)
 	}
+	// Wave 7 CH diagnostics apply in every mode (off/escalated/live) —
+	// the whole point is seeing what the rules DO to each ClientHello;
+	// nil when disabled (silent hot path).
 	eng, err := capture.New(capture.Options{
 		Rules:        tbl,
 		Desync:       eff,
@@ -302,6 +348,11 @@ func (p *capturePipeline) startLocked(cfg *config.Config) error {
 		TProxyPort:   port,
 		TGCIDRs:      tg,
 		TunnelTCP:    termFactory,
+		// Wave 7: SNI-rule TUNNEL flows (:443 YouTube/Discord) ride the
+		// terminator whenever it is installed (a live tunnel with a TCP
+		// dialer) — the 443 term-filter clause must then be on too.
+		TermFilter443: termFactory != nil,
+		CHLog:         chLogf,
 	})
 	if err != nil {
 		if tun != nil {

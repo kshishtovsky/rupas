@@ -50,6 +50,39 @@ type Logger interface {
 	Printf(format string, v ...any)
 }
 
+// FastStart carries the persisted probe profile for an immediate start
+// (SYSTEM_DESIGN §4.3): with a fresh profile on disk, `on` skips the
+// full 3–5 min PROBING and the pipeline starts with the saved desync
+// parameters right away.
+type FastStart struct {
+	// Desync are the calibrated parameters (TTL = raw t*, the engine
+	// adds TTLMargin exactly once).
+	Desync config.DesyncParams
+	// ProfileID identifies the config profile the snapshot should show.
+	ProfileID string
+	// Note is the human-readable fast-start summary (event log/snapshot).
+	Note string
+}
+
+// FastStarter provides the persisted profile at `on` time. QuickStart
+// returning nil (no profile / stale / unusable) selects the normal
+// PROBING path — the supervisor never guesses.
+type FastStarter interface {
+	QuickStart() *FastStart
+}
+
+// RevalidatingProber is the §7.3 background revalidation: one paced
+// control probe on the saved t* after the fast start. Implemented by the
+// prober adapter; the plain Prober interface stays untouched so mock
+// probers in tests keep working.
+type RevalidatingProber interface {
+	Prober
+	// Revalidate confirms the persisted profile. A nil error with
+	// DesyncAlive=true confirms it; anything else schedules the full
+	// recalibration through the normal degradation path.
+	Revalidate(ctx context.Context) (ProfileResult, error)
+}
+
 // Deps wires the supervisor to its environment. Pipeline and Prober are
 // the seams the capture/prober/tunnel integration plugs into.
 type Deps struct {
@@ -59,6 +92,9 @@ type Deps struct {
 	Logger     Logger
 	EventLog   *EventLog
 	Hysteresis Hysteresis // zero value → DefaultHysteresis
+	// FastStart provides the persisted probe profile (nil → fast start
+	// disabled, `on` always goes through the full PROBING path).
+	FastStart FastStarter
 	// TunnelHealth reports the live tunnel marker health (Tunnel.Healthy,
 	// §6). When set, the event loop polls it every TunnelCheckInterval;
 	// TunnelCheckFails consecutive unhealthy polls inject a degradation
@@ -258,6 +294,7 @@ func (s *Supervisor) run() {
 		timer       *time.Timer
 		lastOC      ProbeOutcome
 		lastOCAt    time.Time
+		fast        *FastStart // set while the current event is evFastStart
 	)
 
 	// Tunnel health watch (§6): poll Tunnel.Healthy() and convert a 3×30 s
@@ -327,7 +364,16 @@ func (s *Supervisor) run() {
 			switch a.kind {
 			case actStartPipeline:
 				if !pipeRunning && s.deps.Pipeline != nil {
-					if err := s.deps.Pipeline.Start(cfg); err != nil {
+					startCfg := cfg
+					if fast != nil {
+						// Fast start: launch with the persisted desync
+						// parameters; a shallow copy keeps the live config
+						// (rules, profile id) untouched.
+						c := *cfg
+						c.Desync = fast.Desync
+						startCfg = &c
+					}
+					if err := s.deps.Pipeline.Start(startCfg); err != nil {
 						s.logf("pipeline start failed: %v", err)
 						s.evlog.Append("pipeline start failed: " + err.Error())
 						if depth < 2 {
@@ -382,6 +428,45 @@ func (s *Supervisor) run() {
 					}
 					s.trySend(event{kind: evProbeDone, outcome: oc, note: oc.Note})
 				}(gen, pctx, pcancel)
+			case actStartRevalidate:
+				if s.deps.Prober == nil {
+					break
+				}
+				rp, ok := s.deps.Prober.(RevalidatingProber)
+				if !ok {
+					s.logf("fast start: prober has no background revalidation; profile trusted until the next probe")
+					break
+				}
+				if probeCancel != nil {
+					probeCancel()
+				}
+				gen := s.probeGen.Add(1)
+				pctx, pcancel := context.WithCancel(s.ctx)
+				probeCancel = pcancel
+				s.wg.Add(1)
+				go func(gen int64, pctx context.Context, pcancel context.CancelFunc) {
+					defer s.wg.Done()
+					defer pcancel()
+					res, err := rp.Revalidate(pctx)
+					if s.probeGen.Load() != gen {
+						return // superseded by a newer probe
+					}
+					if err != nil || !res.DesyncAlive {
+						// §7.3: the saved profile no longer holds — the
+						// normal degradation path schedules the full
+						// recalibration (existing PROBING run).
+						note := res.Note
+						if err != nil {
+							note = fmt.Sprintf("revalidation error: %v", err)
+						}
+						s.trySend(event{kind: evDegradation, note: "profile revalidation failed: " + note})
+						return
+					}
+					s.trySend(event{kind: evProbeDone, outcome: ProbeOutcome{
+						OK: true, DesyncAlive: true, TunnelOK: res.TunnelOK,
+						ProfileID: res.ProfileID, Note: res.Note,
+					}, note: res.Note})
+				}(gen, pctx, pcancel)
 			case actScheduleProbe:
 				if timer != nil {
 					timer.Stop()
@@ -416,6 +501,21 @@ func (s *Supervisor) run() {
 			checkTunnel()
 
 		case ev := <-s.events:
+			// Fast-start interception (§4.3): a cmdOn from OFF with a
+			// fresh persisted profile is rewritten into evFastStart —
+			// the machine jumps straight to ACTIVE and the probe cycle
+			// shrinks to one background control probe on the saved t*.
+			// Everything else (stale/absent/unusable profile) keeps the
+			// classic PROBING path.
+			if ev.kind == evCmdOn && m.state == StateOff && s.deps.FastStart != nil {
+				if fs := s.deps.FastStart.QuickStart(); fs != nil {
+					ev.kind = evFastStart
+					ev.fast = fs
+					if ev.note == "" {
+						ev.note = fs.Note
+					}
+				}
+			}
 			if ev.kind == evReload && ev.cfg != nil {
 				old := cfg.Profile
 				cfg = ev.cfg
@@ -433,12 +533,22 @@ func (s *Supervisor) run() {
 
 			prev := m.state
 			var acts []action
+			if ev.kind == evFastStart {
+				// The snapshot must show the fast-started profile before
+				// the revalidation probe returns; the tunnel health
+				// watch degrades independently if the marker is down.
+				lastOC = ProbeOutcome{OK: true, DesyncAlive: true, TunnelOK: true,
+					ProfileID: ev.fast.ProfileID, Note: "fast start: " + ev.fast.Note}
+				lastOCAt = s.now()
+				fast = ev.fast
+			}
 			m, acts, _ = step(m, ev, s.now(), s.hyst)
 			if ev.kind == evProbeDone {
 				lastOC = ev.outcome
 				lastOCAt = s.now()
 			}
 			exec(&m, acts, 0)
+			fast = nil
 			if m.state != prev {
 				note := ev.note
 				if note == "" {

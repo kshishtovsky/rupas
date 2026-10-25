@@ -151,6 +151,10 @@ type Classifier struct {
 	UDPAttempts int
 	// UDPPayload is sent by ProbeUDP; nil means the STUN binding request.
 	UDPPayload []byte
+	// LocalIP binds UDP probe sockets to a source address (the physical
+	// NIC, see bind.go) so UDP classification follows the same path as
+	// the TCP probes. Nil → default route.
+	LocalIP net.IP
 }
 
 // NewClassifier returns a Classifier with lab-derived defaults.
@@ -363,6 +367,9 @@ func (c *Classifier) ProbeUDP(ip string, port uint16) bool {
 
 func (c *Classifier) udpOnce(ip string, port uint16) bool {
 	var d net.Dialer
+	if c.LocalIP != nil {
+		d.LocalAddr = &net.UDPAddr{IP: c.LocalIP}
+	}
 	conn, err := d.Dial("udp", net.JoinHostPort(ip, strconv.Itoa(int(port))))
 	if err != nil {
 		return false

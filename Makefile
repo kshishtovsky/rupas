@@ -1,7 +1,7 @@
 .PHONY: test bench build lint lab
 
 build:
-	go build -trimpath -ldflags "-s -w" ./cmd/rupasd ./cmd/rupasctl
+	go build -tags "with_utls with_quic" -trimpath -ldflags "-s -w" ./cmd/rupasd ./cmd/rupasctl
 
 test:
 	go test -race -count=1 ./...

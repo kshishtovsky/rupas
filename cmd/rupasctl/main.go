@@ -18,19 +18,22 @@ import (
 	"github.com/rupas/rupas/internal/rpc"
 )
 
-const usage = `usage: rupasctl [-pipe \\.\pipe\rupasctl] <command>
+const usage = `usage: rupasctl [-pipe \\.\pipe\rupasctl] [-config configs/rupas.yaml] <command>
 
 commands:
   status   show supervisor state, flows and counters
   on       turn interception on
   off      turn interception off and stop the pipeline
+  start    launch the rupasd daemon detached (if not running)
   probe    force immediate re-classification
   reload   reload the daemon config
   logs     stream the last lifecycle events
+  tui      interactive terminal UI (status, rules, desync, tunnels)
 `
 
 func main() {
 	pipe := flag.String("pipe", rpc.DefaultPipe, "control named pipe path")
+	configPath := flag.String("config", "configs/rupas.yaml", "path to rupas YAML config")
 	timeout := flag.Duration("timeout", 3*time.Second, "connect timeout")
 	flag.Parse()
 
@@ -39,10 +42,26 @@ func main() {
 		cmd = flag.Arg(0)
 	}
 	switch cmd {
-	case "status", "on", "off", "probe", "reload", "logs", "debug":
+	case "status", "on", "off", "probe", "reload", "logs", "debug", "tui", "start":
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
+	}
+
+	if cmd == "start" {
+		if err := startDaemonCmd(*configPath, *pipe); err != nil {
+			fmt.Fprintf(os.Stderr, "rupasctl: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if cmd == "tui" {
+		if err := runTUI(*configPath, *pipe, *timeout); err != nil {
+			fmt.Fprintf(os.Stderr, "rupasctl: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	if err := run(*pipe, *timeout, cmd); err != nil {
@@ -189,7 +208,22 @@ func renderTunnel(w io.Writer, s core.Snapshot) {
 	if t.Mode == "tunnel" {
 		fmt.Fprintf(w, "    bytes rx/tx      %s / %s\n", humanBytes(t.RxBytes), humanBytes(t.TxBytes))
 		fmt.Fprintf(w, "    flows tcp        %d active / %d total\n", t.TCPFlows, t.TCPConns)
-		fmt.Fprintf(w, "    flows udp        %d sessions / %d datagrams\n", t.UDPSessions, t.UDPDgrams)
+		// Wave 7 voice observability: UDPHealthy mirrors the periodic
+		// endpoint probe; a failed probe with live sessions = voice down,
+		// failed probe with none = nothing observed yet ("unknown").
+		voice := "unknown"
+		switch {
+		case t.UDPHealthy:
+			voice = "healthy"
+		case t.UDPSessions > 0:
+			voice = "down (probe failed)"
+		}
+		fallback := "no"
+		if t.UDPFallback {
+			fallback = "yes"
+		}
+		fmt.Fprintf(w, "    flows udp        %d sessions / %d datagrams (voice: %s — fallback engaged? %s)\n",
+			t.UDPSessions, t.UDPDgrams, voice, fallback)
 		fmt.Fprintf(w, "    dropped          %d\n", t.Dropped)
 	}
 }

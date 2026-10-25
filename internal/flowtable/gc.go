@@ -53,6 +53,12 @@ func (ft *FlowTable) gcSweep(idleTTL time.Duration) int {
 	sh.mu.Lock()
 	for k, f := range sh.m {
 		if f.lastActivityNanos() <= cutoff {
+			// Wave 7: TUNNEL flows are exempt — they must survive idle
+			// gaps (long voice calls, paused streams) and live until
+			// FIN/RST teardown or the terminator clears them.
+			if f.State.Load() == FlowTunnel {
+				continue
+			}
 			delete(sh.m, k)
 			ft.pool.Put(f)
 			removed++

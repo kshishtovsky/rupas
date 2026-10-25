@@ -272,7 +272,7 @@ func (tm *Terminator) Close() {
 	tm.mu.Unlock()
 	close(tm.stopSweep)
 	for _, c := range conns {
-		c.kill(false)
+		c.kill(false, "shutdown")
 	}
 	tm.wg.Wait()
 }
@@ -302,7 +302,7 @@ func (tm *Terminator) sweepLoop() {
 		}
 		tm.mu.Unlock()
 		for _, c := range idle {
-			c.kill(true)
+			c.kill(true, "idle sweep")
 		}
 	}
 }
@@ -316,11 +316,32 @@ const (
 	// forged packets ride the inbound NIC path; keep them comfortably
 	// under a 1500-byte MTU.
 	termMSS = 1240
-	// termWindow is the receive window we advertise to the client.
+	// termWindow is the INITIAL window advertised in the SYN-ACK; every
+	// later segment advertises the real free space (recvWindowLocked).
 	termWindow = 0xFFFF
-	// dialWait bounds the carrier dial before the client SYN-ACK retransmit
-	// path gives up naturally (~3 client SYN retransmits).
-	dialWait = 12 * time.Second
+	// recvBufCap is the upload receive buffer in bytes: each ACK
+	// advertises its free part (relay-queue bytes + reorder-buffer
+	// bytes). Live upload finding 2026-10-25: the old code advertised a
+	// CONSTANT 0xFFFF window, so the client kept a full 64KB in flight
+	// regardless of the carrier drain rate; the relay queue hit its slot
+	// cap, the deferred head turned every already-in-flight successor
+	// into an out-of-order segment, and the reorder buffer overflowed
+	// (575+ evictions per flow — self-inflicted loss, recovered only by
+	// retransmits). With the real window the client throttles itself
+	// (win=0 → its persist timer; our window-update ACK on drain) and
+	// the queue never overfills: zero evictions, zero deferrals.
+	recvBufCap = 0xFFFF
+	// oooBatchReserve: the in-order path enqueues the current segment
+	// plus up to this many reorder-buffer segments in one batch; the
+	// slot part of the advertised window keeps at least that many
+	// queue slots free (see recvWindowLocked).
+	oooBatchReserve = 8
+	// dialWait bounds the carrier dial (the client's own SYN retransmit
+	// backoff paces the wait). It must COVER the carrier's own
+	// DefaultDialTimeout (tunnel.go): a shorter deadline here reset the
+	// client while the carrier dial was still legitimately in flight,
+	// so slow VLESS connects never came up at all.
+	dialWait = DefaultDialTimeout + 2*time.Second
 )
 
 type termConn struct {
@@ -347,9 +368,39 @@ type termConn struct {
 	dialErr  error
 	dialDone chan struct{}
 	writeCh  chan []byte
+	// queuedBytes tracks the payload bytes sitting in writeCh (hot path:
+	// atomic add at enqueue/consume; recvWindowLocked reads it without
+	// extra sync). Together with oooBytes it forms the outstanding
+	// receive-buffer occupancy the advertised window is derived from.
+	queuedBytes atomic.Int64
+	// finSignal wakes an idle pumpWrites for a half-close accepted with
+	// an already-empty queue (see feed's FIN acceptance).
+	finSignal chan struct{}
 	ackSignal chan struct{} // wakes the pump when serverUna advances
-	closed   chan struct{}
-	closeOne sync.Once
+	closed    chan struct{}
+	closeOne  sync.Once
+
+	// reorder buffer for out-of-order client segments. The old code
+	// silently DROPPED any segment ahead of a sequence hole, truncating
+	// upload streams at the first retransmit.
+	ooo      map[uint32][]byte // seq → buffered payload (lazy)
+	oooFIFO  []uint32          // insertion order (oldest evicted first)
+	oooBytes int
+	// finPend: client half-closed; pumpWrites ends the upstream relay
+	// once the queue drains. Closing upstream immediately at FIN time
+	// dropped the already-ACKed upload tail still sitting in the queue.
+	finPend bool
+
+	// advWin is the window value carried by the most recent injected
+	// ACK (mu-guarded): pumpWrites compares against it to decide when a
+	// window-update ACK is due (zero-crossing or a full step regrown).
+	advWin uint16
+
+	// diagnostics (hot path: incremented without extra locking)
+	qFullN   atomic.Uint64 // segments deferred by relay-queue backpressure
+	oooBufN  atomic.Uint64 // segments buffered out-of-order
+	oooDropN atomic.Uint64 // segments evicted from the reorder buffer
+	dupAckN  atomic.Uint64 // dup-ACKs sent to prompt a client fast retransmit
 }
 
 type atomicTime struct{ mu sync.Mutex; t time.Time }
@@ -369,8 +420,10 @@ func newTermConn(tm *Terminator, k termKey, syn TermPkt) *termConn {
 		serverISN:  isn,
 		serverNext: isn + 1,
 		serverUna:  isn + 1,
+		advWin:     termWindow,
 		dialDone:   make(chan struct{}),
 		writeCh:    make(chan []byte, 128),
+		finSignal:  make(chan struct{}, 1),
 		ackSignal:  make(chan struct{}, 1),
 		closed:     make(chan struct{}),
 	}
@@ -417,7 +470,7 @@ func (c *termConn) feed(p TermPkt) {
 
 	// RST from the client: tear everything down.
 	if p.Flags&termRST != 0 {
-		c.kill(false)
+		c.kill(false, "client rst")
 		return
 	}
 
@@ -454,27 +507,130 @@ func (c *termConn) feed(p TermPkt) {
 		if c.finSent && p.Ack == c.serverNext+1 {
 			// Client ACKed our FIN: done.
 			c.mu.Unlock()
-			c.kill(false)
+			c.kill(false, "client fin acked")
 			return
 		}
 	}
 
-	// Data (in-order; duplicates dropped by the seq check).
-	if n := len(p.Payload); n > 0 && p.Seq == c.clientNext {
-		c.clientNext += uint32(n)
-		c.clientWin = p.Window
-		payload := make([]byte, n)
-		copy(payload, p.Payload)
+	n := len(p.Payload)
+	hasFIN := p.Flags&termFIN != 0
+	seqEnd := p.Seq + uint32(n)
+
+	// Accept the FIN only once every byte before it was consumed: either
+	// a pure in-order FIN, or a retransmitted FIN whose payload has since
+	// been delivered. Never accept a FIN past a sequence hole — the old
+	// code did and silently skipped the missing bytes.
+	if hasFIN && !c.clientFIN && seqEnd == c.clientNext {
+		empty := c.acceptFINLocked()
 		c.mu.Unlock()
-		c.deliver(payload)
-		c.sendACK()
+		c.sendACK() // ACK the FIN
+		if empty {
+			c.wakeHalfClose()
+		}
 		return
 	}
 
-	// Retransmitted in-flight data: the payload is already delivered —
-	// re-ACK so the client stops retransmitting.
-	if n := len(p.Payload); n > 0 && int32(c.clientNext-(p.Seq+uint32(n))) >= 0 {
-		c.clientWin = p.Window
+	// Data path: in-order → relay (plus any reorder-buffer backlog the
+	// segment completes); fully-old → re-ACK; future → buffer bounded.
+	if n > 0 {
+		switch {
+		case p.Seq == c.clientNext:
+			// In-order segment. If the relay queue is full, do NOT
+			// consume and do not ACK: the client retransmits. The old
+			// code killed the connection here, so any upload burst
+			// deeper than the queue tore the flow down.
+			if len(c.writeCh) >= cap(c.writeCh) {
+				total := c.qFullN.Add(1)
+				c.dupAckN.Add(1)
+				c.mu.Unlock()
+				c.tm.log.Warn("term: relay queue full, deferring segment for retransmit",
+					slog.String("flow", c.flowDesc()), slog.Uint64("total", total))
+				c.sendACK() // dup-ack: prompts the client's fast retransmit
+				return
+			}
+			c.clientNext = seqEnd
+			c.clientWin = p.Window
+			var batch [8][]byte
+			out := batch[:0]
+			out = append(out, copyPayload(p.Payload))
+			// Close the reorder-buffer gap behind this segment while
+			// the relay queue has room (bounded per feed; the next
+			// ack/segment drains the rest).
+			for len(out) < cap(batch) && len(c.writeCh)+len(out) < cap(c.writeCh) {
+				b, ok := c.oooPop(c.clientNext)
+				if !ok {
+					break
+				}
+				c.clientNext += uint32(len(b))
+				out = append(out, b)
+			}
+			c.enqueueLocked(out)
+			finNow := hasFIN && c.clientNext == seqEnd
+			empty := false
+			if finNow {
+				empty = c.acceptFINLocked()
+			}
+			c.mu.Unlock()
+			c.sendACK()
+			if finNow {
+				c.sendACK() // ACK the FIN as well
+				if empty {
+					c.wakeHalfClose()
+				}
+			}
+			return
+
+		case int32(c.clientNext-seqEnd) >= 0:
+			// Fully-old retransmit: the payload is already queued —
+			// re-ACK so the client stops retransmitting.
+			c.mu.Unlock()
+			c.sendACK()
+			return
+
+		default:
+			// Future segment (a hole precedes it): buffer it bounded;
+			// every newly buffered (or evicting) segment fires ONE
+			// dup-ACK — three in a row make the client fast-retransmit
+			// the hole within an RTT instead of waiting out its RTO
+			// (the old silent-drop / RTO-only recovery stalled uploads
+			// for minutes). Retransmits of already-buffered segments
+			// are deduplicated: at most one dup-ACK per NEW
+			// out-of-order segment.
+			payload := copyPayload(p.Payload)
+			buffered, evicted := c.oooPush(p.Seq, payload)
+			bufferedTotal := c.oooBufN.Load()
+			if !buffered {
+				c.mu.Unlock()
+				return // dedup: no extra dup-ACK for a buffered retransmit
+			}
+			c.dupAckN.Add(1)
+			c.mu.Unlock()
+			if evicted {
+				c.tm.log.Warn("term: reorder buffer overflow, evicted oldest segment",
+					slog.String("flow", c.flowDesc()),
+					slog.Uint64("total_drops", c.oooDropN.Load()))
+			} else {
+				c.tm.log.Debug("term: out-of-order segment buffered",
+					slog.String("flow", c.flowDesc()),
+					slog.Uint64("seq", uint64(p.Seq)), slog.Int("len", n),
+					slog.Uint64("buffered_total", bufferedTotal))
+			}
+			c.sendACK() // dup-ack (ack = clientNext): fast-retransmit prompt
+			return
+		}
+	}
+
+	if hasFIN && !c.clientFIN && int32(seqEnd-c.clientNext) > 0 {
+		// FIN ahead of a hole: not acceptable yet; dup-ack so the
+		// client retransmits the missing data first.
+		c.dupAckN.Add(1)
+		c.mu.Unlock()
+		c.sendACK()
+		return
+	}
+	if hasFIN {
+		// Retransmit of an already-accepted FIN: our ACK may have been
+		// lost — re-ACK so the client stops.
 		c.mu.Unlock()
 		c.sendACK()
 		return
@@ -482,39 +638,184 @@ func (c *termConn) feed(p TermPkt) {
 
 	// Zero-window / keep-alive / pure ACK updates.
 	c.clientWin = p.Window
-
-	// FIN (possibly with the final payload handled above via p.Seq match).
-	if p.Flags&termFIN != 0 && !c.clientFIN {
-		c.clientFIN = true
-		c.clientNext = p.Seq + uint32(len(p.Payload)) + 1
-		c.mu.Unlock()
-		c.sendACK() // ACK the FIN
-		<-c.dialDone
-		c.mu.Lock()
-		up := c.upstream
-		c.mu.Unlock()
-		if up != nil {
-			_ = up.Close() // client is done sending: half-close is not
-			// expressible on net.Conn; closing ends the relay, pumpReads
-			// drains what the carrier already delivered and FINs us.
-		}
-		return
-	}
 	c.mu.Unlock()
 }
 
-// deliver queues client payload for the carrier (drops on overflow: the
-// client would retransmit into a reset — see sendACK ordering).
-func (c *termConn) deliver(payload []byte) {
+// acceptFINLocked records the client half-close (caller holds mu; at both
+// call sites c.clientNext == the FIN's seqEnd). Reports whether the relay
+// queue is already empty (no queued upload tail to drain).
+func (c *termConn) acceptFINLocked() bool {
+	c.clientFIN = true
+	c.finPend = true
+	c.clientNext++
+	return len(c.writeCh) == 0
+}
+
+// wakeHalfClose tells an idle pumpWrites to end the upstream relay
+// (net.Conn cannot half-close; pumpReads drains the carrier and FINs).
+func (c *termConn) wakeHalfClose() {
 	select {
-	case c.writeCh <- payload:
-	case <-c.closed:
+	case c.finSignal <- struct{}{}:
 	default:
-		// Channel full: the carrier is wedged; fail the connection.
-		c.tm.log.Warn("term: write queue overflow",
-			slog.String("flow", c.flowDesc()))
-		c.kill(false)
 	}
+}
+
+// payloadBufSize covers compliant client segments (we advertise MSS 1240,
+// real stacks use ≤ 1460); larger outliers allocate once and are not pooled.
+const payloadBufSize = 2048
+
+// payloadPool recycles payload buffers on the data hot path: steady-state
+// relay runs with zero per-segment allocations.
+var payloadPool = sync.Pool{New: func() any { b := make([]byte, payloadBufSize); return &b }}
+
+// copyPayload copies a client payload into a pooled buffer.
+func copyPayload(p []byte) []byte {
+	if len(p) > payloadBufSize {
+		out := make([]byte, len(p))
+		copy(out, p)
+		return out
+	}
+	bp := payloadPool.Get().(*[]byte)
+	out := (*bp)[:len(p)]
+	copy(out, p)
+	return out
+}
+
+// putPayload returns a payload buffer to the pool after the carrier write.
+// Unreturned buffers (killed conn, oversized) are simply collected by the GC.
+func putPayload(b []byte) {
+	if cap(b) == payloadBufSize {
+		full := b[:cap(b)]
+		payloadPool.Put(&full)
+	}
+}
+
+const (
+	// oooSegLimit / oooByteLimit bound the client-side reorder buffer.
+	// Live upload finding 2026-10-25: with the old 64-segment / 256KB
+	// cap a long upload (sender window growing to ~1-2MB through the
+	// forged-path ACK cadence) blew the buffer on every burst, and each
+	// evicted segment was NOT yet ACKed — the client recovered it only
+	// on its RTO (seconds), so uploads stalled for minutes at a time.
+	// 512 segments (~630KB at MSS 1240) / 2MB cover the observed window
+	// range with headroom; eviction now also fires an immediate dup-ACK
+	// so even a real overflow recovers within one RTT, not one RTO.
+	oooSegLimit  = 512
+	oooByteLimit = 2 << 20 // 2MB
+)
+
+// oooPush buffers a future segment (caller holds mu). Bounded: on reaching
+// the segment/byte limit the OLDEST buffered segment is evicted — it was
+// never ACKed, so the dup-ACK fast-retransmit prompt (feed) recovers it.
+// Reports whether the segment was newly buffered (false = retransmit of an
+// already-buffered seq, payload released) and whether an eviction happened.
+func (c *termConn) oooPush(seq uint32, payload []byte) (buffered, evicted bool) {
+	if c.ooo == nil {
+		c.ooo = make(map[uint32][]byte)
+	}
+	if _, dup := c.ooo[seq]; dup {
+		putPayload(payload) // retransmit of an already-buffered segment
+		return false, false
+	}
+	for len(c.ooo) >= oooSegLimit || c.oooBytes+len(payload) > oooByteLimit {
+		if len(c.ooo) == 0 {
+			break
+		}
+		old := c.oooFIFO[0]
+		c.oooFIFO = c.oooFIFO[1:]
+		c.oooBytes -= len(c.ooo[old])
+		putPayload(c.ooo[old])
+		delete(c.ooo, old)
+		c.oooDropN.Add(1)
+		evicted = true
+	}
+	c.ooo[seq] = payload
+	c.oooFIFO = append(c.oooFIFO, seq)
+	c.oooBytes += len(payload)
+	c.oooBufN.Add(1)
+	return true, evicted
+}
+
+// oooPop removes the buffered segment at seq (caller holds mu), if any.
+func (c *termConn) oooPop(seq uint32) ([]byte, bool) {
+	b, ok := c.ooo[seq]
+	if !ok {
+		return nil, false
+	}
+	delete(c.ooo, seq)
+	c.oooBytes -= len(b)
+	for i, s := range c.oooFIFO {
+		if s == seq {
+			c.oooFIFO = append(c.oooFIFO[:i], c.oooFIFO[i+1:]...)
+			break
+		}
+	}
+	return b, true
+}
+
+// enqueueLocked queues payloads for the carrier in order (caller holds mu).
+// Non-blocking: room is reserved under the same lock that checks it, and
+// pumpWrites only drains — a full queue is handled by feed's backpressure
+// (defer the ACK), never by killing the connection. Every queued byte is
+// counted: it stays charged against the advertised window until the
+// carrier write completes.
+func (c *termConn) enqueueLocked(out [][]byte) {
+	for _, b := range out {
+		select {
+		case c.writeCh <- b:
+			c.queuedBytes.Add(int64(len(b)))
+		case <-c.closed:
+			return
+		}
+	}
+}
+
+// recvWindowLocked computes the window to advertise to the client
+// (caller holds mu): the free part of the receive buffer — recvBufCap
+// minus the bytes still unconsumed by the carrier (relay queue) or held
+// out-of-order — clamped to [0, 0xFFFF]. The queue's slot capacity joins
+// the byte cap (minus the reorder-flush reserve): tiny client segments
+// would otherwise exhaust slots long before the byte budget.
+func (c *termConn) recvWindowLocked() uint16 {
+	free := int64(recvBufCap) - c.queuedBytes.Load() - int64(c.oooBytes)
+	if slotFree := int64(cap(c.writeCh)-len(c.writeCh)-oooBatchReserve) * termMSS; slotFree < free {
+		free = slotFree
+	}
+	if free < 0 {
+		free = 0
+	}
+	if free > 0xFFFF {
+		free = 0xFFFF
+	}
+	return uint16(free)
+}
+
+// windowUpdateStep: re-advertise the window proactively once the free
+// part of the receive buffer has regrown by this much (or crosses zero)
+// — bounds the extra injected ACKs to ~4 per window while keeping the
+// client from stalling on its persist timer.
+const windowUpdateStep = recvBufCap / 4
+
+// maybeWindowUpdate sends a window-update ACK after the relay queue
+// drained (called from pumpWrites). The client may be blocked waiting
+// for its persist timer after a win=0 advertisement; the standard
+// window-update mechanic answers as soon as real space has opened.
+func (c *termConn) maybeWindowUpdate() {
+	c.mu.Lock()
+	if c.dead {
+		c.mu.Unlock()
+		return
+	}
+	prev := c.advWin
+	w := c.recvWindowLocked()
+	if w == prev || (prev != 0 && w-prev < windowUpdateStep) {
+		c.mu.Unlock()
+		return
+	}
+	c.advWin = w
+	pkt := c.craft(c.serverNext, c.clientNext, termACK, nil, w)
+	c.mu.Unlock()
+	_ = c.tm.send.SendInboundTCP(pkt, c.ifIdx(), c.subIfIdx())
 }
 
 // pumpWrites forwards client payload into the carrier.
@@ -527,6 +828,38 @@ func (c *termConn) pumpWrites() {
 				c.reset(err)
 				return
 			}
+			putPayload(p)
+			// The byte left the receive buffer: uncharge it and let the
+			// client know the window opened (window-update ACK).
+			c.queuedBytes.Add(-int64(len(p)))
+			c.maybeWindowUpdate()
+			// Client half-closed and this was the last queued byte:
+			// end the relay. The queue must drain FIRST — the old code
+			// closed upstream at FIN time and dropped the already-ACKed
+			// upload tail still sitting in it.
+			c.mu.Lock()
+			pend := c.finPend && len(c.writeCh) == 0
+			c.mu.Unlock()
+			if pend {
+				c.mu.Lock()
+				up := c.upstream
+				c.mu.Unlock()
+				if up != nil {
+					_ = up.Close()
+				}
+				return
+			}
+		case <-c.finSignal:
+			// Half-close accepted with an empty queue. No enqueue can
+			// follow: after clientFIN only dups arrive, and they are
+			// never queued.
+			c.mu.Lock()
+			up := c.upstream
+			c.mu.Unlock()
+			if up != nil {
+				_ = up.Close()
+			}
+			return
 		case <-c.closed:
 			return
 		}
@@ -575,12 +908,12 @@ func (c *termConn) sendData(b []byte) bool {
 		seq := c.serverNext
 		c.serverNext += uint32(n)
 		ack := c.clientNext
-		pkt := c.craft(seq, ack, termACK|termPSH, b[:n])
+		pkt := c.craft(seq, ack, termACK|termPSH, b[:n], c.recvWindowLocked())
 		una := c.serverUna
 		c.mu.Unlock()
 		if err := c.tm.send.SendInboundTCP(pkt, c.ifIdx(), c.subIfIdx()); err != nil {
 			c.tm.log.Warn("term: data inject failed", slog.String("err", err.Error()))
-			c.kill(false)
+			c.kill(false, "data inject failed: "+err.Error())
 			return false
 		}
 		c.tm.log.Debug("term: data injected",
@@ -622,7 +955,7 @@ func (c *termConn) sendSYNACK() {
 		c.mu.Unlock()
 		return
 	}
-	pkt := c.craft(c.serverISN, c.clientNext, termSYN|termACK, nil)
+	pkt := c.craft(c.serverISN, c.clientNext, termSYN|termACK, nil, termWindow)
 	c.mu.Unlock()
 	if err := c.tm.send.SendInboundTCP(pkt, c.ifIdx(), c.subIfIdx()); err != nil {
 		c.tm.log.Warn("term: syn-ack inject failed", slog.String("err", err.Error()))
@@ -635,7 +968,12 @@ func (c *termConn) sendACK() {
 		c.mu.Unlock()
 		return
 	}
-	pkt := c.craft(c.serverNext, c.clientNext, termACK, nil)
+	// Every ACK advertises the REAL free receive-buffer space: a full
+	// buffer → win=0 (the client throttles itself via its persist
+	// timer), space regrown → the client resumes. This is what keeps
+	// the reorder buffer empty and evictions at zero.
+	c.advWin = c.recvWindowLocked()
+	pkt := c.craft(c.serverNext, c.clientNext, termACK, nil, c.advWin)
 	c.mu.Unlock()
 	_ = c.tm.send.SendInboundTCP(pkt, c.ifIdx(), c.subIfIdx())
 }
@@ -647,11 +985,11 @@ func (c *termConn) sendFIN() {
 		return
 	}
 	c.finSent = true
-	pkt := c.craft(c.serverNext, c.clientNext, termFIN|termACK, nil)
+	pkt := c.craft(c.serverNext, c.clientNext, termFIN|termACK, nil, c.recvWindowLocked())
 	c.mu.Unlock()
 	if err := c.tm.send.SendInboundTCP(pkt, c.ifIdx(), c.subIfIdx()); err != nil {
 		c.tm.log.Warn("term: fin inject failed", slog.String("err", err.Error()))
-		c.kill(false)
+		c.kill(false, "fin inject failed: "+err.Error())
 	}
 }
 
@@ -668,19 +1006,27 @@ func (c *termConn) reset(reason error) {
 			c.sendFIN()
 			return
 		}
-		pkt := c.craft(c.serverNext, c.clientNext, termRST|termACK, nil)
+		pkt := c.craft(c.serverNext, c.clientNext, termRST|termACK, nil, c.recvWindowLocked())
 		c.mu.Unlock()
 		_ = c.tm.send.SendInboundTCP(pkt, c.ifIdx(), c.subIfIdx())
 	} else {
 		c.mu.Unlock()
 	}
-	c.kill(false)
+	c.kill(false, "reset: "+reason.Error())
 }
 
 // kill closes the upstream relay and marks the conn dead; remove=true also
-// drops it from the table (sweeper path).
-func (c *termConn) kill(remove bool) {
+// drops it from the table (sweeper path). reason is logged once — WARN for
+// relay failures, DEBUG for the orderly teardowns (shutdown/idle/RST/FIN).
+func (c *termConn) kill(remove bool, reason string) {
 	c.closeOne.Do(func() {
+		lvl := slog.LevelWarn
+		switch reason {
+		case "shutdown", "idle sweep", "client rst", "client fin acked":
+			lvl = slog.LevelDebug
+		}
+		c.tm.log.Log(context.Background(), lvl, "term: connection killed",
+			slog.String("flow", c.flowDesc()), slog.String("reason", reason))
 		close(c.closed)
 		c.mu.Lock()
 		c.dead = true
@@ -711,8 +1057,10 @@ func (c *termConn) subIfIdx() uint32 { return c.subifidx }
 // craft builds one forged packet: src = original destination (the server
 // the client thinks it talks to), dst = client.
 //
-// Payload must be ≤ termMSS. Options: MSS on SYN-ACK only.
-func (c *termConn) craft(seq, ack uint32, flags byte, payload []byte) []byte {
+// Payload must be ≤ termMSS. Options: MSS on SYN-ACK only. win is the
+// receive window advertised (real free receive-buffer space; see
+// recvWindowLocked — the SYN-ACK uses termWindow).
+func (c *termConn) craft(seq, ack uint32, flags byte, payload []byte, win uint16) []byte {
 	optLen := 0
 	if flags&termSYN != 0 {
 		optLen = 4
@@ -737,7 +1085,7 @@ func (c *termConn) craft(seq, ack uint32, flags byte, payload []byte) []byte {
 	binary.BigEndian.PutUint32(tcp[4:], seq)
 	binary.BigEndian.PutUint32(tcp[8:], ack)
 	tcp[12] = byte((20+optLen)/4) << 4 // data offset in 32-bit words
-	binary.BigEndian.PutUint16(tcp[14:], termWindow)
+	binary.BigEndian.PutUint16(tcp[14:], win)
 	tcp[13] = flags
 	if optLen == 4 {
 		tcp[20], tcp[21] = 2, 4 // MSS kind, len

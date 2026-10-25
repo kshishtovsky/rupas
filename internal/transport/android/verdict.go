@@ -51,3 +51,15 @@ type Verdict func(FlowMeta) Action
 // DirectVerdict is the wave-2 default verdict: everything — including
 // DNS:53 — goes DIRECT.
 func DirectVerdict(FlowMeta) Action { return ActionDirect }
+
+// W2PolicyVerdict: parity with the desktop routing table (PRD ru §5) —
+// everything DIRECT except QUIC (UDP:443) which is BLOCKed. The RU TSPU
+// blackholes QUIC; relaying it makes apps (YouTube first of all) stall in
+// multi-second QUIC handshakes instead of falling back to TCP fast, where
+// later waves (desync/tunnel) can pick them up.
+func W2PolicyVerdict(m FlowMeta) Action {
+	if m.Network == "udp" && m.Destination.Port() == 443 {
+		return ActionBlock
+	}
+	return ActionDirect
+}

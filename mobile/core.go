@@ -48,7 +48,7 @@ func Start(tunFd int, plat Platform) error {
 	if plat == nil {
 		return errors.New("core: nil Platform")
 	}
-	eng := android.NewEngine(android.DirectVerdict, plat.Protect, plat.Log)
+	eng := android.NewEngine(android.W2PolicyVerdict, plat.Protect, plat.Log)
 	if err := eng.Start(tunFd); err != nil {
 		return err
 	}

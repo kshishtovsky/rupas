@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"sync"
 	"time"
 
@@ -227,11 +228,12 @@ func (p *capturePipeline) startLocked(cfg *config.Config) error {
 
 	effCfg := *cfg
 	var (
-		port  uint16
-		tg    []string
-		tun   tunnel.Tunnel
-		mode  = tunnelModeOff
-		escal int
+		port        uint16
+		tg          []string
+		tun         tunnel.Tunnel
+		mode        = tunnelModeOff
+		escal       int
+		termFactory capture.TunnelTCPFactory
 	)
 	switch {
 	case !p.tunnel:
@@ -261,6 +263,22 @@ func (p *capturePipeline) startLocked(cfg *config.Config) error {
 			tg = tunnelCIDRs(cfg.Rules)
 			effCfg.Rules = cfg.Rules
 			mode = tunnelModeLive
+			// Wave 5c: the userspace TCP terminator replaces the (live
+			// proven dead) NAT→tproxy forward leg for TG TCP flows. It
+			// spoofs the server side and relays through the tunnel's own
+			// carrier chain; UDP keeps the §3.3 NAT relay.
+			if td, ok := tun.(interface {
+				TCPDialer() func(ctx context.Context, dst string) (net.Conn, error)
+			}); ok {
+				dial := td.TCPDialer()
+				tl := slogBridge(p.log)
+				hl := tun // Healthy() comes with the Tunnel interface
+				termFactory = func(send capture.Transport) capture.TunnelTCP {
+					term := tunnel.NewTerminator(inboundSender{t: send}, dial, tl)
+					term.SetAdmission(func() bool { return hl.Healthy() })
+					return termAdapter{tm: term}
+				}
+			}
 		}
 	}
 
@@ -283,6 +301,7 @@ func (p *capturePipeline) startLocked(cfg *config.Config) error {
 		FakeTemplate: p.tpl,
 		TProxyPort:   port,
 		TGCIDRs:      tg,
+		TunnelTCP:    termFactory,
 	})
 	if err != nil {
 		if tun != nil {

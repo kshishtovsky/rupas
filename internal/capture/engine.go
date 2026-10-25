@@ -4,8 +4,10 @@ package capture
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -51,6 +53,39 @@ type Options struct {
 	PacketSize   int                 // per-slot buffer; 0 = 65575
 	FlowIdleTTL  time.Duration       // flow GC idle timeout; 0 = 5 min
 	SniffMode    bool                // open real handles with FlagSniff (diagnostics only)
+
+	// TunnelTCP, when set, replaces the NAT→tproxy forward leg for TCP with
+	// the userspace terminator (wave 5c): the engine opens a third handle
+	// (inbound, TG CIDRs — see BuildTermFilter), hands it to the factory
+	// and feeds every tunnel-verdict TCP packet to the returned hook
+	// instead of NAT-rewriting it. Live finding 2026-10-25: the stack
+	// drops NETWORK-layer injected inbound SYNs toward a local listener in
+	// every address shape, so the NAT forward leg cannot deliver TCP.
+	TunnelTCP TunnelTCPFactory
+}
+
+// TunnelTCPFactory builds the TCP terminator over the dedicated inbound
+// send handle. Invoked once, in Run/openTransports, before any FeedTCP.
+type TunnelTCPFactory func(send Transport) TunnelTCP
+
+// TunnelTCP consumes tunnel-verdict TCP packets (the userspace terminator).
+// FeedTCP is called on the capture hot path; it must not block on network
+// I/O and must COPY anything it retains from pkt (the receive buffer is
+// recycled on return). Close is called once from Stop.
+type TunnelTCP interface {
+	FeedTCP(pkt TCPPkt)
+	Close()
+}
+
+// TCPPkt is one parsed outbound client packet handed to the terminator.
+type TCPPkt struct {
+	SrcIP, DstIP     [4]byte // client, original destination
+	SrcPort, DstPort uint16
+	Seq, Ack         uint32
+	Flags            byte // SYN/ACK/PSH/FIN/RST
+	Window           uint16
+	Payload          []byte
+	IfIdx, SubIfIdx  uint32 // re-injection interface (captured address)
 }
 
 // Engine is the capture hot path: one WinDivert NETWORK-layer receive loop
@@ -68,12 +103,19 @@ type Engine struct {
 	// openTransports (real driver). Once Run has started it is immutable.
 	transport     Transport
 	loopTransport Transport
+	// termTransport is the terminator's dedicated inbound send handle;
+	// tunnelTCP (from Options.TunnelTCP) consumes TCP flows when non-nil.
+	termTransport Transport
+	tunnelTCP     TunnelTCP
+
+	// tgPrefixes mirrors opts.TGCIDRs for the §4.2 TCP fast path.
+	tgPrefixes []netip.Prefix
 	ownsTransport bool
 
 	streams    map[flowtable.FlowKey]*inspector.Stream
 	streamMu   sync.Mutex // guards streams (main loop writes; cleanup from both loops)
 	streamPool sync.Pool
-	nat        map[natKey]*flowtable.Flow
+	nat        map[natKey]natVal
 	natMu      sync.RWMutex // guards nat (main inserts; loopback lookups/deletes)
 
 	// ClientHello hold buffers (winws parity, wave 4A): partial CH
@@ -150,10 +192,15 @@ func New(opts Options) (*Engine, error) {
 		tproxyOn: opts.TProxyPort != 0,
 		streams:  make(map[flowtable.FlowKey]*inspector.Stream),
 		holds:    make(map[flowtable.FlowKey]*chHold),
-		nat:      make(map[natKey]*flowtable.Flow),
+		nat:      make(map[natKey]natVal),
 		stop:     make(chan struct{}),
 		runDone:  make(chan struct{}),
 		loopDone: make(chan struct{}),
+	}
+	for _, c := range opts.TGCIDRs {
+		if p, err := netip.ParsePrefix(c); err == nil {
+			e.tgPrefixes = append(e.tgPrefixes, p)
+		}
 	}
 	e.streamPool.New = func() any { return inspector.NewStream() }
 	e.holdPool.New = func() any { return &chHold{buf: make([]byte, 0, 2048)} }
@@ -173,6 +220,15 @@ func New(opts Options) (*Engine, error) {
 func (e *Engine) InjectTransport(main, loop Transport) {
 	e.mu.Lock()
 	e.transport, e.loopTransport = main, loop
+	e.mu.Unlock()
+}
+
+// SetTunnelTCP installs the TCP terminator hook directly — the test seam
+// for Options.TunnelTCP (production runs the factory in openTransports).
+// Must be called before Run.
+func (e *Engine) SetTunnelTCP(hook TunnelTCP) {
+	e.mu.Lock()
+	e.tunnelTCP = hook
 	e.mu.Unlock()
 }
 
@@ -218,6 +274,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	}
 	main := e.transport
 	loop := e.loopTransport
+	term := e.termTransport
 	e.mu.Unlock()
 	if opened {
 		defer e.closeTransports()
@@ -254,11 +311,41 @@ func (e *Engine) Run(ctx context.Context) error {
 		close(e.loopDone)
 	}
 
+	// Terminator handle drain: everything it captures that is NOT one of
+	// its own injections (same-handle Send is never re-captured) is foreign
+	// inbound TG traffic (leftover pre-start connections) — relay untouched.
+	if term != nil {
+		go e.termRecv(ctx, term)
+	}
+
 	err := e.recvLoop(ctx, main)
 	cancel() // unblocks the loopback goroutine and the sweeper
 	<-e.loopDone
 	<-sweepDone
 	return err
+}
+
+// termRecv drains the terminator's dedicated handle: relay everything
+// captured untouched through the same handle (same-handle Send is never
+// re-captured, so this cannot loop).
+func (e *Engine) termRecv(ctx context.Context, t Transport) {
+	for {
+		bb := e.getBatch()
+		n, err := t.RecvBatch(bb.packets, bb.addrs)
+		if err != nil {
+			e.putBatch(bb)
+			return
+		}
+		for i := 0; i < n; i++ {
+			_ = t.Send(bb.packets[i], &bb.addrs[i])
+		}
+		e.putBatch(bb)
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+	}
 }
 
 // recvLoop is the hot loop: batch receive → per-packet verdict → recycle.
@@ -330,6 +417,12 @@ func (e *Engine) Stop() {
 			case <-time.After(5 * time.Second):
 			}
 		}
+		e.mu.Lock()
+		hook := e.tunnelTCP
+		e.mu.Unlock()
+		if hook != nil {
+			hook.Close() // closes the terminator's upstream relays
+		}
 		if e.ownsTransport {
 			e.closeTransports()
 		}
@@ -346,6 +439,9 @@ func (e *Engine) shutdownTransports() {
 	}
 	if e.loopTransport != nil {
 		ts = append(ts, e.loopTransport)
+	}
+	if e.termTransport != nil {
+		ts = append(ts, e.termTransport)
 	}
 	e.mu.Unlock()
 	for _, t := range ts {
@@ -385,19 +481,39 @@ func (e *Engine) openTransports() error {
 		}
 		e.loopTransport = NewWinTransport(lh)
 	}
+	// Wave 5c: the terminator's dedicated inbound send handle. Its filter
+	// matches the forged packets (inbound, TG CIDR sources) — the live
+	// matrix only proved delivery through content-matching handles.
+	if e.opts.TunnelTCP != nil && len(e.opts.TGCIDRs) > 0 {
+		tf, err := BuildTermFilter(e.opts.TGCIDRs)
+		if err != nil {
+			e.closeTransports()
+			return err
+		}
+		th, err := windivert.OpenWithFlags(tf, windivert.LayerNetwork, 0, flags)
+		if err != nil {
+			e.closeTransports()
+			return fmt.Errorf("capture: open terminator handle: %w", err)
+		}
+		e.termTransport = NewWinTransport(th)
+		e.tunnelTCP = e.opts.TunnelTCP(e.termTransport)
+	}
 	return nil
 }
 
 func (e *Engine) closeTransports() {
 	e.mu.Lock()
-	t, l := e.transport, e.loopTransport
-	e.transport, e.loopTransport = nil, nil
+	t, l, tm := e.transport, e.loopTransport, e.termTransport
+	e.transport, e.loopTransport, e.termTransport = nil, nil, nil
 	e.mu.Unlock()
 	if t != nil {
 		_ = t.Close()
 	}
 	if l != nil {
 		_ = l.Close()
+	}
+	if tm != nil {
+		_ = tm.Close()
 	}
 }
 
@@ -466,6 +582,19 @@ func (e *Engine) processOutbound(pkt []byte, addr *windivert.Address, p *pktInfo
 
 	key := flowKeyOut(p)
 
+	// §4.2 TCP fast path: a CIDR rule already decides TUNNEL without any
+	// ClientHello — MTProto and other non-TLS Telegram traffic never
+	// produces one (live finding: such dials leaked DIRECT into the TSPU
+	// blackhole). SNI/port rules still run the CH pipeline below.
+	if e.tgFastTunnel(p) {
+		f := e.flows.GetOrCreate(key)
+		if f.State.Load() != flowtable.FlowTunnel {
+			f.State.Store(flowtable.FlowTunnel)
+		}
+		e.relayTunnelTCP(pkt, addr, p, key, f)
+		return
+	}
+
 	// Hard connection teardown: clean up and forward (tunnel flows still
 	// need the NAT rewrite so the tproxy sees the close).
 	if p.rst() || p.fin() {
@@ -475,7 +604,7 @@ func (e *Engine) processOutbound(pkt []byte, addr *windivert.Address, p *pktInfo
 			} else {
 				e.passVerdict(pkt, addr, core.VerdictPass)
 			}
-			e.cleanupFlow(natKey{ip: v4mapped(p.src4), port: p.srcPort, proto: p.proto}, key)
+			e.cleanupFlow(natKey{ip: v4mapped(fakeIP4()), port: p.srcPort, proto: p.proto}, key)
 			return
 		}
 		e.passVerdict(pkt, addr, core.VerdictPass)
@@ -709,6 +838,48 @@ func (e *Engine) processUDP(pkt []byte, addr *windivert.Address, p *pktInfo) {
 	e.natOutbound(pkt, p, key, f, addr)
 }
 
+// tgFastTunnel reports the §4.2 fast-path verdict: the destination is in a
+// TG CIDR AND the rules table resolves TUNNEL for (dst, port) with no SNI.
+func (e *Engine) tgFastTunnel(p *pktInfo) bool {
+	if len(e.tgPrefixes) == 0 {
+		return false
+	}
+	dst := netip.AddrFrom4(p.dst4)
+	for _, px := range e.tgPrefixes {
+		if px.Contains(dst) && e.rules.Match(v4mapped(p.dst4), "", p.dstPort) == config.ActionTunnel {
+			return true
+		}
+	}
+	return false
+}
+
+// relayTunnelTCP carries one tunnel-verdict TCP packet: to the userspace
+// terminator when installed (wave 5c), else to the legacy NAT→tproxy leg.
+func (e *Engine) relayTunnelTCP(pkt []byte, addr *windivert.Address, p *pktInfo, key flowtable.FlowKey, f *flowtable.Flow) {
+	if e.tunnelTCP != nil {
+		win := uint16(0)
+		if p.ipLen+16 <= len(pkt) {
+			win = binary.BigEndian.Uint16(pkt[p.ipLen+14 : p.ipLen+16])
+		}
+		tp := TCPPkt{
+			SrcIP: p.src4, DstIP: p.dst4,
+			SrcPort: p.srcPort, DstPort: p.dstPort,
+			Seq: p.seq, Ack: p.ackNum, Flags: p.flags, Window: win,
+			Payload: p.payload,
+		}
+		if na := addr.Network(); na != nil {
+			tp.IfIdx, tp.SubIfIdx = na.IfIdx, na.SubIfIdx
+		}
+		e.tunnelTCP.FeedTCP(tp)
+		e.cnt.tunnelTx.Add(1)
+		if p.fin() || p.rst() {
+			e.cleanupFlow(natKey{ip: v4mapped(fakeIP4()), port: p.srcPort, proto: p.proto}, key)
+		}
+		return
+	}
+	e.natOutbound(pkt, p, key, f, addr)
+}
+
 // processInbound handles packets captured in the server→client direction
 // (with the production outbound-only filter these occur on the loopback
 // handle and in tests). Any data segment from the server completes the
@@ -734,7 +905,9 @@ func (e *Engine) processInbound(pkt []byte, addr *windivert.Address, p *pktInfo)
 	if p.isTCP() && (p.fin() || p.rst()) {
 		key := flowKeyIn(p)
 		if _, ok := e.flows.Get(key); ok {
-			e.cleanupFlow(natKey{ip: key.SrcIP, port: key.SrcPort, proto: p.proto}, key)
+			// NAT entries are keyed by the FAKE source IP; key.SrcPort is
+			// the client's ephemeral port (client lands in the src fields).
+			e.cleanupFlow(natKey{ip: v4mapped(fakeIP4()), port: key.SrcPort, proto: p.proto}, key)
 		}
 	}
 	e.passVerdict(pkt, addr, core.VerdictPass)
@@ -800,17 +973,42 @@ func BuildMainFilter(tgCIDRs []string) (string, error) {
 	return strings.Join(parts, " or "), nil
 }
 
-// BuildLoopbackFilter renders the second handle's filter: inbound replies of
-// the tproxy listener (SYSTEM_DESIGN §3.3). Both TCP and UDP responses carry
-// source 127.0.0.1:tproxyPort.
+// BuildLoopbackFilter renders the second handle's filter. Live matrix
+// findings (2026-10-25): genuine loopback traffic surfaces at the NETWORK
+// layer ONLY as its outbound leg, so the reverse NAT captures the tproxy
+// replies' OUTBOUND legs (source port == tproxyPort). The inbound clauses
+// cover the forward NAT re-injections (destination port == tproxyPort),
+// which natOutbound releases through this handle.
 func BuildLoopbackFilter(tproxyPort uint16) (string, error) {
-	tcpF, err := windivert.NewFilter().Inbound().TCP().SrcCIDRs("127.0.0.1/32").SrcPorts(tproxyPort).Build()
+	tcpFwd, err := windivert.NewFilter().Inbound().TCP().DstPorts(tproxyPort).Build()
 	if err != nil {
 		return "", err
 	}
-	udpF, err := windivert.NewFilter().Inbound().UDP().SrcCIDRs("127.0.0.1/32").SrcPorts(tproxyPort).Build()
+	tcpRev, err := windivert.NewFilter().Outbound().TCP().SrcPorts(tproxyPort).Build()
 	if err != nil {
 		return "", err
 	}
-	return "(" + tcpF + ") or (" + udpF + ")", nil
+	udpFwd, err := windivert.NewFilter().Inbound().UDP().DstPorts(tproxyPort).Build()
+	if err != nil {
+		return "", err
+	}
+	udpRev, err := windivert.NewFilter().Outbound().UDP().SrcPorts(tproxyPort).Build()
+	if err != nil {
+		return "", err
+	}
+	return "(((" + tcpFwd + ") or (" + tcpRev + ")) or ((" + udpFwd + ") or (" + udpRev + ")))", nil
+}
+
+// BuildTermFilter renders the terminator handle's filter: the INBOUND leg
+// of TG-CIDR TCP traffic — exactly the forged packets the terminator
+// injects (src = original TG destination). The live matrix only proved
+// delivery through handles whose filter MATCHES the injected content, so
+// the filter doubles as the send-path contract. Everything else it can
+// capture is foreign inbound TG traffic, relayed untouched by termRecv.
+func BuildTermFilter(tgCIDRs []string) (string, error) {
+	f, err := windivert.NewFilter().Inbound().TCP().SrcCIDRs(tgCIDRs...).Build()
+	if err != nil {
+		return "", fmt.Errorf("capture: terminator filter: %w", err)
+	}
+	return "(" + f + ")", nil
 }

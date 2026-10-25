@@ -121,11 +121,19 @@ func (t *tunnel) handleUDPPacket(src *net.UDPAddr, payload []byte) {
 		return
 	}
 	dst := joinAddr(dstIP, dstPort)
+	path := t.activeUDPPath()
+	if path.c == nil {
+		t.logger.Warn("udp: no UDP carrier available",
+			slog.String("src", key.String()))
+		t.drop()
+		return
+	}
 	ctx, cancel := context.WithTimeout(ctxOrBackground(t.ctx), t.dialTimeout)
-	relay, err := t.tr.udpAssociate(ctx)
+	relay, err := path.c.udpAssociate(ctx)
 	cancel()
 	if err != nil {
 		t.logger.Warn("udp: associate failed",
+			slog.String("path", path.name),
 			slog.String("src", key.String()), slog.Any("err", err))
 		t.drop()
 		return

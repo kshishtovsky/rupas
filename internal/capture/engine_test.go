@@ -447,21 +447,27 @@ func TestNATRoundtripTCP(t *testing.T) {
 	feed(t, e, chPkt, outboundAddr())
 
 	sent := ft.Sent()
-	if len(sent) != 2 {
-		t.Fatalf("sent %d, want 2", len(sent))
+	if len(sent) != 1 {
+		t.Fatalf("sent %d, want 1 (SYN passed untouched)", len(sent))
 	}
-	natPkt := sent[1].Data
+	// The NAT legs re-inject through the loopback handle (live matrix
+	// finding: only the inbound loopback path delivers them).
+	loSent := loop.Sent()
+	if len(loSent) != 1 {
+		t.Fatalf("loopback sent %d, want 1 (NAT'd ClientHello)", len(loSent))
+	}
+	natPkt := loSent[0].Data
 	p, ok := parsePkt(natPkt)
 	if !ok {
 		t.Fatal("NAT packet unparseable")
 	}
-	if p.dst4 != loopback4 {
+	if p.dst4 != parseIP4(testClientIP, [4]byte{}) {
 		t.Fatalf("NAT dst = %v, want 127.0.0.1", p.dst4)
 	}
 	if p.dstPort != testTProxyPort {
 		t.Fatalf("NAT dstPort = %d, want %d", p.dstPort, testTProxyPort)
 	}
-	if p.src4 != parseIP4(testClientIP, [4]byte{}) || p.srcPort != testClientPort {
+	if p.src4 != fakeIP4() || p.srcPort != testClientPort {
 		t.Fatalf("NAT src changed: %v:%d", p.src4, p.srcPort)
 	}
 	if !checksumsValid(natPkt) {
@@ -482,9 +488,9 @@ func TestNATRoundtripTCP(t *testing.T) {
 
 	// 3. SYN retransmission of a TUNNEL flow is re-redirected (§3.2).
 	feed(t, e, syn, outboundAddr())
-	last := ft.Sent()
+	last := loop.Sent()
 	np, _ := parsePkt(last[len(last)-1].Data)
-	if np.dst4 != loopback4 || np.dstPort != testTProxyPort {
+	if np.dst4 != parseIP4(testClientIP, [4]byte{}) || np.dstPort != testTProxyPort {
 		t.Fatal("SYN retransmit not redirected")
 	}
 
@@ -493,9 +499,9 @@ func TestNATRoundtripTCP(t *testing.T) {
 	data := buildTCP(testClientIP, testClientPort, testTGIP, 443, 9001+uint32(len(ch)), 1, tcpFlagACK|tcpFlagPSH, []byte("MTProtoData"))
 	dataPristine := append([]byte(nil), data...)
 	feed(t, e, data, outboundAddr())
-	last = ft.Sent()
+	last = loop.Sent()
 	np, _ = parsePkt(last[len(last)-1].Data)
-	if np.dst4 != loopback4 || np.dstPort != testTProxyPort {
+	if np.dst4 != parseIP4(testClientIP, [4]byte{}) || np.dstPort != testTProxyPort {
 		t.Fatal("tunnel data segment not redirected")
 	}
 	if bytes.Equal(last[len(last)-1].Data, dataPristine) {
@@ -504,14 +510,14 @@ func TestNATRoundtripTCP(t *testing.T) {
 
 	// 5. Loopback reply: src 127.0.0.1:9443 → reverse-translated to the
 	// original server, dst = client.
-	reply := buildTCP("127.0.0.1", testTProxyPort, testClientIP, testClientPort, 1, 9001+uint32(len(ch))+14, tcpFlagACK|tcpFlagPSH, []byte("ServerHello+"))
+	reply := buildTCP("127.0.0.1", testTProxyPort, "198.18.0.1", testClientPort, 1, 9001+uint32(len(ch))+14, tcpFlagACK|tcpFlagPSH, []byte("ServerHello+"))
 	e.processLoopback(loop, reply, ptrOf(inboundAddr()))
 
 	loopSent := loop.Sent()
-	if len(loopSent) != 1 {
-		t.Fatalf("loopback sent %d, want 1", len(loopSent))
+	if len(loopSent) != 4 { // CH + SYN-retrans + data NAT legs + the reverse leg
+		t.Fatalf("loopback sent %d, want 4", len(loopSent))
 	}
-	rp, ok := parsePkt(loopSent[0].Data)
+	rp, ok := parsePkt(loopSent[len(loopSent)-1].Data)
 	if !ok {
 		t.Fatal("reverse-NAT packet unparseable")
 	}
@@ -533,9 +539,9 @@ func TestNATRoundtripTCP(t *testing.T) {
 	// 6. FIN from the client: redirected, then full teardown.
 	fin := buildTCP(testClientIP, testClientPort, testTGIP, 443, 9001+uint32(len(ch))+14, 1, tcpFlagACK|tcpFlagFIN, nil)
 	feed(t, e, fin, outboundAddr())
-	last = ft.Sent()
+	last = loop.Sent()
 	np, _ = parsePkt(last[len(last)-1].Data)
-	if np.dst4 != loopback4 {
+	if np.dst4 != parseIP4(testClientIP, [4]byte{}) {
 		t.Fatal("FIN not redirected")
 	}
 	if n := e.Flows().Len(); n != 0 {
@@ -543,13 +549,13 @@ func TestNATRoundtripTCP(t *testing.T) {
 	}
 	// After teardown the NAT entry is gone: a stray loopback packet passes
 	// through untouched.
-	stray := buildTCP("127.0.0.1", testTProxyPort, testClientIP, testClientPort, 1, 1, tcpFlagACK, nil)
+	stray := buildTCP("127.0.0.1", testTProxyPort, "198.18.0.1", testClientPort, 1, 1, tcpFlagACK, nil)
 	e.processLoopback(loop, stray, ptrOf(inboundAddr()))
 	loopSent = loop.Sent()
-	if len(loopSent) != 2 {
+	if len(loopSent) != 6 { // 4 NAT/reverse legs + FIN + the stray passthrough
 		t.Fatalf("stray loopback packet: %d sent", len(loopSent))
 	}
-	if sp, _ := parsePkt(loopSent[1].Data); sp.src4 != loopback4 {
+	if sp, _ := parsePkt(loopSent[len(loopSent)-1].Data); sp.src4 != loopback4 {
 		t.Fatal("stray loopback packet was reverse-NATed without a flow")
 	}
 
@@ -561,12 +567,12 @@ func TestNATRoundtripTCP(t *testing.T) {
 // TestNATUDPRelay: UDP relay traffic to the TG CIDR is NAT-redirected and
 // reverse-translated on the loopback handle.
 func TestNATUDPRelay(t *testing.T) {
-	e, ft, loop := newTestEngine(t, tunnelTestConfig(), testDesyncParams("fake", 0), true)
+	e, _, loop := newTestEngine(t, tunnelTestConfig(), testDesyncParams("fake", 0), true)
 
 	udp := buildUDP(testClientIP, 53333, testTGIP, 50001, []byte("voice-packet"))
 	feed(t, e, udp, outboundAddr())
 
-	sent := ft.Sent()
+	sent := loop.Sent() // NAT legs re-inject via the loopback handle
 	if len(sent) != 1 {
 		t.Fatalf("sent %d, want 1", len(sent))
 	}
@@ -574,16 +580,16 @@ func TestNATUDPRelay(t *testing.T) {
 	if !ok || !p.isUDP() {
 		t.Fatal("NAT UDP packet unparseable")
 	}
-	if p.dst4 != loopback4 || p.dstPort != testTProxyPort {
+	if p.dst4 != parseIP4(testClientIP, [4]byte{}) || p.dstPort != testTProxyPort {
 		t.Fatalf("UDP NAT dst %v:%d", p.dst4, p.dstPort)
 	}
 	if !checksumsValid(sent[0].Data) {
 		t.Fatal("UDP NAT checksums invalid")
 	}
 
-	reply := buildUDP("127.0.0.1", testTProxyPort, testClientIP, 53333, []byte("voice-reply"))
+	reply := buildUDP("127.0.0.1", testTProxyPort, "198.18.0.1", 53333, []byte("voice-reply"))
 	e.processLoopback(loop, reply, ptrOf(inboundAddr()))
-	rp, ok := parsePkt(loop.Sent()[0].Data)
+	rp, ok := parsePkt(loop.Sent()[1].Data)
 	if !ok {
 		t.Fatal("UDP reverse-NAT unparseable")
 	}
@@ -604,18 +610,18 @@ func TestECHForcesTunnel(t *testing.T) {
 			{SNI: "blocked.example", Action: config.ActionDesync},
 		},
 	}
-	e, ft, _ := newTestEngine(t, cfg, testDesyncParams("fake", 0), true)
+	e, _, loop := newTestEngine(t, cfg, testDesyncParams("fake", 0), true)
 
 	ch := buildClientHello("blocked.example", true)
 	pkt := buildTCP(testClientIP, testClientPort, testServerIP, 443, 1000, 1, tcpFlagACK|tcpFlagPSH, ch)
 	feed(t, e, pkt, outboundAddr())
 
-	sent := ft.Sent()
+	sent := loop.Sent()
 	if len(sent) != 1 {
 		t.Fatalf("sent %d, want 1 (NAT-redirected, no fakes)", len(sent))
 	}
 	p, _ := parsePkt(sent[0].Data)
-	if p.dst4 != loopback4 || p.dstPort != testTProxyPort {
+	if p.dst4 != parseIP4(testClientIP, [4]byte{}) || p.dstPort != testTProxyPort {
 		t.Fatal("ECH flow not redirected to the tunnel")
 	}
 	if c := e.Counters(); c.PacketsDesync != 0 || c.PacketsRedir != 1 {
@@ -736,7 +742,7 @@ func TestConcurrentLoopsRace(t *testing.T) {
 	ft.Enqueue(chPkt, true)
 	ft.Enqueue(data, true)
 
-	reply := buildTCP("127.0.0.1", testTProxyPort, testClientIP, testClientPort, 1, 1200, tcpFlagACK|tcpFlagPSH, []byte("srv-data"))
+	reply := buildTCP("127.0.0.1", testTProxyPort, "198.18.0.1", testClientPort, 1, 1200, tcpFlagACK|tcpFlagPSH, []byte("srv-data"))
 	finReply := buildTCP("127.0.0.1", testTProxyPort, testClientIP, testClientPort, 2, 1200, tcpFlagACK|tcpFlagFIN, nil)
 	loop.Enqueue(reply, false)
 	loop.Enqueue(finReply, false) // triggers nat cleanup from the loop goroutine
@@ -745,11 +751,11 @@ func TestConcurrentLoopsRace(t *testing.T) {
 	go func() { done <- e.Run(context.Background()) }()
 
 	deadline := time.Now().Add(5 * time.Second)
-	for (len(ft.Sent()) < 3 || len(loop.Sent()) < 2) && time.Now().Before(deadline) {
+	for len(loop.Sent()) < 4 && time.Now().Before(deadline) {
 		time.Sleep(2 * time.Millisecond)
 	}
-	if len(ft.Sent()) < 3 || len(loop.Sent()) < 2 {
-		t.Fatalf("loops stalled: main=%d loopback=%d", len(ft.Sent()), len(loop.Sent()))
+	if len(loop.Sent()) < 4 {
+		t.Fatalf("loops stalled: loopback=%d", len(loop.Sent()))
 	}
 
 	e.Stop()

@@ -163,7 +163,7 @@ func TestVLESSRealityE2E(t *testing.T) {
 	sni := "www.example.com"
 	vpPort := freePort(t)
 	serverSB, err := startSingbox(context.Background(), logger,
-		serverBoxOptions(vpPort, tlsDestPort, uuid, privKey, shortID, sni))
+		serverBoxOptions(vpPort, tlsDestPort, uuid, privKey, shortID, sni), sbPorts{Main: vpPort})
 	if err != nil {
 		t.Fatalf("start sing-box server: %v", err)
 	}
@@ -172,9 +172,9 @@ func TestVLESSRealityE2E(t *testing.T) {
 	// The client: our tunnel.
 	tproxy := freePort(t)
 	provider := newMapProvider()
-	tun := NewTunnel(config.TunnelEndpoint{
-		Protocol:    "vless",
-		Address:     loopbackIP,
+	clientEP := &config.Endpoint{
+		Kind:        config.KindVLESSReality,
+		Host:        loopbackIP,
 		Port:        vpPort,
 		UUID:        uuid,
 		RealityPBK:  pubKey,
@@ -182,7 +182,11 @@ func TestVLESSRealityE2E(t *testing.T) {
 		SNI:         sni,
 		Fingerprint: "chrome",
 		UDPMode:     "xudp",
-	}, tproxy, Options{
+	}
+	if err := clientEP.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	tun := NewTunnel(config.TunnelConfig{TCP: clientEP, UDP: clientEP}, tproxy, Options{
 		OriginalDstProvider: provider,
 		MarkerURL:           echo.URL + "/marker",
 		Logger:              logger,

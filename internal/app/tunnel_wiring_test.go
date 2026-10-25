@@ -525,7 +525,7 @@ func TestTunnelWiringFullPath(t *testing.T) {
 
 	// The engine must NAT-rewrite the ClientHello to the loopback tproxy.
 	waitFor(t, "NAT rewrite to the tproxy", 5*time.Second, func() bool {
-		for _, pkt := range mainT.Sent() {
+		for _, pkt := range loopT.Sent() {
 			if len(pkt) >= 24 && pkt[9] == 6 &&
 				binary.BigEndian.Uint16(pkt[20+2:20+4]) == tproxyPort &&
 				net.IP(pkt[16:20]).Equal(net.IPv4(127, 0, 0, 1)) {
@@ -535,11 +535,13 @@ func TestTunnelWiringFullPath(t *testing.T) {
 		return false
 	})
 
-	// The NAT map must now resolve the client 4-tuple to the pre-NAT TG
-	// destination (the OrigDst seam, §3.3). v4-mapped form: ::ffff:a.b.c.d.
+	// The NAT map must now resolve the tproxy-visible 4-tuple — the FAKE
+	// source the wave-5 NAT presents (198.18.0.1) is the lookup key, the
+	// socket the tproxy accepts carries it as the remote addr (§3.3).
+	// v4-mapped form: ::ffff:a.b.c.d.
 	var src16 [16]byte
 	src16[10], src16[11] = 0xFF, 0xFF
-	src4 := lo.As4()
+	src4 := [4]byte{198, 18, 0, 1}
 	copy(src16[12:16], src4[:])
 	dst16, dport, ok := p.(*capturePipeline).provider.Lookup(src16, sport)
 	if !ok {
@@ -577,7 +579,9 @@ func TestTunnelWiringFullPath(t *testing.T) {
 
 	// --- Loopback reverse NAT: a tproxy reply packet must be rewritten
 	// back so the client believes it talks to 149.154.167.51:443.
-	loopT.Enqueue(buildTCP4(lo, tproxyPort, lo, sport, 500, 0x18, []byte("srv")), false)
+	// Wave-5 shape: the tproxy answers the connection it accepted from the
+	// FAKE IP, so the reply's destination is 198.18.0.1:sport.
+	loopT.Enqueue(buildTCP4(lo, tproxyPort, netip.MustParseAddr("198.18.0.1"), sport, 500, 0x18, []byte("srv")), false)
 	tg4 := tgDst.As4()
 	waitFor(t, "reverse NAT rewrite", 5*time.Second, func() bool {
 		for _, pkt := range loopT.Sent() {
@@ -606,7 +610,7 @@ func TestTunnelWiringFullPath(t *testing.T) {
 	udpDst := netip.MustParseAddr("192.0.2.66") // TEST-NET: any non-loopback host
 	mainT.Enqueue(buildUDP4(lo, uport, udpDst, 50000, []byte("discord-media-packet")), true)
 	waitFor(t, "UDP NAT rewrite to the tproxy", 5*time.Second, func() bool {
-		for _, pkt := range mainT.Sent() {
+		for _, pkt := range loopT.Sent() {
 			if len(pkt) >= 28 && pkt[9] == 17 &&
 				binary.BigEndian.Uint16(pkt[20+2:20+4]) == tproxyPort &&
 				net.IP(pkt[16:20]).Equal(net.IPv4(127, 0, 0, 1)) {
@@ -667,7 +671,7 @@ func TestTunnelWiringFullPath(t *testing.T) {
 	mainT.Enqueue(buildTCP4(lo, sport2, tgDst, 443, 1000, 0x02, nil), true)
 	mainT.Enqueue(buildTCP4(lo, sport2, tgDst, 443, 1001, 0x18, buildClientHello("telegram.org")), true)
 	waitFor(t, "second NAT rewrite", 5*time.Second, func() bool {
-		for _, pkt := range mainT.Sent() {
+		for _, pkt := range loopT.Sent() {
 			if len(pkt) >= 24 && pkt[9] == 6 &&
 				binary.BigEndian.Uint16(pkt[20:20+2]) == sport2 &&
 				binary.BigEndian.Uint16(pkt[20+2:20+4]) == tproxyPort {

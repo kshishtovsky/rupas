@@ -10,10 +10,14 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+// vlessFlowVision is the standard VLESS+Reality flow.
+const vlessFlowVision = "xtls-rprx-vision"
 
 // Action is the decision the core applies to a matched flow.
 type Action uint8
@@ -87,8 +91,10 @@ type DesyncParams struct {
 	SplitOffset int `yaml:"split_offset,omitempty"`
 }
 
-// TunnelEndpoint describes the VLESS+Reality exit node (PRD §5, US-5).
-// It may be left empty at load time and attached later at runtime.
+// TunnelEndpoint is the legacy single-endpoint tunnel description (waves ≤4).
+// It is still accepted for backwards compatibility and migrated to a
+// TunnelConfig (kind vless_reality) by Config.Validate; new configurations
+// should use the wave-5 `tunnels:` section (Endpoint/TunnelConfig below).
 type TunnelEndpoint struct {
 	Protocol    string `yaml:"protocol"` // must be "vless"
 	Address     string `yaml:"address"`
@@ -99,6 +105,222 @@ type TunnelEndpoint struct {
 	SNI         string `yaml:"sni"`
 	Fingerprint string `yaml:"fingerprint"` // uTLS client fingerprint
 	UDPMode     string `yaml:"udp_mode"`    // xudp
+}
+
+// Endpoint kinds (wave 5): one value per user-facing transport.
+const (
+	// KindVLESSTCP is VLESS over plain TCP+TLS (no Reality camouflage).
+	KindVLESSTCP = "vless_tcp"
+	// KindVLESSXHTTP is VLESS over the XHTTP transport (Xray "xhttp",
+	// mode packet-up/stream-up/stream-one) — carried by Rupas' own client,
+	// sing-box v1.14 has no XHTTP transport.
+	KindVLESSXHTTP = "vless_xhttp"
+	// KindVLESSReality is VLESS+Reality (waves ≤4 default).
+	KindVLESSReality = "vless_reality"
+	// KindHysteria2 is Hysteria2 over QUIC (UDP).
+	KindHysteria2 = "hysteria2"
+)
+
+// EndpointKinds returns the supported tunnel endpoint kinds.
+func EndpointKinds() []string {
+	return []string{KindVLESSTCP, KindVLESSXHTTP, KindVLESSReality, KindHysteria2}
+}
+
+// Endpoint describes one user-side tunnel exit (wave 5). Fields are shared
+// across kinds; Validate enforces the per-kind subset and applies defaults.
+type Endpoint struct {
+	Kind string `yaml:"kind"`
+	Host string `yaml:"host"`
+	Port uint16 `yaml:"port"`
+	// UUID authenticates VLESS kinds.
+	UUID string `yaml:"uuid,omitempty"`
+	// Password authenticates hysteria2.
+	Password string `yaml:"password,omitempty"`
+	// SNI is the TLS server name (camouflage domain).
+	SNI string `yaml:"sni,omitempty"`
+	// ALPN lists the offered protocols (default per kind).
+	ALPN []string `yaml:"alpn,omitempty"`
+	// Fingerprint is the uTLS client fingerprint (default chrome).
+	Fingerprint string `yaml:"fingerprint,omitempty"`
+	// Flow is the VLESS flow ("": none, "xtls-rprx-vision" for Reality).
+	Flow string `yaml:"flow,omitempty"`
+	// Path is the XHTTP path prefix (vless_xhttp only).
+	Path string `yaml:"path,omitempty"`
+	// Mode is the XHTTP mode (vless_xhttp only; default packet-up).
+	Mode string `yaml:"mode,omitempty"`
+	// XPadding is the XHTTP X-Padding length range "min-max" (vless_xhttp
+	// only; default 100-1000).
+	XPadding string `yaml:"x_padding_bytes,omitempty"`
+	// RealityPBK/RealitySID authenticate vless_reality.
+	RealityPBK string `yaml:"reality_public_key,omitempty"`
+	RealitySID string `yaml:"reality_short_id,omitempty"`
+	// UDPMode selects the VLESS UDP packet encoding (xudp|packetaddr;
+	// default xudp).
+	UDPMode string `yaml:"udp_mode,omitempty"`
+}
+
+// IsZero reports whether no meaningful field of the endpoint is set.
+func (e Endpoint) IsZero() bool {
+	return e.Kind == "" && e.Host == "" && e.Port == 0 && e.UUID == "" &&
+		e.Password == "" && e.SNI == "" && len(e.ALPN) == 0 && e.Fingerprint == "" &&
+		e.Flow == "" && e.Path == "" && e.Mode == "" && e.XPadding == "" &&
+		e.RealityPBK == "" && e.RealitySID == "" && e.UDPMode == ""
+}
+
+// SingBoxKind reports whether the endpoint kind is carried by the embedded
+// sing-box engine (everything except vless_xhttp, which Rupas' own XHTTP
+// client carries).
+func (e Endpoint) SingBoxKind() bool { return e.Kind != KindVLESSXHTTP }
+
+// SupportsUDP reports whether the kind can carry UDP flows (used to decide
+// whether the UDP fallback chain exists).
+func (e Endpoint) SupportsUDP() bool {
+	switch e.Kind {
+	case KindVLESSTCP, KindVLESSReality, KindHysteria2:
+		return true
+	}
+	return false
+}
+
+var endpointKinds = map[string]bool{
+	KindVLESSTCP: true, KindVLESSXHTTP: true, KindVLESSReality: true, KindHysteria2: true,
+}
+
+var xhttpModes = map[string]bool{
+	"packet-up": true, "stream-up": true, "stream-one": true, "auto": true,
+}
+
+// Validate checks the per-kind subset and applies defaults (fingerprint,
+// ALPN, XHTTP mode/padding, UDP mode). It mutates the endpoint only for
+// that normalization.
+func (e *Endpoint) Validate() error {
+	if !endpointKinds[e.Kind] {
+		return fmt.Errorf("tunnel endpoint kind %q: want one of %v", e.Kind, EndpointKinds())
+	}
+	if e.Host == "" {
+		return errors.New("tunnel endpoint: host is empty")
+	}
+	if e.Port == 0 {
+		return errors.New("tunnel endpoint: port is empty")
+	}
+	if e.SNI == "" {
+		return errors.New("tunnel endpoint: sni is empty")
+	}
+	switch e.Kind {
+	case KindVLESSTCP, KindVLESSXHTTP, KindVLESSReality:
+		if e.UUID == "" {
+			return errors.New("tunnel endpoint: uuid is empty")
+		}
+		switch e.Flow {
+		case "", "xtls-rprx-vision":
+		default:
+			return fmt.Errorf("tunnel endpoint: flow %q: only \"\" or \"xtls-rprx-vision\" are supported", e.Flow)
+		}
+	default: // hysteria2
+		if e.Password == "" {
+			return errors.New("tunnel endpoint: password is empty")
+		}
+	}
+	if e.Kind == KindVLESSReality && e.RealityPBK == "" {
+		return errors.New("tunnel endpoint: reality_public_key is empty")
+	}
+	if e.Kind == KindVLESSXHTTP {
+		if e.Path == "" {
+			return errors.New("tunnel endpoint: path is empty")
+		}
+		if e.Mode == "" {
+			e.Mode = "packet-up"
+		}
+		if !xhttpModes[e.Mode] {
+			return fmt.Errorf("tunnel endpoint: mode %q: want packet-up|stream-up|stream-one|auto", e.Mode)
+		}
+		if e.XPadding == "" {
+			e.XPadding = "100-1000"
+		}
+		if _, _, err := ParsePaddingRange(e.XPadding); err != nil {
+			return fmt.Errorf("tunnel endpoint: %v", err)
+		}
+	}
+	// Defaults.
+	if e.Fingerprint == "" {
+		e.Fingerprint = "chrome"
+	}
+	if len(e.ALPN) == 0 {
+		if e.Kind == KindHysteria2 {
+			e.ALPN = []string{"h3"}
+		} else {
+			e.ALPN = []string{"h2", "http/1.1"}
+		}
+	}
+	if e.Kind != KindHysteria2 && e.UDPMode == "" {
+		e.UDPMode = "xudp"
+	}
+	return nil
+}
+
+// ParsePaddingRange parses "N" or "N-M" into (lo, hi, err).
+func ParsePaddingRange(s string) (int, int, error) {
+	loHi := strings.SplitN(s, "-", 2)
+	lo, err := strconv.Atoi(strings.TrimSpace(loHi[0]))
+	if err != nil || lo < 0 {
+		return 0, 0, fmt.Errorf("bad x_padding_bytes %q", s)
+	}
+	hi := lo
+	if len(loHi) == 2 {
+		hi, err = strconv.Atoi(strings.TrimSpace(loHi[1]))
+		if err != nil || hi < lo {
+			return 0, 0, fmt.Errorf("bad x_padding_bytes %q", s)
+		}
+	}
+	return lo, hi, nil
+}
+
+// TunnelConfig is the wave-5 multi-transport tunnel plan: TCP flows (e.g.
+// Telegram) ride TCP, UDP pseudo-sessions (e.g. Discord voice) ride UDP,
+// and Fallback is the secondary TCP path tried when the primary dial fails
+// (SYSTEM_DESIGN §6). Endpoints may be nil; at least one must be set.
+type TunnelConfig struct {
+	// TCP carries TCP streams (the §6 marker rides it).
+	TCP *Endpoint `yaml:"tcp,omitempty"`
+	// UDP carries UDP pseudo-sessions (nil → TCP's endpoint, when it
+	// supports UDP).
+	UDP *Endpoint `yaml:"udp,omitempty"`
+	// Fallback is the backup TCP path (dialed when TCP's dial fails).
+	Fallback *Endpoint `yaml:"fallback,omitempty"`
+}
+
+// Configured reports whether any endpoint is set.
+func (tc TunnelConfig) Configured() bool {
+	return tc.TCP != nil || tc.UDP != nil || tc.Fallback != nil
+}
+
+// Validate validates every set endpoint.
+func (tc TunnelConfig) Validate() error {
+	for name, e := range map[string]*Endpoint{"tcp": tc.TCP, "udp": tc.UDP, "fallback": tc.Fallback} {
+		if e == nil {
+			continue
+		}
+		if err := e.Validate(); err != nil {
+			return fmt.Errorf("config: tunnels.%s: %v", name, err)
+		}
+	}
+	return nil
+}
+
+// legacyEndpoint migrates a waves-≤4 TunnelEndpoint to an Endpoint.
+func legacyEndpoint(t TunnelEndpoint) *Endpoint {
+	return &Endpoint{
+		Kind:        KindVLESSReality,
+		Host:        t.Address,
+		Port:        t.Port,
+		UUID:        t.UUID,
+		SNI:         t.SNI,
+		Fingerprint: t.Fingerprint,
+		Flow:        vlessFlowVision,
+		RealityPBK:  t.RealityPBK,
+		RealitySID:  t.RealitySID,
+		UDPMode:     t.UDPMode,
+	}
 }
 
 // Exclusions are destinations that are always DIRECT: the VPS endpoint
@@ -123,7 +345,8 @@ type Config struct {
 	Profile    string         `yaml:"profile"`
 	Rules      []Rule         `yaml:"rules"`
 	Desync     DesyncParams   `yaml:"desync"`
-	Tunnel     TunnelEndpoint `yaml:"tunnel"`
+	Tunnel     TunnelEndpoint `yaml:"tunnel"`  // legacy single endpoint (≤ wave 4)
+	Tunnels    *TunnelConfig  `yaml:"tunnels"` // wave-5 multi-transport plan
 	Exclusions Exclusions     `yaml:"exclusions"`
 }
 
@@ -231,8 +454,14 @@ func (c *Config) Validate() error {
 		}
 	}
 	// The tunnel is either fully unspecified or fully specified; it can be
-	// attached at runtime (QR import, PRD US-5) after load.
-	if c.Tunnel != (TunnelEndpoint{}) {
+	// attached at runtime (QR import, PRD US-5) after load. Wave 5 accepts
+	// both the legacy single endpoint (migrated to kind vless_reality) and
+	// the multi-transport `tunnels:` section — but never both at once.
+	legacy := c.Tunnel != (TunnelEndpoint{})
+	if legacy && c.Tunnels != nil {
+		return errors.New("config: tunnel (legacy) and tunnels are both set; use one")
+	}
+	if legacy {
 		if c.Tunnel.Protocol != "vless" {
 			return fmt.Errorf("config: tunnel.protocol %q: only \"vless\" is supported", c.Tunnel.Protocol)
 		}
@@ -247,7 +476,36 @@ func (c *Config) Validate() error {
 			c.Tunnel.Fingerprint = "chrome"
 		}
 	}
+	if c.Tunnels != nil && c.Tunnels.Configured() {
+		if err := c.Tunnels.Validate(); err != nil {
+			return err
+		}
+	} else {
+		// An absent or bare-empty `tunnels:` section is the documented
+		// "no endpoint" default (see rupas.example.yaml).
+		c.Tunnels = nil
+	}
 	return nil
+}
+
+// TunnelPlan returns the effective wave-5 tunnel plan: the `tunnels:` section
+// when present, otherwise the legacy single endpoint migrated to a
+// vless_reality plan (TCP and UDP ride the same endpoint), otherwise the
+// empty (unconfigured) plan.
+func (c *Config) TunnelPlan() TunnelConfig {
+	if c.Tunnels != nil {
+		return *c.Tunnels
+	}
+	if c.Tunnel != (TunnelEndpoint{}) {
+		ep := legacyEndpoint(c.Tunnel)
+		return TunnelConfig{TCP: ep, UDP: &Endpoint{
+			Kind: ep.Kind, Host: ep.Host, Port: ep.Port, UUID: ep.UUID, SNI: ep.SNI,
+			ALPN: append([]string(nil), ep.ALPN...), Fingerprint: ep.Fingerprint,
+			Flow: ep.Flow, RealityPBK: ep.RealityPBK, RealitySID: ep.RealitySID,
+			UDPMode: ep.UDPMode,
+		}}
+	}
+	return TunnelConfig{}
 }
 
 func validStrategy(s string) bool {

@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -58,6 +59,14 @@ type Stats struct {
 	Held bool
 	// Started is true once Start succeeded.
 	Started bool
+	// UDPHealthy reports the UDP-path STUN verdict (true while the primary
+	// UDP endpoint answers; unknown/false before the first probe or when
+	// the probe is disabled).
+	UDPHealthy bool
+	// UDPFallback is true while UDP pseudo-sessions ride the xudp fallback
+	// over the TCP endpoint (engaged after HealthFailThreshold STUN
+	// failures).
+	UDPFallback bool
 	// RxBytes/TxBytes are the payload bytes relayed client↔tunnel.
 	RxBytes, TxBytes uint64
 	// TCPFlows is the number of active TCP relays; TCPConns the total
@@ -85,7 +94,7 @@ type Options struct {
 	// OriginalDstProvider resolves the pre-NAT destination of a redirected
 	// flow. If nil, every flow is dropped (tunnel runs, nothing passes).
 	OriginalDstProvider OriginalDstProvider
-	// MarkerURL is the health endpoint probed through the tunnel.
+	// MarkerURL is the health endpoint probed through the TCP chain.
 	// Empty → DefaultMarkerURL.
 	MarkerURL string
 	// Logger defaults to slog.Default().
@@ -93,6 +102,13 @@ type Options struct {
 	// HealthInterval overrides the marker probe period (0 → 30 s). Tests
 	// shrink it; production keeps the §6 default.
 	HealthInterval time.Duration
+	// UDPHealthInterval overrides the UDP STUN probe period (0 → same as
+	// HealthInterval).
+	UDPHealthInterval time.Duration
+	// STUNServer is the UDP-path health probe target ("host:port"). The
+	// default (DefaultSTUNServer) is used when empty; "off" disables the
+	// UDP probe (the UDP fallback then never engages automatically).
+	STUNServer string
 	// DialTimeout bounds one relay dial (TCP CONNECT / UDP ASSOCIATE) so a
 	// dead endpoint closes the redirected flow promptly instead of hanging
 	// it (0 → DefaultDialTimeout).
@@ -109,6 +125,8 @@ const (
 	DefaultHealthInterval = 30 * time.Second
 	// HealthFailThreshold consecutive failed probes mark the tunnel down.
 	HealthFailThreshold = 3
+	// DefaultSTUNServer is the default UDP-path health probe target.
+	DefaultSTUNServer = "stun.cloudflare.com:3478"
 	// DefaultUDPSessionTimeout is the idle timeout of a UDP pseudo-session
 	// (§3.3: UDP idle 30 s).
 	DefaultUDPSessionTimeout = 30 * time.Second
@@ -117,11 +135,14 @@ const (
 	DefaultDialTimeout = 20 * time.Second
 	// markerTimeout bounds one probe round trip.
 	markerTimeout = 10 * time.Second
+	// stunTimeout bounds one STUN round trip.
+	stunTimeout = 5 * time.Second
 )
 
-// NewTunnel builds a Tunnel for cfg. Configuration errors are reported by
-// Start so that a half-configured endpoint can still be constructed.
-func NewTunnel(cfg config.TunnelEndpoint, tproxyPort uint16, opts Options) Tunnel {
+// NewTunnel builds a Tunnel for the wave-5 plan cfg. Configuration errors
+// are reported by Start so that a half-configured endpoint can still be
+// constructed.
+func NewTunnel(cfg config.TunnelConfig, tproxyPort uint16, opts Options) Tunnel {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
@@ -131,35 +152,51 @@ func NewTunnel(cfg config.TunnelEndpoint, tproxyPort uint16, opts Options) Tunne
 	if opts.HealthInterval <= 0 {
 		opts.HealthInterval = DefaultHealthInterval
 	}
+	if opts.UDPHealthInterval <= 0 {
+		opts.UDPHealthInterval = opts.HealthInterval
+	}
+	if opts.STUNServer == "" {
+		opts.STUNServer = DefaultSTUNServer
+	}
 	if opts.DialTimeout <= 0 {
 		opts.DialTimeout = DefaultDialTimeout
 	}
 	return &tunnel{
-		cfg:            cfg,
-		tproxyPort:     tproxyPort,
-		opts:           opts,
-		logger:         opts.Logger.With("component", "tunnel"),
-		healthInterval: opts.HealthInterval,
-		dialTimeout:    opts.DialTimeout,
-		udpTimeout:     DefaultUDPSessionTimeout,
+		cfg:              cfg,
+		tproxyPort:       tproxyPort,
+		opts:             opts,
+		logger:           opts.Logger.With("component", "tunnel"),
+		healthInterval:   opts.HealthInterval,
+		udpHealthInterval: opts.UDPHealthInterval,
+		dialTimeout:      opts.DialTimeout,
+		udpTimeout:       DefaultUDPSessionTimeout,
 	}
 }
 
 type tunnel struct {
-	cfg        config.TunnelEndpoint
+	cfg        config.TunnelConfig
 	tproxyPort uint16
 	opts       Options
 	logger     *slog.Logger
 
 	// test knobs (package-internal)
-	healthInterval time.Duration
-	dialTimeout    time.Duration
-	udpTimeout     time.Duration
+	healthInterval    time.Duration
+	udpHealthInterval time.Duration
+	dialTimeout       time.Duration
+	udpTimeout        time.Duration
 	// probeFunc overrides the marker probe in unit tests.
 	probeFunc func(ctx context.Context) error
+	// tr replaces every carrier chain with one fake transport in unit
+	// tests (startCore path).
+	tr transport
 
 	sb *singbox
-	tr transport
+
+	// carrier chains (built by Start; the TCP chain is tried in order per
+	// dial — primary then fallback — and the UDP chain switches to the
+	// xudp fallback after HealthFailThreshold STUN failures).
+	tcpPaths []namedTCP
+	udpPaths []namedUDP
 
 	tcpLn    net.Listener
 	udpConn  *net.UDPConn
@@ -174,6 +211,16 @@ type tunnel struct {
 	healthy    atomic.Bool
 	failStreak atomic.Int32
 
+	// UDP-path health (STUN through the active UDP carrier).
+	udpHealthy    atomic.Bool
+	udpFailStreak atomic.Int32
+	activeUDP     atomic.Int32 // index into udpPaths
+
+	// STUN resolution cache.
+	stunAddrOnce sync.Once
+	stunAddr     netip.AddrPort
+	stunAddrErr  error
+
 	// observability counters (Stats)
 	started   atomic.Bool
 	rxBytes   atomic.Uint64
@@ -186,47 +233,171 @@ type tunnel struct {
 
 var _ Tunnel = (*tunnel)(nil)
 
-// Start validates the endpoint, boots sing-box, then opens the loopback
-// tproxy listeners and the health loop.
+// Start validates the plan, boots sing-box (when any sing-box-carried
+// endpoint exists), builds the carrier chains, then opens the loopback
+// tproxy listeners and the health loops.
 //
 // NOTE: sing-box gates Reality/uTLS behind the `with_utls` build tag; build
 // and test this package with -tags with_utls.
 func (t *tunnel) Start(ctx context.Context) error {
-	if err := validateEndpoint(t.cfg); err != nil {
+	if err := validatePlan(t.cfg); err != nil {
 		return err
 	}
 	if t.stopped.Load() {
 		return errors.New("tunnel: Start after Stop is not supported")
 	}
 
-	mixedPort, err := freeTCPPort()
+	plan := effectivePlan(t.cfg)
+	ports, err := sbPortsForPlan(t.cfg)
 	if err != nil {
-		return fmt.Errorf("tunnel: pick mixed port: %w", err)
+		return err
 	}
-	opts := boxOptions(t.cfg, mixedPort)
-	sb, err := startSingbox(ctx, t.logger, opts)
-	if err != nil {
-		return fmt.Errorf("tunnel: start sing-box: %w", err)
+	if ports.Main != 0 || ports.TCPFB != 0 || ports.UDPFB != 0 {
+		sb, err := startSingbox(ctx, t.logger, boxOptions(t.cfg, ports), ports)
+		if err != nil {
+			return fmt.Errorf("tunnel: start sing-box: %w", err)
+		}
+		t.sb = sb
 	}
-	sb.mixedPort = mixedPort
-	t.sb = sb
-	t.tr = sb
-	t.logger.Info("sing-box engine started", slog.String("mode", "vless+reality"),
-		slog.Uint64("mixed_port", uint64(mixedPort)))
+
+	// TCP chain: primary, then the fallback.
+	if plan.tcp != nil {
+		t.tcpPaths = append(t.tcpPaths, t.carrierTCP(plan.tcp))
+	}
+	if plan.fallback != nil {
+		t.tcpPaths = append(t.tcpPaths, t.carrierTCP(plan.fallback))
+	}
+	// UDP chain: the UDP endpoint (via the main mixed inbound, network
+	// rule), then the xudp fallback over the TCP endpoint's outbound.
+	if plan.udp != nil && plan.udp.SingBoxKind() {
+		t.udpPaths = append(t.udpPaths, namedUDP{
+			name: endpointName(plan.udp),
+			c:    socksPath{addr: t.sb.mainAddr()},
+		})
+	}
+	if ports.UDPFB != 0 {
+		t.udpPaths = append(t.udpPaths, namedUDP{
+			name: endpointName(plan.tcp) + "+xudp",
+			c:    socksPath{addr: t.sb.udpFBAddr()},
+		})
+	}
+
+	kinds := make([]string, 0, 3)
+	for _, e := range []*config.Endpoint{plan.tcp, plan.udp, plan.fallback} {
+		if e != nil {
+			kinds = append(kinds, endpointName(e))
+		}
+	}
+	t.logger.Info("tunnel engine started",
+		slog.String("endpoints", strings.Join(kinds, " → ")),
+		slog.Uint64("mixed_port", uint64(ports.Main)))
 	return t.startCore()
+}
+
+// carrierTCP builds the TCP carrier for one endpoint: the sing-box SOCKS5
+// feeder for sing-box kinds, the in-package XHTTP client for vless_xhttp.
+func (t *tunnel) carrierTCP(ep *config.Endpoint) namedTCP {
+	name := endpointName(ep)
+	if ep.SingBoxKind() {
+		var addr string
+		if ep == effectivePlan(t.cfg).tcp {
+			addr = t.sb.mainAddr()
+		} else {
+			addr = t.sb.fbAddr()
+		}
+		return namedTCP{name: name, c: socksPath{addr: addr}}
+	}
+	return namedTCP{name: name, c: &lazyXHTTP{ep: *ep, logger: t.logger}}
+}
+
+// endpointName renders a human-readable endpoint label.
+func endpointName(e *config.Endpoint) string {
+	if e == nil {
+		return "none"
+	}
+	return fmt.Sprintf("%s@%s:%d", e.Kind, e.Host, e.Port)
+}
+
+// lazyXHTTP defers XHTTP client construction to the first dial so an
+// unresponsive fallback endpoint never blocks Start.
+type lazyXHTTP struct {
+	ep     config.Endpoint
+	logger *slog.Logger
+
+	once sync.Once
+	p    *xhttpPath
+	err  error
+}
+
+func (l *lazyXHTTP) path() (*xhttpPath, error) {
+	l.once.Do(func() { l.p, l.err = newXHTTPPath(l.ep, l.logger) })
+	return l.p, l.err
+}
+
+func (l *lazyXHTTP) dial(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
+	p, err := l.path()
+	if err != nil {
+		return nil, err
+	}
+	return p.dial(ctx, dst)
+}
+
+func (l *lazyXHTTP) dialHost(ctx context.Context, host string, port uint16) (net.Conn, error) {
+	p, err := l.path()
+	if err != nil {
+		return nil, err
+	}
+	return p.dialHost(ctx, host, port)
+}
+
+// tcpChain returns the effective TCP carrier chain (the fake transport
+// seam in unit tests).
+func (t *tunnel) tcpChain() []namedTCP {
+	if t.tr != nil {
+		return []namedTCP{{name: "fake", c: t.tr}}
+	}
+	return t.tcpPaths
+}
+
+// udpChain returns the effective UDP carrier chain.
+func (t *tunnel) udpChain() []namedUDP {
+	if t.tr != nil {
+		return []namedUDP{{name: "fake", c: t.tr}}
+	}
+	return t.udpPaths
+}
+
+// activeUDPPath returns the currently active UDP carrier (index clamped).
+func (t *tunnel) activeUDPPath() namedUDP {
+	chain := t.udpChain()
+	if len(chain) == 0 {
+		return namedUDP{}
+	}
+	i := int(t.activeUDP.Load())
+	if i < 0 || i >= len(chain) {
+		i = len(chain) - 1
+	}
+	return chain[i]
 }
 
 // startCore opens the tproxy listeners and background loops; it is split
 // from Start so unit tests can substitute the transport.
+//
+// The listeners bind the wildcard address: the capture-layer NAT rewrites
+// redirected flows toward the machine's own address on the client-facing
+// interface (live matrix finding: 127.0.0.1-targeted re-injections never
+// deliver), which is not knowable in advance. Foreign flows without a NAT
+// entry are dropped by serveTCP/handleUDPPacket, so the wildcard bind does
+// not open a relay.
 func (t *tunnel) startCore() error {
 	t.ctx, t.cancelCtx = context.WithCancel(context.Background())
-	addr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(t.tproxyPort)}
+	addr := &net.TCPAddr{Port: int(t.tproxyPort)}
 	tcpLn, err := net.ListenTCP("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("tunnel: listen tcp %s: %w", addr, err)
 	}
 	t.tcpLn = tcpLn
-	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(t.tproxyPort)})
+	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{Port: int(t.tproxyPort)})
 	if err != nil {
 		tcpLn.Close()
 		return fmt.Errorf("tunnel: listen udp %s: %w", addr, err)
@@ -239,9 +410,11 @@ func (t *tunnel) startCore() error {
 	go t.acceptLoop()
 	go t.udpLoop()
 	go t.healthLoop()
+	go t.udpHealthLoop()
 
 	t.logger.Info("tproxy listeners up",
-		slog.String("addr", addr.String()), slog.String("marker", t.opts.MarkerURL))
+		slog.String("addr", addr.String()), slog.String("marker", t.opts.MarkerURL),
+		slog.String("stun", t.opts.STUNServer))
 	return nil
 }
 
@@ -295,6 +468,8 @@ func (t *tunnel) Stats() Stats {
 		Healthy:     t.healthy.Load(),
 		Held:        t.held(),
 		Started:     t.started.Load(),
+		UDPHealthy:  t.udpHealthy.Load(),
+		UDPFallback: t.activeUDP.Load() > 0,
 		RxBytes:     t.rxBytes.Load(),
 		TxBytes:     t.txBytes.Load(),
 		TCPFlows:    t.tcpFlows.Load(),
@@ -303,19 +478,6 @@ func (t *tunnel) Stats() Stats {
 		UDPDgrams:   t.udpDgrams.Load(),
 		Dropped:     t.dropped.Load(),
 	}
-}
-
-// transport is the outbound path of the tunnel. The production
-// implementation wraps the embedded sing-box engine (fed via SOCKS5 from
-// its mixed inbound); unit tests substitute a fake.
-type transport interface {
-	// dial opens a TCP connection to dst through the tunnel.
-	dial(ctx context.Context, dst netip.AddrPort) (net.Conn, error)
-	// dialHost opens a TCP connection to host:port (host may be a domain,
-	// resolved at the tunnel exit).
-	dialHost(ctx context.Context, host string, port uint16) (net.Conn, error)
-	// udpAssociate starts a UDP pseudo-session relay.
-	udpAssociate(ctx context.Context) (packetRelay, error)
 }
 
 // packetRelay is one UDP pseudo-session's relay channel.
@@ -387,21 +549,74 @@ func (t *tunnel) serveTCP(client net.Conn) {
 		return
 	}
 	dst := joinAddr(dstIP, dstPort)
-	ctx, cancel := context.WithTimeout(ctxOrBackground(t.ctx), t.dialTimeout)
-	defer cancel()
-	upstream, err := t.tr.dial(ctx, dst)
-	if err != nil {
-		t.logger.Warn("tcp: tunnel dial failed",
-			slog.String("src", src.String()), slog.String("dst", dst.String()),
-			slog.Any("err", err))
+	upstream := t.dialTCPFlow(src.String(), dst)
+	if upstream == nil {
 		t.drop()
 		client.Close()
 		return
 	}
+	t.splice(client, upstream)
+}
+
+// dialTCPFlow runs the §6 fallback chain for one TCP flow (HOLD gate +
+// primary endpoint, then the fallback). Returns nil when every path
+// failed. Shared by the tproxy relay (handleTCP) and the wave-5c
+// terminator (TCPDialer).
+func (t *tunnel) dialTCPFlow(src string, dst netip.AddrPort) net.Conn {
+	ctx, cancel := context.WithTimeout(ctxOrBackground(t.ctx), t.dialTimeout)
+	defer cancel()
+	var upstream net.Conn
+	for _, path := range t.tcpChain() {
+		conn, err := path.c.dial(ctx, dst)
+		if err != nil {
+			t.logger.Warn("tcp: path dial failed",
+				slog.String("path", path.name), slog.String("dst", dst.String()),
+				slog.Any("err", err))
+			continue
+		}
+		upstream = conn
+		break
+	}
+	if upstream == nil {
+		t.logger.Warn("tcp: every tunnel path failed",
+			slog.String("src", src), slog.String("dst", dst.String()))
+		return nil
+	}
 	t.tcpFlows.Add(1)
 	t.logger.Debug("tcp flow established",
-		slog.String("src", src.String()), slog.String("dst", dst.String()))
-	t.splice(client, upstream)
+		slog.String("src", src), slog.String("dst", dst.String()))
+	return upstream
+}
+
+// TCPDialer exposes the §6 TCP carrier chain (HOLD gate + fallback) to the
+// wave-5c userspace terminator.
+func (t *tunnel) TCPDialer() func(ctx context.Context, dst string) (net.Conn, error) {
+	return func(ctx context.Context, dst string) (net.Conn, error) {
+		if t.held() && !t.opts.NoHoldFlows {
+			return nil, errors.New("tunnel HELD: marker failing")
+		}
+		ap, err := netip.ParseAddrPort(dst)
+		if err != nil {
+			return nil, err
+		}
+		var c net.Conn
+		for _, path := range t.tcpChain() {
+			conn, err := path.c.dial(ctx, ap)
+			if err != nil {
+				t.logger.Warn("term: path dial failed",
+					slog.String("path", path.name), slog.String("dst", dst),
+					slog.Any("err", err))
+				continue
+			}
+			c = conn
+			break
+		}
+		if c == nil {
+			return nil, errors.New("term: every tunnel path failed")
+		}
+		t.tcpFlows.Add(1)
+		return c, nil
+	}
 }
 
 // drop counts one refused flow/datagram.

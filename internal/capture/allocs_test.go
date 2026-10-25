@@ -132,8 +132,14 @@ func TestFiltersGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantLo := "(inbound and tcp and tcp.SrcPort == 9443 and ip.SrcAddr == 127.0.0.1) or " +
-		"(inbound and udp and udp.SrcPort == 9443 and ip.SrcAddr == 127.0.0.1)"
+	// Wave 5: the reverse legs are the tproxy replies' OUTBOUND loopback
+	// legs (the only legs visible at the NETWORK layer); the inbound
+	// clauses cover the forward NAT re-injections released through this
+	// handle toward <local-IP>:tproxyPort.
+	wantLo := "(((inbound and tcp and tcp.DstPort == 9443) or " +
+		"(outbound and tcp and tcp.SrcPort == 9443)) or " +
+		"((inbound and udp and udp.DstPort == 9443) or " +
+		"(outbound and udp and udp.SrcPort == 9443)))"
 	if lo != wantLo {
 		t.Fatalf("loopback filter:\n got %s\nwant %s", lo, wantLo)
 	}

@@ -20,14 +20,46 @@ type natKey struct {
 	proto uint8
 }
 
-// natOutbound rewrites the destination of an outbound client packet to
-// 127.0.0.1:tproxyPort (SYSTEM_DESIGN §3.3: NETWORK-layer NAT replacing the
-// unavailable REDIRECT layer), remembers the original destination in the
-// flow and registers the reverse-translation entry.
+// natFakeIP4 is the synthetic source the NAT presents to the local tproxy.
+// LIVE MATRIX FINDING (2026-10-25): an inbound re-injection whose SOURCE is
+// one of the machine's own addresses (the real NIC IP or 127/8) is
+// martian-dropped by the stack — only a non-local source delivers. The
+// 198.18.0.0/15 benchmark range is never a real destination on user paths.
+var natFakeIP4 = [4]byte{198, 18, 0, 1}
+
+func fakeIP4() [4]byte { return natFakeIP4 }
+
+// natVal is one NAT-redirect entry: the flow (OrigDst/OrigPort), the
+// client's real address (the reverse legs rewrite the tproxy replies'
+// destination from the fake IP back to it) and the client-facing interface
+// the re-injections must carry (inbound + client-NIC IfIdx is the only
+// combination the live matrix proved delivers).
+type natVal struct {
+	f        *flowtable.Flow
+	clientIP [4]byte
+	ifIdx    uint32
+	subIfIdx uint32
+}
+
+// natOutbound rewrites an outbound client packet into the tproxy relay:
 //
-// The packet is edited in place and re-injected by the caller; the Address is
-// left untouched except for the checksum-valid hint bits — direction stays
-// outbound and the driver routes by the (now loopback) destination address.
+//	src <clientIP>:eph     → <natFakeIP>:eph     (the stack martian-drops
+//	                                             self-sourced inbound
+//	                                             packets, so the tproxy
+//	                                             must see a foreign source)
+//	dst <serverIP>:port    → <clientIP>:tproxyPort (the machine's own
+//	                                             address on the client
+//	                                             interface)
+//
+// remembers the original destination in the flow and registers the
+// reverse-translation entry keyed by the FAKE source (that is what the
+// tproxy reports as the flow's remote). The packet is re-injected INBOUND
+// through the loopback handle with the client NIC's IfIdx.
+//
+// (SYSTEM_DESIGN §3.3; all re-injection rules live-matrix-verified on
+// WinDivert 2.2/Win11: outbound re-injections and 127.0.0.1 destinations
+// never deliver; inbound + real-address destination + client-NIC IfIdx +
+// non-local source does.)
 func (e *Engine) natOutbound(pkt []byte, p *pktInfo, key flowtable.FlowKey, f *flowtable.Flow, addr *windivert.Address) {
 	// Remember the original destination exactly once per flow; re-saves are
 	// idempotent because client packets always target the original server.
@@ -38,8 +70,20 @@ func (e *Engine) natOutbound(pkt []byte, p *pktInfo, key flowtable.FlowKey, f *f
 	f.OrigDst = v4mapped(p.dst4)
 	f.OrigPort = p.dstPort
 
-	// Rewrite destination address (offset 16 in the IPv4 header) and port.
-	pkt[16], pkt[17], pkt[18], pkt[19] = loopback4[0], loopback4[1], loopback4[2], loopback4[3]
+	// Capture the client-facing interface BEFORE mutating the address (the
+	// reverse direction needs it; see natVal).
+	var nicIfIdx, nicSubIfIdx uint32
+	if na := addr.Network(); na != nil {
+		nicIfIdx, nicSubIfIdx = na.IfIdx, na.SubIfIdx
+	}
+
+	// Full rewrite: source → the fake foreign IP (martian rule), kept
+	// source port (the NAT key); destination → the packet's own source
+	// address (the local host's address on this interface) and the port to
+	// the tproxy.
+	fake := fakeIP4()
+	copy(pkt[12:16], fake[:])
+	copy(pkt[16:20], p.src4[:])
 	portOff := p.ipLen + 2 // TCP/UDP DstPort field
 	binary.BigEndian.PutUint16(pkt[portOff:portOff+2], e.opts.TProxyPort)
 
@@ -48,26 +92,31 @@ func (e *Engine) natOutbound(pkt []byte, p *pktInfo, key flowtable.FlowKey, f *f
 	if err := e.transport.FixChecksums(pkt, addr); err != nil {
 		e.cnt.sendErrors.Add(1)
 	}
-	// The destination is now 127.0.0.1: deliver into the loopback stack.
-	// Keep the outbound direction but raise the Loopback flag and point the
-	// address at the loopback interface — otherwise the driver routes the
-	// packet out the original (Ethernet) interface where it dies (wave-4B
-	// live finding: redir=N, tproxy accepts=0).
-	addr.SetLoopback(true)
-	if na := addr.Network(); na != nil {
-		na.IfIdx, na.SubIfIdx = loopbackIfIdx, 0
-	}
+	// Deliver to the local listener: re-inject INBOUND on the same (client)
+	// interface — the only combination the live matrix proved delivers.
+	addr.SetOutbound(false)
+	addr.SetLoopback(false)
 	if first {
-		nk := natKey{ip: v4mapped(p.src4), port: p.srcPort, proto: p.proto}
+		nk := natKey{ip: v4mapped(fake), port: p.srcPort, proto: p.proto}
 		e.natMu.Lock()
-		e.nat[nk] = f
+		e.nat[nk] = natVal{f: f, clientIP: p.src4, ifIdx: nicIfIdx, subIfIdx: nicSubIfIdx}
 		e.natMu.Unlock()
 	}
 	e.cnt.tunnelTx.Add(1)
 	e.cnt.countVerdict(core.VerdictRedirect)
-	if err := e.transport.Send(pkt, addr); err != nil {
+	if err := e.natSend(pkt, addr); err != nil {
 		e.cnt.sendErrors.Add(1)
 	}
+}
+
+// natSend re-injects a NAT-rewritten packet: through the loopback handle
+// when the tunnel branch is up (its filter covers the rewritten inbound
+// direction), else through the main handle (fake-transport tests).
+func (e *Engine) natSend(pkt []byte, addr *windivert.Address) error {
+	if e.loopTransport != nil {
+		return e.loopTransport.Send(pkt, addr)
+	}
+	return e.transport.Send(pkt, addr)
 }
 
 // Lookup resolves the pre-NAT destination of a redirected flow by its
@@ -85,10 +134,24 @@ func (e *Engine) Lookup(srcIP [16]byte, srcPort uint16) (dst [16]byte, dport uin
 	for _, proto := range [...]uint8{protoTCP, protoUDP} {
 		nk := natKey{ip: srcIP, port: srcPort, proto: proto}
 		e.natMu.RLock()
-		f, known := e.nat[nk]
+		v, known := e.nat[nk]
+		if !known {
+			// Wave-5 NAT registers entries under the FAKE IP it presents
+			// to the tproxy. A local dial that reaches the tproxy with the
+			// client's REAL source (loopback test/fake-transport paths —
+			// the production stack shows the fake IP as the remote) still
+			// resolves: retry under the fake key, but only when the entry
+			// was created for this exact client address (no false hits on
+			// foreign traffic that happens to share the port).
+			fk := natKey{ip: v4mapped(fakeIP4()), port: srcPort, proto: proto}
+			fv, fknown := e.nat[fk]
+			if fknown && fv.clientIP != ([4]byte{}) && v4mapped(fv.clientIP) == srcIP {
+				v, known = fv, true
+			}
+		}
 		e.natMu.RUnlock()
 		if known {
-			return f.OrigDst, f.OrigPort, true
+			return v.f.OrigDst, v.f.OrigPort, true
 		}
 	}
 	return [16]byte{}, 0, false
@@ -109,22 +172,37 @@ func (e *Engine) processLoopback(t Transport, pkt []byte, addr *windivert.Addres
 		e.passLoopback(t, pkt, addr)
 		return
 	}
+	// The tproxy's replies carry the FAKE source as their destination (the
+	// tproxy answers the connection it accepted from <natFakeIP>:eph).
 	nk := natKey{ip: v4mapped(p.dst4), port: p.dstPort, proto: p.proto}
 	e.natMu.RLock()
-	f, known := e.nat[nk]
+	v, known := e.nat[nk]
 	e.natMu.RUnlock()
 	if !known {
 		// Not a flow we redirected (foreign traffic to the same port).
 		e.passLoopback(t, pkt, addr)
 		return
 	}
+	f := v.f
 
-	// Reverse rewrite: source 127.0.0.1:tproxyPort -> OrigDst:OrigPort.
+	// Reverse rewrite: source tproxyPort -> OrigDst:OrigPort and the
+	// destination fakeIP -> the client's real address, so the client
+	// believes it is talking to the real server.
 	origIP := f.OrigDst
 	copy(pkt[12:16], origIP[12:16])
+	copy(pkt[16:20], v.clientIP[:])
 	binary.BigEndian.PutUint16(pkt[p.ipLen:p.ipLen+2], f.OrigPort)
 	if err := t.FixChecksums(pkt, addr); err != nil {
 		e.cnt.sendErrors.Add(1)
+	}
+	// The captured leg is the reply's OUTBOUND leg; the client socket needs
+	// the translated packet INBOUND, on the client-facing interface
+	// recorded at NAT time (live matrix: inbound + client-NIC IfIdx with a
+	// non-local source is the combination that delivers).
+	addr.SetOutbound(false)
+	addr.SetLoopback(false)
+	if na := addr.Network(); na != nil && v.ifIdx != 0 {
+		na.IfIdx, na.SubIfIdx = v.ifIdx, v.subIfIdx
 	}
 	e.cnt.tunnelRx.Add(1)
 	if err := t.Send(pkt, addr); err != nil {
@@ -132,7 +210,7 @@ func (e *Engine) processLoopback(t Transport, pkt []byte, addr *windivert.Addres
 	}
 
 	if p.isTCP() && (p.fin() || p.rst()) {
-		e.cleanupFlow(nk, flowKeyOf(nk, f))
+		e.cleanupFlow(nk, flowKeyOf(nk, v))
 	}
 }
 
@@ -144,10 +222,12 @@ func (e *Engine) passLoopback(t Transport, pkt []byte, addr *windivert.Address) 
 }
 
 // flowKeyOf reconstructs the client-side flow-table key of a NAT entry.
-func flowKeyOf(nk natKey, f *flowtable.Flow) flowtable.FlowKey {
+// The NAT key itself carries the FAKE IP, so the client's real address
+// comes from the entry value.
+func flowKeyOf(nk natKey, v natVal) flowtable.FlowKey {
 	return flowtable.FlowKey{
-		SrcIP: nk.ip, SrcPort: nk.port,
-		DstIP: f.OrigDst, DstPort: f.OrigPort,
+		SrcIP: v4mapped(v.clientIP), SrcPort: nk.port,
+		DstIP: v.f.OrigDst, DstPort: v.f.OrigPort,
 		Proto: nk.proto,
 	}
 }

@@ -125,6 +125,28 @@ REDIRECT-layer в stock WinDivert 2.2 отсутствует (проверено
     UDP Discord (50000–65535): тот же NAT → tun-core, XUDP-инкапсуляция,
     выход через VPS. Таймауты idle: TCP 5 мин, UDP 30 с.
 
+**Wave 5c (live 2026-10-25): TCP-ветка переведена на userspace-терминатор.**
+Живая матрица (zz_tcprealip / zz_gensyn / zz_inbest) доказала: стек Windows
+дропает inbound-инъекцию TCP SYN на NETWORK-слое в ЛЮБОЙ комбинации
+(IfIdx, Loopback, dst) — включая побайтовый replay подлинного SYN
+(контроль: не-loopback replay доставляется, DNS отвечает). Доставляется
+только inbound-инъекция в поток, авторизованный стеком на outbound-ноге
+(ALE: outbound SYN авторизует 5-tuple). Следствие: NAT→tproxy forward-leg
+для TCP нежизнеспособен на stock WinDivert 2.2.
+
+Замена (internal/tunnel/tcpterm.go): перехваченный SYN клиента
+потребляется движком; терминатор сам отвечает SYN-ACK (src = оригинальный
+dst, inbound-инъекция через выделенный handle с фильтром
+`inbound and tcp and ip.SrcAddr in tg_cidrs`), доводит handshake,
+релеит поток через carrier-chain (§6) и подделывает данные/FIN/RST
+клиенту. §4.2 fast-path: CIDR-правило даёт TUNNEL без ClientHello
+(MTProto не TLS — до wave 5c такие dials уходили DIRECT в чёрную дыру).
+UDP-ветка остаётся на NAT (inbound UDP доставляется). Шторм-контроль:
+admission-gate (SYN дропается, пока marker не прошёл), rate 1/с, burst 2,
+экспоненциальный backoff 1с→30с на отказе VPS CONNECT (живой факт: VPS
+отказывает CONNECT волнами после бёрста — дни ретрансмит-бэклога клиента
+нельзя выгружать разом).
+
 Fallback-альтернатива (если NAT-петля на loopback окажется капризной):
 wintun-адаптер + маршрут TG-CIDR → TUN (второй драйвер; решение при интеграции).
 

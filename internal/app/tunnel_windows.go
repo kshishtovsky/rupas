@@ -10,6 +10,7 @@ import (
 	"github.com/rupas/rupas/internal/capture"
 	"github.com/rupas/rupas/internal/config"
 	"github.com/rupas/rupas/internal/tunnel"
+	"github.com/rupas/rupas/pkg/windivert"
 )
 
 // DefaultTProxyPort is the loopback port TUNNEL-verdict flows are
@@ -51,14 +52,15 @@ func (w logWriter) Write(b []byte) (int, error) {
 }
 
 // tunnelEndpointConfigured reports whether the config carries a usable
-// VLESS+Reality endpoint (config.Validate enforces all-or-nothing).
+// tunnel plan (config.Validate enforces all-or-nothing per endpoint).
 func tunnelEndpointConfigured(cfg *config.Config) bool {
-	return cfg.Tunnel != (config.TunnelEndpoint{})
+	return cfg.TunnelPlan().Configured()
 }
 
-// newTunnel builds the real tunnel-core for cfg's endpoint (not started).
+// newTunnel builds the real tunnel-core for cfg's endpoint plan (not
+// started).
 func newTunnel(cfg *config.Config, tproxyPort uint16, provider *natProvider, logger *log.Logger, o tunnelRunOpts) tunnel.Tunnel {
-	return tunnel.NewTunnel(cfg.Tunnel, tproxyPort, tunnel.Options{
+	return tunnel.NewTunnel(cfg.TunnelPlan(), tproxyPort, tunnel.Options{
 		OriginalDstProvider: provider,
 		MarkerURL:           o.markerURL,
 		Logger:              slogBridge(logger),
@@ -66,3 +68,34 @@ func newTunnel(cfg *config.Config, tproxyPort uint16, provider *natProvider, log
 		DialTimeout:         o.dialTimeout,
 	})
 }
+
+// inboundSender adapts the engine's dedicated terminator handle to
+// tunnel.PacketSender: forged packets re-enter INBOUND, not-loopback, on
+// the captured packet's interface — the delivery combination the live
+// matrix proved (zz_inbest_test: inbound injection delivers for flows the
+// stack authorized on the outbound leg).
+type inboundSender struct{ t capture.Transport }
+
+func (s inboundSender) SendInboundTCP(pkt []byte, ifIdx, subIfIdx uint32) error {
+	var addr windivert.Address
+	addr.SetOutbound(false)
+	addr.SetLoopback(false)
+	if na := addr.Network(); na != nil {
+		na.IfIdx, na.SubIfIdx = ifIdx, subIfIdx
+	}
+	return s.t.Send(pkt, &addr)
+}
+
+// termAdapter bridges capture.TunnelTCP (engine hook) onto the terminator.
+type termAdapter struct{ tm *tunnel.Terminator }
+
+func (a termAdapter) FeedTCP(p capture.TCPPkt) {
+	a.tm.Feed(tunnel.TermPkt{
+		SrcIP: p.SrcIP, DstIP: p.DstIP,
+		SrcPort: p.SrcPort, DstPort: p.DstPort,
+		Seq: p.Seq, Ack: p.Ack, Flags: p.Flags, Window: p.Window,
+		Payload: p.Payload, IfIdx: p.IfIdx, SubIfIdx: p.SubIfIdx,
+	})
+}
+
+func (a termAdapter) Close() { a.tm.Close() }

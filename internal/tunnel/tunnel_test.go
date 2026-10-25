@@ -120,9 +120,9 @@ var _ transport = fakeTransport{}
 // newUnitTunnel builds a tunnel with the fake transport (no sing-box).
 func newUnitTunnel(t *testing.T, tproxyPort uint16, provider *mapProvider) *tunnel {
 	t.Helper()
-	tun := NewTunnel(config.TunnelEndpoint{
-		Protocol:    "vless",
-		Address:     "127.0.0.1",
+	ep := &config.Endpoint{
+		Kind:        config.KindVLESSReality,
+		Host:        "127.0.0.1",
 		Port:        1,
 		UUID:        "00000000-0000-0000-0000-000000000000",
 		RealityPBK:  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
@@ -130,7 +130,11 @@ func newUnitTunnel(t *testing.T, tproxyPort uint16, provider *mapProvider) *tunn
 		SNI:         "www.example.com",
 		Fingerprint: "chrome",
 		UDPMode:     "xudp",
-	}, tproxyPort, Options{
+	}
+	if err := ep.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	tun := NewTunnel(config.TunnelConfig{TCP: ep, UDP: ep}, tproxyPort, Options{
 		OriginalDstProvider: provider,
 		Logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}).(*tunnel)
@@ -435,60 +439,117 @@ func TestHealthTransitions(t *testing.T) {
 	}
 }
 
-// TestBoxOptionsMapping pins the config.TunnelEndpoint → sing-box mapping.
+// TestBoxOptionsMapping pins the config.TunnelConfig → sing-box mapping
+// for every sing-box-carried kind (vless_tcp without Reality/flow,
+// vless_reality with Reality+vision, hysteria2 with password/h3) plus the
+// network-split routing when TCP and UDP ride distinct endpoints.
 func TestBoxOptionsMapping(t *testing.T) {
-	cfg := config.TunnelEndpoint{
-		Protocol:    "vless",
-		Address:     "vps.example.net",
-		Port:        443,
-		UUID:        "11111111-2222-3333-4444-555555555555",
-		RealityPBK:  "PUBKEYBASE64URL",
-		RealitySID:  "0123abcd",
-		SNI:         "www.cloudflare.com",
-		Fingerprint: "chrome_pq",
-		UDPMode:     "xudp",
+	tcp := &config.Endpoint{
+		Kind: config.KindVLESSTCP,
+		Host: "vps.example.net", Port: 12341,
+		UUID: "11111111-2222-3333-4444-555555555555",
+		SNI:  "vps.example.net", ALPN: []string{"h2", "http/1.1"},
+		Fingerprint: "chrome", UDPMode: "xudp",
 	}
-	opts := boxOptions(cfg, 23456)
+	hy2 := &config.Endpoint{
+		Kind: config.KindHysteria2,
+		Host: "vps.example.net", Port: 53552,
+		Password: "sekret", SNI: "vps.example.net",
+		Fingerprint: "chrome",
+	}
+	fb := &config.Endpoint{
+		Kind: config.KindVLESSReality,
+		Host: "vps.example.net", Port: 443,
+		UUID: "11111111-2222-3333-4444-555555555555",
+		RealityPBK: "PUBKEYBASE64URL", RealitySID: "0123abcd",
+		SNI: "www.cloudflare.com", Fingerprint: "chrome_pq", UDPMode: "xudp",
+	}
+	cfg := config.TunnelConfig{TCP: tcp, UDP: hy2, Fallback: fb}
+	ports := sbPorts{Main: 23456, TCPFB: 23457, UDPFB: 23458}
+	opts := boxOptions(cfg, ports)
 
-	if len(opts.Inbounds) != 1 || opts.Inbounds[0].Type != "mixed" {
-		t.Fatalf("inbounds = %+v, want single mixed", opts.Inbounds)
+	if len(opts.Inbounds) != 3 {
+		t.Fatalf("inbounds = %d, want 3 (main, tcp-fallback, udp-fallback)", len(opts.Inbounds))
 	}
-	mixed := opts.Inbounds[0].Options.(*option.HTTPMixedInboundOptions)
-	if mixed.Listen == nil || mixed.Listen.Build(netip.MustParseAddr("0.0.0.0")) != netip.MustParseAddr("127.0.0.1") || mixed.ListenPort != 23456 {
-		t.Errorf("mixed inbound listen = %v:%d, want 127.0.0.1:23456", mixed.Listen, mixed.ListenPort)
+	main := opts.Inbounds[0].Options.(*option.HTTPMixedInboundOptions)
+	if main.ListenPort != 23456 {
+		t.Errorf("main mixed listen_port = %d, want 23456", main.ListenPort)
 	}
-
-	var vlessOut *option.VLESSOutboundOptions
-	for _, o := range opts.Outbounds {
-		if o.Tag == vlessTag {
-			vlessOut = o.Options.(*option.VLESSOutboundOptions)
+	for i, want := range []struct{ tag string; port uint16 }{
+		{mixedFBTag, 23457}, {mixedUFBTag, 23458},
+	} {
+		got := opts.Inbounds[i+1]
+		if got.Tag != want.tag || got.Options.(*option.HTTPMixedInboundOptions).ListenPort != want.port {
+			t.Errorf("inbound %d = %s:%d, want %s:%d", i+1, got.Tag,
+				got.Options.(*option.HTTPMixedInboundOptions).ListenPort, want.tag, want.port)
 		}
 	}
-	if vlessOut == nil {
-		t.Fatal("no vless outbound")
+
+	outs := map[string]any{}
+	for _, o := range opts.Outbounds {
+		outs[o.Tag] = o.Options
 	}
-	if vlessOut.Server != cfg.Address || vlessOut.ServerPort != cfg.Port || vlessOut.UUID != cfg.UUID {
-		t.Errorf("vless server fields = %+v", vlessOut.ServerOptions)
+	// vless_tcp: TLS enabled, NO Reality, NO flow (the user link has none).
+	vtc, ok := outs[tcpTag].(*option.VLESSOutboundOptions)
+	if !ok {
+		t.Fatalf("no %s outbound (%T)", tcpTag, outs[tcpTag])
 	}
-	if vlessOut.Flow != "xtls-rprx-vision" {
-		t.Errorf("flow = %q", vlessOut.Flow)
+	if vtc.Server != tcp.Host || vtc.ServerPort != tcp.Port || vtc.UUID != tcp.UUID {
+		t.Errorf("vless_tcp server fields = %+v", vtc.ServerOptions)
 	}
-	if vlessOut.PacketEncoding == nil || *vlessOut.PacketEncoding != "xudp" {
-		t.Errorf("packet_encoding = %v, want xudp", vlessOut.PacketEncoding)
+	if vtc.Flow != "" {
+		t.Errorf("vless_tcp flow = %q, want empty (not Vision)", vtc.Flow)
 	}
-	tls := vlessOut.TLS
-	if tls == nil || !tls.Enabled || tls.ServerName != cfg.SNI {
-		t.Fatalf("vless tls = %+v", tls)
+	if vtc.PacketEncoding == nil || *vtc.PacketEncoding != "xudp" {
+		t.Errorf("vless_tcp packet_encoding = %v, want xudp", vtc.PacketEncoding)
 	}
-	if tls.UTLS == nil || !tls.UTLS.Enabled || tls.UTLS.Fingerprint != "chrome_pq" {
-		t.Errorf("utls = %+v, want chrome_pq", tls.UTLS)
+	if vtc.TLS == nil || !vtc.TLS.Enabled || vtc.TLS.ServerName != tcp.SNI || vtc.TLS.Reality != nil {
+		t.Errorf("vless_tcp tls = %+v (reality must be nil)", vtc.TLS)
 	}
-	if tls.Reality == nil || !tls.Reality.Enabled || tls.Reality.PublicKey != cfg.RealityPBK || tls.Reality.ShortID != cfg.RealitySID {
-		t.Errorf("reality = %+v", tls.Reality)
+	if len(vtc.TLS.ALPN) != 2 || vtc.TLS.ALPN[0] != "h2" || vtc.TLS.ALPN[1] != "http/1.1" {
+		t.Errorf("vless_tcp alpn = %v", vtc.TLS.ALPN)
+	}
+	// hysteria2: password + TLS h3.
+	hc, ok := outs[udpTag].(*option.Hysteria2OutboundOptions)
+	if !ok {
+		t.Fatalf("no %s outbound (%T)", udpTag, outs[udpTag])
+	}
+	if hc.Server != hy2.Host || hc.ServerPort != hy2.Port || hc.Password != "sekret" {
+		t.Errorf("hysteria2 fields = %+v", hc)
+	}
+	if hc.TLS == nil || !hc.TLS.Enabled || hc.TLS.ServerName != hy2.SNI || len(hc.TLS.ALPN) != 1 || hc.TLS.ALPN[0] != "h3" {
+		t.Errorf("hysteria2 tls = %+v", hc.TLS)
+	}
+	// vless_reality: Reality pins + default vision flow.
+	fbc, ok := outs[fbTag].(*option.VLESSOutboundOptions)
+	if !ok {
+		t.Fatalf("no %s outbound (%T)", fbTag, outs[fbTag])
+	}
+	if fbc.Flow != "xtls-rprx-vision" {
+		t.Errorf("reality flow = %q, want vision default", fbc.Flow)
+	}
+	if fbc.TLS.Reality == nil || !fbc.TLS.Reality.Enabled ||
+		fbc.TLS.Reality.PublicKey != "PUBKEYBASE64URL" || fbc.TLS.Reality.ShortID != "0123abcd" {
+		t.Errorf("reality = %+v", fbc.TLS.Reality)
 	}
 
-	if opts.Route == nil || opts.Route.Final != vlessTag {
-		t.Errorf("route.final = %+v, want %s", opts.Route, vlessTag)
+	// Routing: udp-fallback inbound → tcp outbound; tcp-fallback inbound →
+	// fallback outbound; network udp → udp outbound; final → tcp outbound.
+	if len(opts.Route.Rules) != 3 {
+		t.Fatalf("route rules = %d, want 3", len(opts.Route.Rules))
+	}
+	if r := opts.Route.Rules[0]; r.DefaultOptions.RouteOptions.Outbound != tcpTag || len(r.DefaultOptions.Inbound) != 1 || r.DefaultOptions.Inbound[0] != mixedUFBTag {
+		t.Errorf("rule 0 = inbound %v → %s, want %s → %s", r.DefaultOptions.Inbound, r.DefaultOptions.RouteOptions.Outbound, mixedUFBTag, tcpTag)
+	}
+	if r := opts.Route.Rules[1]; r.DefaultOptions.RouteOptions.Outbound != fbTag || r.DefaultOptions.Inbound[0] != mixedFBTag {
+		t.Errorf("rule 1 = inbound %v → %s, want %s → %s", r.DefaultOptions.Inbound, r.DefaultOptions.RouteOptions.Outbound, mixedFBTag, fbTag)
+	}
+	r := opts.Route.Rules[2]
+	if r.DefaultOptions.RouteOptions.Outbound != udpTag || len(r.DefaultOptions.Network) != 1 || r.DefaultOptions.Network[0] != "udp" {
+		t.Errorf("rule 2 = network %v → %s, want udp → %s", r.DefaultOptions.Network, r.DefaultOptions.RouteOptions.Outbound, udpTag)
+	}
+	if opts.Route.Final != tcpTag {
+		t.Errorf("route.final = %s, want %s", opts.Route.Final, tcpTag)
 	}
 
 	// The JSON rendering must carry the same facts (used in debug logs/diag).
@@ -499,16 +560,76 @@ func TestBoxOptionsMapping(t *testing.T) {
 	js := string(raw)
 	for _, want := range []string{
 		`"type":"mixed"`, `"listen":"127.0.0.1"`, `"listen_port":23456`,
-		`"type":"vless"`, `"server":"vps.example.net"`, `"server_port":443`,
+		`"type":"vless"`, `"server":"vps.example.net"`, `"server_port":12341`,
 		`"uuid":"11111111-2222-3333-4444-555555555555"`,
-		`"flow":"xtls-rprx-vision"`, `"packet_encoding":"xudp"`,
-		`"server_name":"www.cloudflare.com"`, `"fingerprint":"chrome_pq"`,
+		`"packet_encoding":"xudp"`,
+		`"type":"hysteria2"`, `"server_port":53552`, `"password":"sekret"`, `"alpn":"h3"`,
 		`"public_key":"PUBKEYBASE64URL"`, `"short_id":"0123abcd"`,
-		`"final":"rupas-vless"`,
+		`"network":"udp"`, `"outbound":"` + udpTag + `"`,
+		`"final":"` + tcpTag + `"`,
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("sing-box JSON missing %s\njson: %s", want, js)
 		}
+	}
+	// vless_tcp must NOT carry a flow or reality stanza.
+	if strings.Contains(js, `"flow":"xtls-rprx-vision","packet_encoding"`) {
+		t.Errorf("vless_tcp unexpectedly carries a flow: %s", js)
+	}
+}
+
+// TestBoxOptionsSingleEndpoint pins the legacy/single-endpoint layout: one
+// mixed inbound, one outbound, no rules, final = the endpoint.
+func TestBoxOptionsSingleEndpoint(t *testing.T) {
+	ep := &config.Endpoint{
+		Kind: config.KindVLESSReality, Host: "vps.example.net", Port: 443,
+		UUID: "11111111-2222-3333-4444-555555555555",
+		RealityPBK: "PUBKEYBASE64URL", SNI: "www.cloudflare.com",
+		Fingerprint: "chrome_pq", UDPMode: "xudp",
+	}
+	opts := boxOptions(config.TunnelConfig{TCP: ep, UDP: ep}, sbPorts{Main: 23456})
+	if len(opts.Inbounds) != 1 || len(opts.Route.Rules) != 0 {
+		t.Fatalf("single endpoint: %d inbounds, %d rules; want 1/0", len(opts.Inbounds), len(opts.Route.Rules))
+	}
+	if opts.Route.Final != tcpTag {
+		t.Errorf("final = %s, want %s", opts.Route.Final, tcpTag)
+	}
+	var found bool
+	for _, o := range opts.Outbounds {
+		if o.Tag == udpTag {
+			found = true
+		}
+	}
+	if found {
+		t.Error("same TCP/UDP endpoint must not duplicate the outbound")
+	}
+}
+
+// TestBoxOptionsXHTTPExcluded pins that vless_xhttp endpoints never reach
+// the sing-box config (Rupas' own XHTTP client carries them), while the
+// sing-box-able UDP endpoint still does.
+func TestBoxOptionsXHTTPExcluded(t *testing.T) {
+	xh := &config.Endpoint{
+		Kind: config.KindVLESSXHTTP, Host: "vps.example.net", Port: 4443,
+		UUID: "11111111-2222-3333-4444-555555555555", SNI: "vps.example.net",
+		Path: "/steamVideo", Mode: "packet-up", XPadding: "100-1000",
+		Fingerprint: "chrome",
+	}
+	hy2 := &config.Endpoint{
+		Kind: config.KindHysteria2, Host: "vps.example.net", Port: 53552,
+		Password: "sekret", SNI: "vps.example.net",
+	}
+	if err := xh.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	opts := boxOptions(config.TunnelConfig{TCP: xh, UDP: hy2}, sbPorts{Main: 23456})
+	for _, o := range opts.Outbounds {
+		if o.Type == "vless" {
+			t.Errorf("xhttp endpoint leaked into sing-box as a vless outbound: %+v", o)
+		}
+	}
+	if opts.Route.Final != udpTag {
+		t.Errorf("final = %s, want %s (hysteria2 carries TCP when the TCP endpoint is xhttp)", opts.Route.Final, udpTag)
 	}
 }
 
@@ -523,31 +644,45 @@ func TestFingerprintNormalization(t *testing.T) {
 		{"nope", "chrome"},
 	}
 	for _, c := range cases {
-		got := fingerprintOf(config.TunnelEndpoint{Fingerprint: c.in})
+		got := fingerprintOf(c.in)
 		if got != c.want {
 			t.Errorf("fingerprintOf(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }
 
-// TestValidateEndpoint checks Start-time validation.
-func TestValidateEndpoint(t *testing.T) {
-	base := config.TunnelEndpoint{Protocol: "vless", Address: "a", Port: 1, UUID: "u", RealityPBK: "k", SNI: "s"}
-	if err := validateEndpoint(base); err != nil {
-		t.Fatalf("valid endpoint rejected: %v", err)
+// TestValidatePlan checks Start-time validation of the wave-5 plan.
+func TestValidatePlan(t *testing.T) {
+	base := func(kind string) *config.Endpoint {
+		return &config.Endpoint{
+			Kind: kind, Host: "a", Port: 1, SNI: "s",
+			UUID: "00000000-0000-0000-0000-000000000000",
+			Password: "p", RealityPBK: "k", Path: "/x",
+		}
 	}
-	bad := []func(*config.TunnelEndpoint){
-		func(c *config.TunnelEndpoint) { c.Protocol = "vmess" },
-		func(c *config.TunnelEndpoint) { c.Address = "" },
-		func(c *config.TunnelEndpoint) { c.Port = 0 },
-		func(c *config.TunnelEndpoint) { c.UUID = "" },
-		func(c *config.TunnelEndpoint) { c.RealityPBK = "" },
-		func(c *config.TunnelEndpoint) { c.SNI = "" },
+	for _, kind := range config.EndpointKinds() {
+		if err := validatePlan(config.TunnelConfig{TCP: base(kind)}); err != nil {
+			t.Errorf("kind %s: valid plan rejected: %v", kind, err)
+		}
+	}
+	if err := validatePlan(config.TunnelConfig{}); err == nil {
+		t.Error("empty plan accepted")
+	}
+	bad := []func(*config.Endpoint){
+		func(c *config.Endpoint) { c.Kind = "vmess" },
+		func(c *config.Endpoint) { c.Host = "" },
+		func(c *config.Endpoint) { c.Port = 0 },
+		func(c *config.Endpoint) { c.SNI = "" },
+		func(c *config.Endpoint) { c.UUID = "" },
+		func(c *config.Endpoint) { c.Kind = config.KindHysteria2; c.Password = "" },
+		func(c *config.Endpoint) { c.Kind = config.KindVLESSReality; c.RealityPBK = "" },
+		func(c *config.Endpoint) { c.Kind = config.KindVLESSXHTTP; c.Path = "" },
+		func(c *config.Endpoint) { c.Flow = "weird" },
 	}
 	for i, mutate := range bad {
-		c := base
-		mutate(&c)
-		if err := validateEndpoint(c); err == nil {
+		c := base(config.KindVLESSTCP)
+		mutate(c)
+		if err := validatePlan(config.TunnelConfig{TCP: c}); err == nil {
 			t.Errorf("case %d: invalid endpoint accepted", i)
 		}
 	}

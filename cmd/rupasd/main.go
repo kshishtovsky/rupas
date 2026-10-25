@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 
 	"github.com/rupas/rupas/internal/app"
 	"github.com/rupas/rupas/internal/config"
@@ -87,13 +88,21 @@ func main() {
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe(ctx) }()
 
-	tunnelNote := "on: NAT-redirect to the loopback tproxy → vless+reality"
+	plan := cfg.TunnelPlan()
+	tunnelNote := "on: NAT-redirect to the loopback tproxy → configured endpoints"
 	if !tunnelOn {
 		tunnelNote = "off: TUNNEL rules demoted to direct"
-	} else if cfg.Tunnel != (config.TunnelEndpoint{}) {
-		tunnelNote = fmt.Sprintf("on: vless+reality via %s:%d", cfg.Tunnel.Address, cfg.Tunnel.Port)
-	} else {
+	} else if !plan.Configured() {
 		tunnelNote = "on: no endpoint configured — TUNNEL rules escalated (sni→desync, cidr/port→direct)"
+	} else {
+		var parts []string
+		for _, e := range []*config.Endpoint{plan.TCP, plan.UDP, plan.Fallback} {
+			if e == nil {
+				continue
+			}
+			parts = append(parts, fmt.Sprintf("%s@%s:%d", e.Kind, e.Host, e.Port))
+		}
+		tunnelNote = "on: " + strings.Join(parts, " → ")
 	}
 	logger.Printf("rupasd up: pipe=%s profile=%s tunnel=%s", *pipePath, cfg.Profile, tunnelNote)
 	application.EventLog().Append("daemon started (profile " + cfg.Profile + ", tunnel " + *tunnel + ")")

@@ -1,2 +1,3 @@
 build/lab/
 *.pcap
+configs/rupas.yaml

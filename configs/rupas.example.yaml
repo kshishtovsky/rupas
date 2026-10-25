@@ -31,7 +31,18 @@ desync:
   repeats: 6
 
 # ---------------------------------------------------------------------------
-# Tunnel endpoint (§6): your VPS with sing-box/xray VLESS+Reality.
+# Tunnel plan (§6, wave 5): TCP streams (Telegram) ride `tcp`, UDP
+# pseudo-sessions (Discord voice) ride `udp`, and `fallback` is the backup
+# TCP path tried when the primary TCP dial fails. UDP falls back to XUDP
+# over the TCP endpoint after 3 failed STUN probes (stun.cloudflare.com).
+#
+# kinds:
+#   vless_tcp     — VLESS over TCP+TLS (uuid, sni, alpn, fingerprint; no flow
+#                   unless you set one — plain links have none)
+#   vless_xhttp   — VLESS over XHTTP (path, mode packet-up|stream-up|
+#                   stream-one, x_padding_bytes "min-max")
+#   vless_reality — VLESS+Reality (reality_public_key[, reality_short_id])
+#   hysteria2     — Hysteria2 over QUIC (password, alpn [h3])
 #
 # BEHAVIOUR WHILE EMPTY (the default below): the tunnel branch is DISABLED
 # and every TUNNEL rule is escalated with an honest log line and a counter
@@ -40,34 +51,43 @@ desync:
 #   - cidr/port rules → action direct  (an IP-blackholed CIDR will not
 #                       pass, but flows are never silently black-holed at
 #                       a dead loopback port either)
-# Fill ALL fields or none — a partial section fails validation.
+# Fill every field of each endpoint you use — partial endpoints fail
+# validation. A legacy single-endpoint `tunnel:` section (wave ≤4,
+# vless+reality) is still accepted and migrated automatically.
 #
 # While a live tunnel runs but its health marker fails 3×30 s, TG flows
 # are HELD (dropped with a counter), NOT escalated to direct — the TSPU
 # blackholes those CIDRs; recovery resumes the relay automatically.
 #
-# Filled example for your VPS:
-#   tunnel:
-#     protocol: vless             # only "vless" is supported
-#     address: 203.0.113.10       # VPS host or IP
-#     port: 443                   # VLESS+Reality port on the VPS
+# Example (three endpoints on one VPS):
+#
+# tunnels:
+#   tcp:
+#     kind: vless_tcp
+#     host: 203.0.113.10          # VPS host or IP
+#     port: 12341
 #     uuid: 0f4e1c2d-...          # VLESS user UUID
-#     reality_public_key: xkB7... # x25519 public key (base64 RawURL)
-#     reality_short_id: "0123abcd"
-#     sni: www.example.com        # camouflage SNI (a real site your VPS borrows)
+#     sni: vps.example.net
+#     alpn: [h2, http/1.1]
 #     fingerprint: chrome         # uTLS client fingerprint
-#     udp_mode: xudp              # xudp | packetaddr
+#   udp:
+#     kind: hysteria2
+#     host: 203.0.113.10
+#     port: 53552                 # UDP
+#     password: "hy2-secret"
+#     sni: vps.example.net
+#     alpn: [h3]
+#   fallback:
+#     kind: vless_xhttp
+#     host: 203.0.113.10
+#     port: 4443
+#     uuid: 0f4e1c2d-...
+#     sni: vps.example.net
+#     path: /xhttp-path
+#     mode: packet-up
+#     x_padding_bytes: 100-1000
 # ---------------------------------------------------------------------------
-tunnel:
-  protocol: ""
-  address: ""
-  port: 0
-  uuid: ""
-  reality_public_key: ""
-  reality_short_id: ""
-  sni: ""
-  fingerprint: ""
-  udp_mode: ""
+tunnels: {}
 
 exclusions:
   cidrs: []                   # always-DIRECT destinations (the VPS itself

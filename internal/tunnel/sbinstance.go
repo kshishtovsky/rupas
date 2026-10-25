@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/netip"
 	"strconv"
 
 	"github.com/sagernet/sing-box"
@@ -18,6 +17,7 @@ import (
 	dnsLocal "github.com/sagernet/sing-box/dns/transport/local"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/protocol/direct"
+	"github.com/sagernet/sing-box/protocol/hysteria2"
 	"github.com/sagernet/sing-box/protocol/mixed"
 	"github.com/sagernet/sing-box/protocol/socks"
 	"github.com/sagernet/sing-box/protocol/vless"
@@ -25,16 +25,17 @@ import (
 
 // singbox owns an embedded sing-box engine (ADR-4: sing-box as a library).
 // The protocol registry is intentionally minimal — mixed (our SOCKS5 feeder),
-// vless (client and, in tests, server) and direct — so the heavyweight
-// optional protocols (tun, quic, wireguard, …) stay out of the binary.
+// vless (client and, in tests, server; TCP/Reality/XUDP), hysteria2 (QUIC
+// UDP path) and direct — so the heavyweight optional protocols (tun,
+// wireguard, plain quic-based extras, …) stay out of the binary.
 type singbox struct {
-	box       *box.Box
-	mixedPort uint16
+	box   *box.Box
+	ports sbPorts
 }
 
 // startSingbox builds a fresh registry context, creates and starts a
-// sing-box instance for opts.
-func startSingbox(ctx context.Context, logger *slog.Logger, opts option.Options) (*singbox, error) {
+// sing-box instance for opts with the given per-path mixed ports.
+func startSingbox(ctx context.Context, logger *slog.Logger, opts option.Options, ports sbPorts) (*singbox, error) {
 	boxCtx := minimalBoxContext(ctx)
 	engine, err := box.New(box.Options{
 		Context: boxCtx,
@@ -50,7 +51,7 @@ func startSingbox(ctx context.Context, logger *slog.Logger, opts option.Options)
 	if jsonCfg, err := marshalBoxOptions(boxCtx, opts); err == nil {
 		logger.Debug("sing-box config", slog.String("json", string(jsonCfg)))
 	}
-	return &singbox{box: engine}, nil
+	return &singbox{box: engine, ports: ports}, nil
 }
 
 func (s *singbox) close() error {
@@ -60,36 +61,28 @@ func (s *singbox) close() error {
 	return s.box.Close()
 }
 
-// mixedAddr is the loopback address of the internal mixed inbound.
-func (s *singbox) mixedAddr() string {
-	return net.JoinHostPort(loopbackIP, strconv.Itoa(int(s.mixedPort)))
+// mainAddr is the loopback address of the main mixed inbound (TCP CONNECT
+// via route final; UDP ASSOCIATE via the network rule).
+func (s *singbox) mainAddr() string {
+	return net.JoinHostPort(loopbackIP, strconv.Itoa(int(s.ports.Main)))
 }
 
-// dial opens a TCP connection to dst through the tunnel (transport).
-func (s *singbox) dial(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
-	return socks5Connect(ctx, s.mixedAddr(), dst)
+// fbAddr is the loopback address of the TCP-fallback mixed inbound.
+func (s *singbox) fbAddr() string {
+	return net.JoinHostPort(loopbackIP, strconv.Itoa(int(s.ports.TCPFB)))
 }
 
-// dialHost dials host:port (host may be a domain) through the tunnel
-// (transport).
-func (s *singbox) dialHost(ctx context.Context, host string, port uint16) (net.Conn, error) {
-	if addr, err := netip.ParseAddr(host); err == nil {
-		addr = addr.Unmap()
-		return s.dial(ctx, netip.AddrPortFrom(addr, port))
-	}
-	return socks5DialHost(ctx, s.mixedAddr(), host, port)
+// udpFBAddr is the loopback address of the UDP-fallback mixed inbound
+// (xudp over the TCP endpoint).
+func (s *singbox) udpFBAddr() string {
+	return net.JoinHostPort(loopbackIP, strconv.Itoa(int(s.ports.UDPFB)))
 }
 
-// udpAssociate starts a SOCKS5 UDP ASSOCIATE pseudo-session (transport).
-func (s *singbox) udpAssociate(ctx context.Context) (packetRelay, error) {
-	return socks5UDPAssociate(ctx, s.mixedAddr())
-}
 
-var _ transport = (*singbox)(nil)
 
 // minimalBoxContext registers only the protocols Rupas needs, on fresh,
-// non-global registries (the include package would pull tun/quic/wireguard
-// and more into the process).
+// non-global registries (the include package would pull tun/quic-extras/
+// wireguard and more into the process).
 func minimalBoxContext(ctx context.Context) context.Context {
 	inbounds := boxAdapterInbound.NewRegistry()
 	mixed.RegisterInbound(inbounds)
@@ -98,6 +91,7 @@ func minimalBoxContext(ctx context.Context) context.Context {
 
 	outbounds := boxAdapterOutbound.NewRegistry()
 	vless.RegisterOutbound(outbounds)
+	hysteria2.RegisterOutbound(outbounds)
 	direct.RegisterOutbound(outbounds)
 	// socks outbound: used by the in-process test "VPS" whose exit is a
 	// scriptable SOCKS5 relay (hermetic e2e); production configs never

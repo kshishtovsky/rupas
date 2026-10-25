@@ -7,4 +7,30 @@
     <string name="status_format">туннель: %1$s\nядро: %2$s</string>
     <string name="log_title">Лог</string>
     <string name="vpn_permission_denied">Разрешение VPN не выдано</string>
+
+    <!-- W3: настройки эндпоинта -->
+    <string name="btn_settings">Настройки</string>
+    <string name="settings_title">Настройки эндпоинта</string>
+    <string name="hint_uuid">UUID</string>
+    <string name="hint_server">Сервер (host)</string>
+    <string name="hint_port">Порт</string>
+    <string name="hint_sni">SNI</string>
+    <string name="hint_public_key">Public key (reality pbk)</string>
+    <string name="hint_short_id">Short ID (reality sid)</string>
+    <string name="hint_fallback">Fallback</string>
+    <string name="eye_closed">👁</string>
+    <string name="eye_open">🙈</string>
+    <string name="btn_import">Импорт vless://</string>
+    <string name="btn_save">Сохранить</string>
+    <string name="import_title">Вставьте ссылку vless://</string>
+    <string name="import_hint">vless://uuid@host:port?…</string>
+    <string name="import_ok">Импорт</string>
+    <string name="import_done">Импортировано</string>
+    <string name="import_failed">Ошибка разбора: %1$s</string>
+    <string name="import_warning">Импортировано с предупреждением: %1$s</string>
+    <string name="settings_saved">Сохранено</string>
+    <string name="settings_bad_port">Неверный порт</string>
+    <string name="settings_incomplete">Заполнены не все поля: нужны UUID и сервер, либо очистите оба поля для tunnel off</string>
+    <string name="settings_save_failed">Не удалось сохранить настройки</string>
+    <string name="settings_load_failed">Не удалось прочитать настройки</string>
 </resources>

@@ -33,6 +33,12 @@ public class RupasVpnService extends VpnService {
     private static final int VPN_ADDRESS_PREFIX = 24;
     private static final String VPN_ROUTE = "0.0.0.0";
     private static final int VPN_ROUTE_PREFIX = 0;
+    // W3-контракт с Go-стороной: она вешает на TUN fdfe:dcba:9876::1/126,
+    // Java обязана задать тот же адрес и заворачивать весь IPv6 (::/0).
+    private static final String VPN_ADDRESS_V6 = "fdfe:dcba:9876::1";
+    private static final int VPN_ADDRESS_V6_PREFIX = 126;
+    private static final String VPN_ROUTE_V6 = "::";
+    private static final int VPN_ROUTE_V6_PREFIX = 0;
     // W2: локального резолвера в ядре ещё нет (SYSTEM_DESIGN §11 — W3), поэтому
     // DNS = публичный резолвер: его UDP:53 входит в TUN и релеится direct
     // через защищённый сокет. 26.26.26.1 (адрес TUN) здесь нельзя — запросы
@@ -48,6 +54,9 @@ public class RupasVpnService extends VpnService {
 
     private ParcelFileDescriptor tun;
     private PlatformImpl platform;
+    // Ядро запускалось именно этим экземпляром (binding с BIND_AUTO_CREATE
+    // создаёт сервис без onStartCommand — останавливать нечего).
+    private boolean coreStartedByInstance;
 
     /** Для MainActivity: поднят ли туннель. */
     public static boolean isRunning() {
@@ -89,7 +98,9 @@ public class RupasVpnService extends VpnService {
     private boolean establishAndStartCore() {
         Builder b = new Builder()
                 .addAddress(VPN_ADDRESS, VPN_ADDRESS_PREFIX)
+                .addAddress(VPN_ADDRESS_V6, VPN_ADDRESS_V6_PREFIX)
                 .addRoute(VPN_ROUTE, VPN_ROUTE_PREFIX)
+                .addRoute(VPN_ROUTE_V6, VPN_ROUTE_V6_PREFIX)
                 .addDnsServer(VPN_DNS)
                 .setMtu(VPN_MTU)
                 .setSession("rupas");
@@ -113,6 +124,22 @@ public class RupasVpnService extends VpnService {
             return false;
         }
         platform = new PlatformImpl();
+        // W3: настройки туннеля — ДО Core.start. Пустые настройки = tunnel off:
+        // Go-сторона эскалирует все туннельные правила в direct. В логах —
+        // только факт и хост; никаких uuid/ключей.
+        try {
+            SettingsStore.Settings st = new SettingsStore(this).load();
+            if (st.isConfigured()) {
+                CoreBridge.setSettings(st.toJson());
+                LogBuffer.add("[vpn] tunnel: on (server " + st.server + ":" + st.port + ")");
+            } else {
+                LogBuffer.add("[vpn] tunnel: off (настройки не заданы — правила direct)");
+            }
+        } catch (Exception e) {
+            // Невалидный JSON/отказ хранилища/заглушечный AAR — стартуем без туннеля.
+            Log.e(TAG, "setSettings failed", e);
+            LogBuffer.add("[vpn] setSettings failed: " + e.getMessage() + " — tunnel off");
+        }
         try {
             // gobind: Go error → Java exception, метод возвращает void
             Core.start(tun.getFd(), platform);
@@ -122,10 +149,15 @@ public class RupasVpnService extends VpnService {
             return false;
         }
         LogBuffer.add("[vpn] TUN fd=" + tun.getFd() + ", core started");
+        coreStartedByInstance = true;
         return true;
     }
 
     private void stopCore() {
+        if (!coreStartedByInstance) {
+            return;
+        }
+        coreStartedByInstance = false;
         try {
             Core.stop();
         } catch (Throwable t) {

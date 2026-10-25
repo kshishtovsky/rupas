@@ -18,6 +18,13 @@
             android:textSize="24sp"
             android:text="@string/turn_on" />
 
+        <Button
+            android:id="@+id/settingsButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            android:text="@string/btn_settings" />
+
         <TextView
             android:id="@+id/statusView"
             android:layout_width="match_parent"

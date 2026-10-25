@@ -1,9 +1,12 @@
 package ru.rupas.android;
 
+import android.content.ComponentName;
 import android.content.Intent;
+import android.content.ServiceConnection;
 import android.net.VpnService;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.IBinder;
 import android.os.Looper;
 import android.view.View;
 import android.widget.Button;
@@ -26,8 +29,32 @@ public class MainActivity extends AppCompatActivity {
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     private Button toggleButton;
+    private Button settingsButton;
     private TextView statusView;
     private TextView logView;
+
+    // W3-фикс: после пересоздания Activity статичный флаг мог не отразить живой
+    // сервис (например, после убийства процесса и START_STICKY-рестарта). Держим
+    // ещё и привязку: привязанный сервис = точно жив, но не обязательно foreground.
+    private volatile boolean serviceBound;
+    private final ServiceConnection serviceConnection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            serviceBound = true;
+            refreshStatus();
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            serviceBound = false;
+            refreshStatus();
+        }
+    };
+
+    /** Реальное состояние: статичный флаг сервиса ИЛИ живая привязка. */
+    private boolean vpnActive() {
+        return RupasVpnService.isRunning() || serviceBound;
+    }
 
     private final Runnable statusPoller = new Runnable() {
         @Override
@@ -55,6 +82,7 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         toggleButton = findViewById(R.id.toggleButton);
+        settingsButton = findViewById(R.id.settingsButton);
         statusView = findViewById(R.id.statusView);
         logView = findViewById(R.id.logView);
 
@@ -64,12 +92,21 @@ public class MainActivity extends AppCompatActivity {
                 toggleVpn();
             }
         });
+        settingsButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startActivity(new Intent(MainActivity.this, SettingsActivity.class));
+            }
+        });
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         LogBuffer.setListener(logListener);
+        // Привязка живого сервиса: даже если статичный флаг сброшен (процесс
+        // пересоздан), привязка покажет реальное состояние и мгновенно обновит UI.
+        bindService(new Intent(this, RupasVpnService.class), serviceConnection, BIND_AUTO_CREATE);
         refreshStatus();
         refreshLog();
         handler.postDelayed(statusPoller, STATUS_POLL_INTERVAL_MS);
@@ -80,10 +117,16 @@ public class MainActivity extends AppCompatActivity {
         super.onPause();
         handler.removeCallbacks(statusPoller);
         LogBuffer.setListener(null);
+        try {
+            unbindService(serviceConnection);
+        } catch (IllegalArgumentException ignored) {
+            // не был привязан
+        }
+        serviceBound = false;
     }
 
     private void toggleVpn() {
-        if (RupasVpnService.isRunning()) {
+        if (vpnActive()) {
             toggleButton.setEnabled(false);
             stopService(new Intent(this, RupasVpnService.class));
             toggleButton.setEnabled(true);
@@ -123,8 +166,8 @@ public class MainActivity extends AppCompatActivity {
             s = "core: unavailable";
         }
         statusView.setText(getString(R.string.status_format,
-                RupasVpnService.isRunning() ? "ON" : "OFF", s));
-        toggleButton.setText(RupasVpnService.isRunning()
+                vpnActive() ? "ON" : "OFF", s));
+        toggleButton.setText(vpnActive()
                 ? R.string.turn_off : R.string.turn_on);
     }
 

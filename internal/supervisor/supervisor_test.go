@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/rand/v2"
 	"sync"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -346,5 +347,103 @@ func TestEventLogRing(t *testing.T) {
 	all := l.Last(0)
 	if len(all) != 3 {
 		t.Fatalf("Last(0)=%d lines, want all 3", len(all))
+	}
+}
+
+// TestTunnelHealthWatch drives the §6 tunnel watch: an ACTIVE supervisor
+// with a tunnel that goes unhealthy for 3 consecutive checks must ride
+// the existing degradation path (ACTIVE → DEGRADED, probe scheduled),
+// log the honest HOLD note, and recover through the normal probe cycle
+// once the tunnel is healthy again (the transition table is untouched).
+func TestTunnelHealthWatch(t *testing.T) {
+	var healthy atomic.Bool
+	healthy.Store(true)
+	pr := &scriptProber{script: []ProfileResult{okDesync("tunnel up")}}
+	s := New(Deps{
+		Pipeline:            &fakePipeline{},
+		Prober:              pr,
+		Config:              config.Default(),
+		Logger:              log.New(io.Discard, "", 0),
+		EventLog:            NewEventLog(100),
+		Hysteresis:          fastHysteresis(),
+		TunnelHealth:        func() bool { return healthy.Load() },
+		TunnelCheckInterval: 15 * time.Millisecond,
+	})
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+
+	_ = s.On()
+	waitForState(t, s, StateActive, 2*time.Second)
+
+	// Tunnel goes unhealthy: 3 consecutive checks (TunnelCheckFails)
+	// fire the degradation event — the machine rides its existing
+	// ACTIVE → DEGRADED path.
+	healthy.Store(false)
+	waitForState(t, s, StateDegraded, 3*time.Second)
+	found := false
+	for _, ev := range s.evlog.Last(50) {
+		if strings.Contains(ev, "tunnel unhealthy") && strings.Contains(ev, "held") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no honest tunnel-hold note in the event log: %v", s.evlog.Last(50))
+	}
+
+	// Recovery: tunnel healthy again; the scheduled probe (backoff is
+	// milliseconds here) promotes back to ACTIVE through PROBING.
+	healthy.Store(true)
+	waitForState(t, s, StateActive, 5*time.Second)
+	found = false
+	for _, ev := range s.evlog.Last(50) {
+		if strings.Contains(ev, "tunnel healthy again") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no recovery note in the event log: %v", s.evlog.Last(50))
+	}
+}
+
+// TestTunnelHealthWatchOffState verifies the watch stays silent while the
+// supervisor is OFF (nothing to degrade) and that a flapping tunnel below
+// the threshold never degrades.
+func TestTunnelHealthWatchThreshold(t *testing.T) {
+	var checks atomic.Int64
+	s := New(Deps{
+		Pipeline: &fakePipeline{},
+		Prober:   &scriptProber{script: []ProfileResult{okDesync("x")}},
+		Config:   config.Default(),
+		Logger:   log.New(io.Discard, "", 0),
+		EventLog: NewEventLog(100),
+		Hysteresis: Hysteresis{
+			EscalateFails:    3,
+			EscalateWindow:   30 * time.Second,
+			DeescalateStable: 50 * time.Millisecond,
+			BackoffSteps:     []time.Duration{5 * time.Millisecond},
+			Jitter:           0,
+		},
+		TunnelHealth: func() bool {
+			n := checks.Add(1)
+			return n%2 == 0 // flapping: never 3 in a row
+		},
+		TunnelCheckInterval: 10 * time.Millisecond,
+	})
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	_ = s.On()
+	waitForState(t, s, StateActive, 2*time.Second)
+	time.Sleep(150 * time.Millisecond) // ~15 flapping checks
+	if got := s.Snapshot().State; got != string(StateActive) {
+		t.Fatalf("flapping tunnel degraded the machine: state=%s", got)
+	}
+	for _, ev := range s.evlog.Last(50) {
+		if strings.Contains(ev, "tunnel unhealthy") {
+			t.Fatalf("spurious tunnel degradation: %v", s.evlog.Last(50))
+		}
 	}
 }

@@ -133,6 +133,11 @@ func (p *ProbeRunner) Run(ctx context.Context) (supervisor.ProfileResult, error)
 	if cfg == nil {
 		return supervisor.ProfileResult{}, errors.New("app: prober: no configuration")
 	}
+	// Capture the live tunnel health BEFORE suspending the pipeline: the
+	// suspend stops the tunnel, so polling during the cycle would always
+	// report false. assembled=false (no endpoint / tunnel off) reports
+	// TunnelOK=false honestly.
+	tunAssembled, tunHealthy := p.pipeline.TunnelHealth()
 	tok := p.pipeline.SuspendForProbe()
 	var next *config.DesyncParams
 	defer func() { p.pipeline.ResumeFromProbe(tok, next) }()
@@ -150,8 +155,8 @@ func (p *ProbeRunner) Run(ctx context.Context) (supervisor.ProfileResult, error)
 		return supervisor.ProfileResult{
 			ProfileID:   cfg.Profile,
 			DesyncAlive: true,
-			TunnelOK:    false,
-			Note:        "no probeable targets in the config; keeping the configured profile (tunnel n/a until wave 4)",
+			TunnelOK:    tunAssembled && tunHealthy,
+			Note:        "no probeable targets in the config; keeping the configured profile",
 		}, nil
 	}
 
@@ -235,8 +240,8 @@ func (p *ProbeRunner) Run(ctx context.Context) (supervisor.ProfileResult, error)
 
 	return supervisor.ProfileResult{
 		ProfileID:   cfg.Profile,
-		DesyncAlive: true,  // v3: fake or fake_split always armed; a dead-desync verdict needs tunnel-side evidence (wave 4)
-		TunnelOK:    false, // no tunnel core until wave 4 — reported honestly
+		DesyncAlive: true,                       // v3: fake or fake_split always armed; a dead-desync verdict needs tunnel-side evidence
+		TunnelOK:    tunAssembled && tunHealthy, // live §6 marker health, captured before the suspend
 		Note:        strings.TrimPrefix(sb.String(), "; "),
 	}, nil
 }

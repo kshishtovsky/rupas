@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -62,8 +61,9 @@ func (m *mockPipeline) ResumeFromProbe(t suspendToken, next *config.DesyncParams
 	m.resumeTok = t
 	m.lastResume = next
 }
-func (m *mockPipeline) Stats() pipelineStats            { return pipelineStats{Running: m.running} }
-func (m *mockPipeline) SetDegradationSink(func(string)) {}
+func (m *mockPipeline) TunnelHealth() (assembled, healthy bool) { return false, false }
+func (m *mockPipeline) Stats() pipelineStats                    { return pipelineStats{Running: m.running} }
+func (m *mockPipeline) SetDegradationSink(func(string))         {}
 
 // refuseTransport fails every dial instantly (no network in unit tests).
 type refuseTransport struct{}
@@ -151,45 +151,46 @@ func TestEffectiveDesync(t *testing.T) {
 	}
 }
 
-func TestTProxyStubCounts(t *testing.T) {
-	stub, err := StartTProxyStub(0, discardLogger())
-	if err != nil {
-		t.Fatal(err)
+func TestEscalateTunnelRules(t *testing.T) {
+	base := &config.Config{Rules: []config.Rule{
+		{SNI: "www.youtube.com", Action: config.ActionDesync},
+		{SNI: "ech.example.com", Action: config.ActionTunnel},
+		{CIDR: "149.154.160.0/20", Action: config.ActionTunnel},
+		{Ports: "50000-65535", Action: config.ActionTunnel},
+		{Action: config.ActionDirect},
+	}}
+	// With a desync section: the SNI tunnel rule gets the DESYNC
+	// fallback, CIDR/port rules go DIRECT.
+	base.Desync = config.DesyncParams{Strategy: "fake", TTL: 13, Repeats: 6}
+	eff := *base
+	got := escalateTunnelRules(&eff, base, discardLogger())
+	if got != 3 {
+		t.Fatalf("escalated = %d, want 3", got)
 	}
-	tcp := fmt.Sprintf("127.0.0.1:%d", stub.TCPPort())
-	for i := 0; i < 3; i++ {
-		c, err := net.Dial("tcp", tcp)
-		if err != nil {
-			t.Fatal(err)
+	want := []config.Action{
+		config.ActionDesync, // unchanged desync rule
+		config.ActionDesync, // tunnel SNI → desync fallback
+		config.ActionDirect, // tunnel CIDR → direct
+		config.ActionDirect, // tunnel ports → direct
+		config.ActionDirect, // default rule untouched
+	}
+	for i, a := range want {
+		if eff.Rules[i].Action != a {
+			t.Fatalf("rule %d (%+v) action = %v, want %v", i, base.Rules[i], eff.Rules[i].Action, a)
 		}
-		c.Close()
 	}
-	uc, err := net.Dial("udp", fmt.Sprintf("127.0.0.1:%d", stub.UDPPort()))
-	if err != nil {
-		t.Fatal(err)
+	if base.Rules[1].Action != config.ActionTunnel {
+		t.Fatal("escalateTunnelRules mutated the input config")
 	}
-	uc.Write([]byte("x"))
-	uc.Write([]byte("y"))
-	uc.Close()
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if stub.Conns() >= 3 && stub.Dgrams() >= 2 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if stub.Conns() != 3 {
-		t.Fatalf("conns = %d, want 3", stub.Conns())
-	}
-	if stub.Dgrams() < 2 {
-		t.Fatalf("dgrams = %d, want >= 2", stub.Dgrams())
-	}
-	stub.Stop()
-	stub.Stop() // idempotent
-	if c, err := net.Dial("tcp", tcp); err == nil {
-		c.Close()
-		t.Fatal("tcp listener alive after Stop")
+	// Without a desync section everything escalates to DIRECT (a DESYNC
+	// rule without a profile would fail capture.New).
+	nd := &config.Config{Rules: []config.Rule{
+		{SNI: "ech.example.com", Action: config.ActionTunnel},
+	}}
+	eff2 := *nd
+	if got := escalateTunnelRules(&eff2, nd, discardLogger()); got != 1 || eff2.Rules[0].Action != config.ActionDirect {
+		t.Fatalf("no-desync escalation: n=%d action=%v", got, eff2.Rules[0].Action)
 	}
 }
 

@@ -28,5 +28,6 @@ func (unsupportedPipeline) Start(*config.Config) error {
 func (unsupportedPipeline) Stop() error                                        { return nil }
 func (unsupportedPipeline) SuspendForProbe() suspendToken                      { return suspendToken{} }
 func (unsupportedPipeline) ResumeFromProbe(suspendToken, *config.DesyncParams) {}
+func (unsupportedPipeline) TunnelHealth() (assembled, healthy bool)            { return false, false }
 func (unsupportedPipeline) Stats() pipelineStats                               { return pipelineStats{} }
 func (unsupportedPipeline) SetDegradationSink(func(string))                    {}

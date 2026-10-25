@@ -19,6 +19,7 @@ import (
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/protocol/direct"
 	"github.com/sagernet/sing-box/protocol/mixed"
+	"github.com/sagernet/sing-box/protocol/socks"
 	"github.com/sagernet/sing-box/protocol/vless"
 )
 
@@ -98,6 +99,10 @@ func minimalBoxContext(ctx context.Context) context.Context {
 	outbounds := boxAdapterOutbound.NewRegistry()
 	vless.RegisterOutbound(outbounds)
 	direct.RegisterOutbound(outbounds)
+	// socks outbound: used by the in-process test "VPS" whose exit is a
+	// scriptable SOCKS5 relay (hermetic e2e); production configs never
+	// reference it.
+	socks.RegisterOutbound(outbounds)
 
 	dnsReg := dns.NewTransportRegistry()
 	dnsLocal.RegisterTransport(dnsReg)

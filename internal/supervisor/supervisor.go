@@ -59,11 +59,33 @@ type Deps struct {
 	Logger     Logger
 	EventLog   *EventLog
 	Hysteresis Hysteresis // zero value → DefaultHysteresis
+	// TunnelHealth reports the live tunnel marker health (Tunnel.Healthy,
+	// §6). When set, the event loop polls it every TunnelCheckInterval;
+	// TunnelCheckFails consecutive unhealthy polls inject a degradation
+	// event (§8: any state → DEGRADED) under which the tunnel holds TG
+	// flows (dropped with a counter) instead of escalating them to direct.
+	// Nil disables the watch. The callback must be cheap and non-blocking;
+	// "no tunnel assembled" must report true (healthy) so an absent tunnel
+	// never degrades the machine.
+	TunnelHealth func() bool
+	// TunnelCheckInterval overrides the poll period (0 → 30 s, §6).
+	TunnelCheckInterval time.Duration
 	// Now overrides the clock (tests only); nil → time.Now.
 	Now func() time.Time
 	// Rand overrides the jitter source (tests only); nil → math/rand/v2.
 	Rand *rand.Rand
 }
+
+// Tunnel check defaults (§6: marker every 30 s, 3 consecutive failures =
+// down). The tunnel-side health loop flips Healthy() after its own 3×30 s
+// failures; this watch converts that into a supervisor event.
+const (
+	DefaultTunnelCheckInterval = 30 * time.Second
+	// TunnelCheckFails is the consecutive unhealthy polls that fire the
+	// degradation event (mirrors HealthFailThreshold; with the default
+	// interval the tunnel itself is already down by then).
+	TunnelCheckFails = 3
+)
 
 // Supervisor owns the state machine, the probe/pipeline side effects and
 // the authoritative core.Snapshot (behind an atomic pointer, §2).
@@ -238,6 +260,49 @@ func (s *Supervisor) run() {
 		lastOCAt    time.Time
 	)
 
+	// Tunnel health watch (§6): poll Tunnel.Healthy() and convert a 3×30 s
+	// failure streak into the existing degradation event. The HOLD itself
+	// lives in the tunnel (it drops new flows with a counter while
+	// unhealthy); the machine reacts through its normal ACTIVE*→DEGRADED
+	// path — the transition table is untouched.
+	var tunnelTick <-chan time.Time
+	tunnelFails := 0
+	tunnelHeld := false
+	if s.deps.TunnelHealth != nil {
+		interval := s.deps.TunnelCheckInterval
+		if interval <= 0 {
+			interval = DefaultTunnelCheckInterval
+		}
+		tk := time.NewTicker(interval)
+		defer tk.Stop()
+		tunnelTick = tk.C
+	}
+	checkTunnel := func() {
+		healthy := s.deps.TunnelHealth()
+		if healthy {
+			if tunnelHeld {
+				tunnelHeld = false
+				s.logf("tunnel healthy again; TG flows resume through the tunnel")
+				s.evlog.Append("tunnel healthy again; TG flows resume through the tunnel")
+			}
+			tunnelFails = 0
+			return
+		}
+		tunnelFails++
+		if tunnelFails < TunnelCheckFails {
+			return
+		}
+		if !tunnelHeld {
+			tunnelHeld = true
+			note := fmt.Sprintf("tunnel unhealthy %d consecutive checks: TG flows held (dropped, not escalated to direct)", tunnelFails)
+			s.logf("%s", note)
+			s.evlog.Append(note)
+			// Reuse the §8 degradation path: ACTIVE* → DEGRADED with a
+			// probe scheduled; SNI-DESYNC rules are unaffected.
+			s.trySend(event{kind: evDegradation, note: note})
+		}
+	}
+
 	store := func() {
 		profile := cfg.Profile
 		if lastOC.ProfileID != "" {
@@ -346,6 +411,9 @@ func (s *Supervisor) run() {
 			s.logf("stopped (state=%s)", m.state)
 			s.evlog.Append("supervisor stopped")
 			return
+
+		case <-tunnelTick:
+			checkTunnel()
 
 		case ev := <-s.events:
 			if ev.kind == evReload && ev.cfg != nil {

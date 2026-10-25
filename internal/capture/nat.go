@@ -61,6 +61,30 @@ func (e *Engine) natOutbound(pkt []byte, p *pktInfo, key flowtable.FlowKey, f *f
 	}
 }
 
+// Lookup resolves the pre-NAT destination of a redirected flow by its
+// client src address/port (SYSTEM_DESIGN §3.3). It is the cold-path seam
+// the tunnel's OriginalDstProvider consumes: the NETWORK-layer NAT stored
+// OrigDst/OrigPort keyed by the client 4-tuple when it rewrote the packet
+// to 127.0.0.1:tproxyPort. Addresses are 16-byte; IPv4 arrives in
+// IPv4-mapped form (as in flowtable.FlowKey).
+//
+// The NAT map is keyed by (ip, port, proto); this lookup tries TCP first,
+// then UDP — the two never share a client port in practice (the OS
+// ephemeral allocators are per-protocol), and the packet hot path is not
+// touched (RLock only, called once per accepted tunnel flow).
+func (e *Engine) Lookup(srcIP [16]byte, srcPort uint16) (dst [16]byte, dport uint16, ok bool) {
+	for _, proto := range [...]uint8{protoTCP, protoUDP} {
+		nk := natKey{ip: srcIP, port: srcPort, proto: proto}
+		e.natMu.RLock()
+		f, known := e.nat[nk]
+		e.natMu.RUnlock()
+		if known {
+			return f.OrigDst, f.OrigPort, true
+		}
+	}
+	return [16]byte{}, 0, false
+}
+
 // processLoopback handles packets captured by the second (loopback) handle:
 // replies of the tproxy listener on 127.0.0.1:tproxyPort back to the client.
 // The source is translated back to the original destination recorded in the

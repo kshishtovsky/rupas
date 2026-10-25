@@ -118,7 +118,7 @@ func renderSnapshot(w io.Writer, s core.Snapshot) {
 		fmt.Fprintf(w, "  in state:   %s (since %s)\n", humanDur(time.Since(s.Since)), s.Since.Local().Format("2006-01-02 15:04:05"))
 	}
 	fmt.Fprintf(w, "  profile:    %s\n", orDash(s.ProfileID))
-	fmt.Fprintf(w, "  tunnel:     %s\n", healthy(s.TunnelHealthy))
+	renderTunnel(w, s)
 
 	if len(s.Flows) > 0 {
 		fmt.Fprintln(w, "  flows:")
@@ -142,6 +142,37 @@ func renderSnapshot(w io.Writer, s core.Snapshot) {
 		fmt.Fprintf(w, "    last probe: %s — %s\n", c.LastProbeAt.Local().Format("2006-01-02 15:04:05"), orDash(c.LastProbeNote))
 	} else {
 		fmt.Fprintf(w, "    last probe: %s\n", "—")
+	}
+}
+
+// renderTunnel prints the tunnel-branch section (§3.3/§6): mode, health,
+// relayed bytes, flows and honest drop counters.
+func renderTunnel(w io.Writer, s core.Snapshot) {
+	t := s.Tunnel
+	if t == nil {
+		fmt.Fprintf(w, "  tunnel:     %s (no tunnel branch assembled)\n", healthy(s.TunnelHealthy))
+		return
+	}
+	state := healthy(t.Healthy)
+	if t.Held {
+		state = "held (new flows dropped)"
+	}
+	switch t.Mode {
+	case "tunnel":
+		fmt.Fprintf(w, "  tunnel:     %s (mode: tunnel — NAT → tproxy → vless+reality)\n", state)
+	case "escalated":
+		fmt.Fprintf(w, "  tunnel:     %s (mode: escalated — no endpoint, %d TUNNEL rule(s) → sni:desync / cidr,port:direct)\n",
+			state, t.EscalatedRules)
+	case "off":
+		fmt.Fprintf(w, "  tunnel:     %s (mode: off — TUNNEL rules demoted to direct)\n", state)
+	default:
+		fmt.Fprintf(w, "  tunnel:     %s (mode: %s)\n", state, orDash(t.Mode))
+	}
+	if t.Mode == "tunnel" {
+		fmt.Fprintf(w, "    bytes rx/tx      %s / %s\n", humanBytes(t.RxBytes), humanBytes(t.TxBytes))
+		fmt.Fprintf(w, "    flows tcp        %d active / %d total\n", t.TCPFlows, t.TCPConns)
+		fmt.Fprintf(w, "    flows udp        %d sessions / %d datagrams\n", t.UDPSessions, t.UDPDgrams)
+		fmt.Fprintf(w, "    dropped          %d\n", t.Dropped)
 	}
 }
 

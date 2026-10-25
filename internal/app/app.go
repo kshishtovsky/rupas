@@ -25,12 +25,14 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/rupas/rupas/internal/config"
 	"github.com/rupas/rupas/internal/core"
 	"github.com/rupas/rupas/internal/desync"
 	"github.com/rupas/rupas/internal/rules"
 	"github.com/rupas/rupas/internal/supervisor"
+	"github.com/rupas/rupas/internal/tunnel"
 )
 
 // Options tunes App construction. The zero value is usable: the tunnel
@@ -41,13 +43,25 @@ type Options struct {
 	// build/desync/fake-chrome.bin (walking up from the working directory).
 	FakeTemplatePath string
 	// Tunnel enables the tunnel branch: TUNNEL-verdict flows (TG CIDRs,
-	// UDP relay, ECH) are NAT-redirected to a loopback tproxy that, until
-	// the sing-box core lands in wave 4, is a stub logger which counts
-	// and closes the flow. With Tunnel=false the TUNNEL rules are demoted
-	// to DIRECT and the NAT branch stays off entirely.
+	// UDP relay, ECH) are NAT-redirected to the loopback tproxy and
+	// relayed through the sing-box VLESS+Reality core (internal/tunnel).
+	// With Tunnel=true but NO endpoint in the config the TUNNEL rules are
+	// escalated honestly instead: SNI rules → DESYNC fallback, CIDR/port
+	// rules → DIRECT (logged + counted; see tunnelModeEscalated).
+	// With Tunnel=false the TUNNEL rules are demoted to DIRECT and the
+	// NAT branch stays off entirely.
 	Tunnel bool
 	// TProxyPort is the loopback NAT/tproxy port (0 = DefaultTProxyPort).
 	TProxyPort uint16
+	// TunnelMarkerURL overrides the tunnel health-marker endpoint (§6).
+	// Empty → tunnel.DefaultMarkerURL.
+	TunnelMarkerURL string
+	// TunnelHealthInterval overrides the marker probe period (0 → 30 s,
+	// §6). Tests shrink it.
+	TunnelHealthInterval time.Duration
+	// TunnelDialTimeout bounds one tunnel relay dial (0 → 20 s) so a dead
+	// endpoint closes redirected flows promptly.
+	TunnelDialTimeout time.Duration
 	// NoCalibration skips the TTL binary search during probe cycles
 	// (tests use it to keep probe cycles short).
 	NoCalibration bool
@@ -97,7 +111,12 @@ func New(cfg *config.Config, logger *log.Logger, opts Options) (*App, error) {
 		tpl:        tpl,
 		tunnel:     opts.Tunnel,
 		tproxyPort: opts.TProxyPort,
-		log:        logger,
+		tunnelOpts: tunnelRunOpts{
+			markerURL:      opts.TunnelMarkerURL,
+			healthInterval: opts.TunnelHealthInterval,
+			dialTimeout:    opts.TunnelDialTimeout,
+		},
+		log: logger,
 	})
 	a.prober = newProbeRunner(probeDeps{
 		log:           logger,
@@ -115,6 +134,15 @@ func New(cfg *config.Config, logger *log.Logger, opts Options) (*App, error) {
 		Config:   cfg,
 		Logger:   logger,
 		EventLog: a.evlog,
+		// Tunnel health watch (§6): the tunnel's own marker loop flips
+		// Healthy() after 3×30 s failures; the supervisor turns a
+		// persistent failure into its existing degradation path. An
+		// unassembled tunnel (off/escalated) reports healthy so it never
+		// degrades the machine.
+		TunnelHealth: func() bool {
+			assembled, healthy := a.pipeline.TunnelHealth()
+			return !assembled || healthy
+		},
 	})
 	// A dead capture engine escalates the supervisor (§8 degradation).
 	a.pipeline.SetDegradationSink(func(note string) {
@@ -152,8 +180,8 @@ func (a *App) Start(ctx context.Context) error { return a.sup.Start(ctx) }
 // Idempotent.
 func (a *App) Close() error { return a.sup.Close() }
 
-// Stats returns live pipeline state (engine counters, flow count, tproxy
-// stub counters, effective desync profile).
+// Stats returns live pipeline state (engine counters, flow count, tunnel
+// branch status, effective desync profile).
 func (a *App) Stats() pipelineStats { return a.pipeline.Stats() }
 
 // LastCalibration returns the last TTL-calibration outcome, or nil before
@@ -162,9 +190,9 @@ func (a *App) Stats() pipelineStats { return a.pipeline.Stats() }
 func (a *App) LastCalibration() *calInfo { return a.prober.LastCalibration() }
 
 // Snapshot merges the authoritative supervisor snapshot with the live
-// capture counters, so `rupasctl status` reports real numbers while the
-// pipeline runs. The probe bookkeeping (LastProbeAt/Note) stays owned by
-// the supervisor.
+// capture counters and the tunnel-branch section, so `rupasctl status`
+// reports real numbers while the pipeline runs. The probe bookkeeping
+// (LastProbeAt/Note) stays owned by the supervisor.
 func (a *App) Snapshot() core.Snapshot {
 	s := a.sup.Snapshot()
 	st := a.pipeline.Stats()
@@ -184,14 +212,27 @@ func (a *App) Snapshot() core.Snapshot {
 	if st.ActiveFlows > 0 {
 		flows["active"] = st.ActiveFlows
 	}
-	if st.TProxyConns > 0 {
-		flows["tproxy_conns"] = st.TProxyConns
-	}
-	if st.TProxyDgrams > 0 {
-		flows["tproxy_dgrams"] = st.TProxyDgrams
-	}
 	if len(flows) > 0 {
 		s.Flows = flows
+	}
+	// Tunnel section (§3.3/§6): mode, health, bytes, flows, drops. When a
+	// live tunnel exists its marker health is authoritative (more recent
+	// than the last probe outcome).
+	s.Tunnel = &core.TunnelStatus{
+		Mode:           st.TunnelMode,
+		EscalatedRules: st.TunnelEscalated,
+	}
+	if st.Tunnel != nil {
+		s.Tunnel.Healthy = st.Tunnel.Healthy
+		s.Tunnel.Held = st.Tunnel.Held
+		s.Tunnel.RxBytes = st.Tunnel.RxBytes
+		s.Tunnel.TxBytes = st.Tunnel.TxBytes
+		s.Tunnel.TCPFlows = st.Tunnel.TCPFlows
+		s.Tunnel.TCPConns = st.Tunnel.TCPConns
+		s.Tunnel.UDPSessions = st.Tunnel.UDPSessions
+		s.Tunnel.UDPDgrams = st.Tunnel.UDPDgrams
+		s.Tunnel.Dropped = st.Tunnel.Dropped
+		s.TunnelHealthy = st.Tunnel.Healthy
 	}
 	return s
 }
@@ -202,17 +243,26 @@ func (a *App) Snapshot() core.Snapshot {
 
 // pipelineStats is the live pipeline state surfaced to App.Snapshot/Stats.
 type pipelineStats struct {
-	Running      bool
-	Counters     core.Counters
-	ActiveFlows  int64
-	TProxyConns  int64
-	TProxyDgrams int64
-	Desync       config.DesyncParams
+	Running     bool
+	Counters    core.Counters
+	ActiveFlows int64
+	Desync      config.DesyncParams
+	// TunnelMode is how TUNNEL-rule flows are served right now:
+	// "tunnel" (live relay) | "escalated" (no endpoint: sni→desync,
+	// cidr/port→direct, counted) | "off" (-tunnel=off). Empty before the
+	// first start.
+	TunnelMode string
+	// TunnelEscalated is the number of TUNNEL rules rewritten by the
+	// escalation fallback (0 unless TunnelMode == "escalated").
+	TunnelEscalated int
+	// Tunnel is the live tunnel-core status (nil unless TunnelMode ==
+	// "tunnel").
+	Tunnel *tunnel.Stats
 }
 
 // pipelineControl is what App needs from the capture side. On Windows it
-// is implemented by capturePipeline (capture.Engine lifecycle + tproxy
-// stub); other platforms get an explicit "unsupported" stub.
+// is implemented by capturePipeline (capture.Engine + tunnel lifecycle);
+// other platforms get an explicit "unsupported" stub.
 type pipelineControl interface {
 	// Start launches interception for cfg (supervisor.Pipeline.Start).
 	Start(cfg *config.Config) error
@@ -225,6 +275,10 @@ type pipelineControl interface {
 	// ResumeFromProbe restarts interception with an optionally updated
 	// desync profile, unless an external Start/Stop superseded the token.
 	ResumeFromProbe(t suspendToken, next *config.DesyncParams)
+	// TunnelHealth reports the live tunnel branch: assembled=false means
+	// no live tunnel (mode off/escalated), healthy mirrors
+	// tunnel.Healthy() (§6 marker). Non-Windows reports false, false.
+	TunnelHealth() (assembled, healthy bool)
 	Stats() pipelineStats
 	SetDegradationSink(f func(note string))
 }
@@ -265,6 +319,15 @@ func effectiveDesync(base config.DesyncParams, override *config.DesyncParams) co
 	return base
 }
 
+// tunnelRunOpts are the app-level tunnel overrides carried through
+// Options (production keeps the zero values: default marker, §6 30 s
+// health interval, 20 s dial bound).
+type tunnelRunOpts struct {
+	markerURL      string
+	healthInterval time.Duration
+	dialTimeout    time.Duration
+}
+
 // demoteTunnelRules rewrites TUNNEL rules to DIRECT (used when the tunnel
 // branch is off: without a tproxy the NAT rewrite would black-hole the
 // flow at 127.0.0.1:<dead port>).
@@ -277,6 +340,41 @@ func demoteTunnelRules(rules []config.Rule) []config.Rule {
 		out[i] = r
 	}
 	return out
+}
+
+// escalateTunnelRules rewrites TUNNEL rules for the no-endpoint fallback
+// (documented behavior of -tunnel=on with an empty config tunnel
+// section): SNI-matched rules degrade to the DESYNC fallback (the SNI
+// branch can still bypass the TSPU), CIDR/port/default rules go DIRECT —
+// honest in both directions: an IP-blackholed CIDR will not pass DIRECT,
+// but the flow is no longer silently black-holed at a dead loopback port
+// either, and the rewrite is logged and counted (pipelineStats.
+// TunnelEscalated / status "escalated"). A config without a usable
+// desync section escalates everything to DIRECT. It mutates effCfg.Rules
+// and returns the number of rewritten rules.
+func escalateTunnelRules(effCfg *config.Config, base *config.Config, log *log.Logger) int {
+	desyncReady := base.Desync.Strategy != ""
+	ns, no := 0, 0 // sni→desync, cidr/port/default→direct
+	out := make([]config.Rule, len(base.Rules))
+	for i, r := range base.Rules {
+		if r.Action == config.ActionTunnel {
+			if r.SNI != "" && desyncReady {
+				r.Action = config.ActionDesync
+				ns++
+			} else {
+				r.Action = config.ActionDirect
+				no++
+			}
+		}
+		out[i] = r
+	}
+	effCfg.Rules = out
+	n := ns + no
+	if n > 0 {
+		log.Printf("app: tunnel endpoint not configured: %d TUNNEL rule(s) escalated (sni→desync: %d, cidr/port→direct: %d); honest fallback, flows are not black-holed",
+			n, ns, no)
+	}
+	return n
 }
 
 // tunnelCIDRs lists the CIDR matchers of TUNNEL rules (widens the capture

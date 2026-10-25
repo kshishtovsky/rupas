@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -78,6 +79,7 @@ func (t *tunnel) udpLoop() {
 
 // handleUDPPacket routes one datagram through an existing or new session.
 func (t *tunnel) handleUDPPacket(src *net.UDPAddr, payload []byte) {
+	t.udpDgrams.Add(1)
 	srcIP, srcPort, ok := splitAddr(src)
 	if !ok {
 		return
@@ -91,10 +93,22 @@ func (t *tunnel) handleUDPPacket(src *net.UDPAddr, payload []byte) {
 		if err := sess.relay.send(sess.dst, payload); err != nil {
 			t.logger.Warn("udp: relay send failed",
 				slog.String("src", key.String()), slog.Any("err", err))
+			t.drop()
 			sess.close()
 		} else {
+			t.txBytes.Add(uint64(len(payload)))
 			sess.touch()
 		}
+		return
+	}
+
+	// HOLD (§6): marker failed 3× — refuse new pseudo-sessions with a
+	// counter instead of relaying into a dead tunnel.
+	if t.held() {
+		t.logger.Warn("udp: tunnel HELD, dropping datagram",
+			slog.String("src", key.String()),
+			slog.Int("fail_streak", int(t.failStreak.Load())))
+		t.drop()
 		return
 	}
 
@@ -103,13 +117,17 @@ func (t *tunnel) handleUDPPacket(src *net.UDPAddr, payload []byte) {
 	if !ok {
 		t.logger.Warn("udp: no original dst for flow; dropping",
 			slog.String("src", key.String()))
+		t.drop()
 		return
 	}
 	dst := joinAddr(dstIP, dstPort)
-	relay, err := t.tr.udpAssociate(ctxOrBackground(t.ctx))
+	ctx, cancel := context.WithTimeout(ctxOrBackground(t.ctx), t.dialTimeout)
+	relay, err := t.tr.udpAssociate(ctx)
+	cancel()
 	if err != nil {
 		t.logger.Warn("udp: associate failed",
 			slog.String("src", key.String()), slog.Any("err", err))
+		t.drop()
 		return
 	}
 	sess = &udpSession{
@@ -151,6 +169,7 @@ func (t *tunnel) handleUDPPacket(src *net.UDPAddr, payload []byte) {
 				sess.close()
 				return
 			}
+			t.rxBytes.Add(uint64(len(reply)))
 			sess.touch()
 		}
 	}()
@@ -158,7 +177,10 @@ func (t *tunnel) handleUDPPacket(src *net.UDPAddr, payload []byte) {
 	if err := relay.send(dst, payload); err != nil {
 		t.logger.Warn("udp: first relay send failed",
 			slog.String("src", key.String()), slog.Any("err", err))
+		t.drop()
 		sess.close()
+	} else {
+		t.txBytes.Add(uint64(len(payload)))
 	}
 }
 

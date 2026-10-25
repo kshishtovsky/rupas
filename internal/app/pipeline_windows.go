@@ -15,6 +15,21 @@ import (
 	"github.com/rupas/rupas/internal/desync"
 	"github.com/rupas/rupas/internal/rules"
 	"github.com/rupas/rupas/internal/supervisor"
+	"github.com/rupas/rupas/internal/tunnel"
+)
+
+// Tunnel branch modes reported by pipelineStats.TunnelMode and rendered by
+// `rupasctl status` (docs/SYSTEM_DESIGN §3.3, §6):
+const (
+	// tunnelModeOff: -tunnel=off — TUNNEL rules demoted to DIRECT, no NAT.
+	tunnelModeOff = "off"
+	// tunnelModeEscalated: tunnel requested but unusable (endpoint empty
+	// or tunnel start failed). TUNNEL rules are escalated: SNI rules →
+	// DESYNC fallback, CIDR/port rules → DIRECT — logged and counted, so
+	// flows are never silently black-holed at a dead loopback port.
+	tunnelModeEscalated = "escalated"
+	// tunnelModeLive: NAT → loopback tproxy → sing-box VLESS+Reality.
+	tunnelModeLive = "tunnel"
 )
 
 // pipelineDeps carries the immutable construction parameters.
@@ -22,19 +37,29 @@ type pipelineDeps struct {
 	tpl        []byte
 	tunnel     bool
 	tproxyPort uint16
+	tunnelOpts tunnelRunOpts
 	log        *log.Logger
+	// engineHook runs after capture.New on every start segment, before
+	// Run (tests inject fake transports there). Nil in production.
+	engineHook func(*capture.Engine)
 }
 
 // capturePipeline implements supervisor.Pipeline (and the wider
-// pipelineControl seam) over capture.Engine:
+// pipelineControl seam) over capture.Engine plus the real tunnel core
+// (internal/tunnel, §3.3 + §6):
 //
-//   - Start compiles the rules, starts the tproxy stub (tunnel branch)
-//     and launches a fresh engine in a goroutine whose Run error is
-//     drained by Stop. capture.Engine.Run is once-only, so every start
-//     segment gets its own engine — this is also what a hot desync
-//     profile update rides on (see the package comment).
+//   - Start compiles the rules, brings the tunnel up (sing-box VLESS+
+//     Reality tproxy on the loopback NAT port — started BEFORE the engine
+//     so redirected packets never hit a dead port) and launches a fresh
+//     engine in a goroutine whose Run error is drained by Stop.
+//     capture.Engine.Run is once-only, so every start segment gets its own
+//     engine and its own tunnel — this is also what a hot desync profile
+//     update rides on (see the package comment).
+//   - Without a usable endpoint the tunnel branch escalates honestly
+//     (see tunnelModeEscalated) instead of failing the whole pipeline.
 //   - Stop is graceful: the engine unblocks pending receives, the driver
-//     re-injects still-queued packets when the handle closes.
+//     re-injects still-queued packets when the handle closes, the tunnel
+//     relays drain and the sing-box engine closes.
 //   - SuspendForProbe/ResumeFromProbe bracket probe cycles (see
 //     ProbeRunner.Run).
 type capturePipeline struct {
@@ -42,16 +67,21 @@ type capturePipeline struct {
 	tpl        []byte
 	tunnel     bool
 	tproxyPort uint16
+	tunnelOpts tunnelRunOpts
+	engineHook func(*capture.Engine)
+	provider   *natProvider
 
-	mu       sync.Mutex
-	lastCfg  *config.Config
-	override *config.DesyncParams
-	engine   *capture.Engine
-	runErr   chan error
-	stub     *TProxyStub
-	running  bool
-	gen      uint64
-	onRunErr func(note string)
+	mu         sync.Mutex
+	lastCfg    *config.Config
+	override   *config.DesyncParams
+	engine     *capture.Engine
+	runErr     chan error
+	tun        tunnel.Tunnel
+	tunnelMode string
+	escaped    int // TUNNEL rules rewritten by the escalation fallback
+	running    bool
+	gen        uint64
+	onRunErr   func(note string)
 }
 
 var (
@@ -72,6 +102,9 @@ func newPipeline(d pipelineDeps) pipelineControl {
 		tpl:        d.tpl,
 		tunnel:     d.tunnel,
 		tproxyPort: port,
+		tunnelOpts: d.tunnelOpts,
+		engineHook: d.engineHook,
+		provider:   &natProvider{},
 	}
 }
 
@@ -148,18 +181,32 @@ func (p *capturePipeline) ResumeFromProbe(t suspendToken, next *config.DesyncPar
 	}
 }
 
+// TunnelHealth reports the live tunnel branch: assembled=false means no
+// live tunnel (mode off/escalated — nothing for the supervisor watch to
+// degrade on), healthy mirrors tunnel.Healthy() (§6 marker).
+func (p *capturePipeline) TunnelHealth() (assembled, healthy bool) {
+	p.mu.Lock()
+	tun := p.tun
+	p.mu.Unlock()
+	if tun == nil {
+		return false, false
+	}
+	return true, tun.Healthy()
+}
+
 func (p *capturePipeline) Stats() pipelineStats {
 	p.mu.Lock()
-	eng, stub, running, cfg, override := p.engine, p.stub, p.running, p.lastCfg, p.override
+	eng, tun, running, cfg, override, mode, escaped :=
+		p.engine, p.tun, p.running, p.lastCfg, p.override, p.tunnelMode, p.escaped
 	p.mu.Unlock()
-	st := pipelineStats{Running: running}
+	st := pipelineStats{Running: running, TunnelMode: mode, TunnelEscalated: escaped}
 	if eng != nil {
 		st.Counters = eng.Counters()
 		st.ActiveFlows = int64(eng.Flows().Len())
 	}
-	if stub != nil {
-		st.TProxyConns = stub.Conns()
-		st.TProxyDgrams = stub.Dgrams()
+	if tun != nil {
+		ts := tun.Stats()
+		st.Tunnel = &ts
 	}
 	switch {
 	case override != nil:
@@ -170,7 +217,8 @@ func (p *capturePipeline) Stats() pipelineStats {
 	return st
 }
 
-// startLocked creates a fresh engine and launches it. Caller holds mu.
+// startLocked creates a fresh engine (and tunnel, when applicable) and
+// launches it. Caller holds mu.
 func (p *capturePipeline) startLocked(cfg *config.Config) error {
 	if p.running {
 		p.stopLocked()
@@ -179,36 +227,53 @@ func (p *capturePipeline) startLocked(cfg *config.Config) error {
 
 	effCfg := *cfg
 	var (
-		port uint16
-		tg   []string
-		stub *TProxyStub
+		port  uint16
+		tg    []string
+		tun   tunnel.Tunnel
+		mode  = tunnelModeOff
+		escal int
 	)
-	if p.tunnel {
-		effCfg.Rules = cfg.Rules
-		port = p.tproxyPort
-		tg = tunnelCIDRs(cfg.Rules)
-		s, err := StartTProxyStub(port, p.log)
-		if err != nil {
-			return fmt.Errorf("app: %w", err)
-		}
-		stub = s
-	} else {
+	switch {
+	case !p.tunnel:
 		// Tunnel branch off: TUNNEL rules would NAT flows to a dead
 		// loopback port, so demote them to DIRECT and don't widen the
 		// capture filter with the TG CIDRs at all.
 		effCfg.Rules = demoteTunnelRules(cfg.Rules)
+	case !tunnelEndpointConfigured(cfg):
+		// Tunnel requested but no endpoint in the config: escalate
+		// honestly (documented behavior) — SNI rules get the DESYNC
+		// fallback, CIDR/port rules go DIRECT, with a log line and a
+		// counter. The tunnel section of `rupasctl status` shows mode
+		// "escalated" until an endpoint is attached.
+		escal = escalateTunnelRules(&effCfg, cfg, p.log)
+		mode = tunnelModeEscalated
+	default:
+		// Real tunnel branch: bring the tproxy listeners up FIRST so the
+		// NAT rewrite never targets a dead port.
+		tun = newTunnel(cfg, p.tproxyPort, p.provider, p.log, p.tunnelOpts)
+		if err := tun.Start(context.Background()); err != nil {
+			p.log.Printf("app: tunnel start failed: %v; escalating TUNNEL rules (sni→desync, cidr/port→direct)", err)
+			escal = escalateTunnelRules(&effCfg, cfg, p.log)
+			mode = tunnelModeEscalated
+			tun = nil
+		} else {
+			port = p.tproxyPort
+			tg = tunnelCIDRs(cfg.Rules)
+			effCfg.Rules = cfg.Rules
+			mode = tunnelModeLive
+		}
 	}
 
 	tbl, err := rules.Compile(&effCfg)
 	if err != nil {
-		if stub != nil {
-			stub.Stop()
+		if tun != nil {
+			tun.Stop()
 		}
 		return fmt.Errorf("app: rules: %w", err)
 	}
 	if _, err := desync.New(eff, p.tpl); err != nil {
-		if stub != nil {
-			stub.Stop()
+		if tun != nil {
+			tun.Stop()
 		}
 		return fmt.Errorf("app: %w", err)
 	}
@@ -220,10 +285,14 @@ func (p *capturePipeline) startLocked(cfg *config.Config) error {
 		TGCIDRs:      tg,
 	})
 	if err != nil {
-		if stub != nil {
-			stub.Stop()
+		if tun != nil {
+			tun.Stop()
 		}
 		return fmt.Errorf("app: %w", err)
+	}
+	p.provider.eng.Store(eng)
+	if p.engineHook != nil {
+		p.engineHook(eng)
 	}
 	runErr := make(chan error, 1)
 	go func() {
@@ -244,17 +313,18 @@ func (p *capturePipeline) startLocked(cfg *config.Config) error {
 			p.onRunErr("capture run failed: " + err.Error())
 		}
 	}()
-	p.engine, p.runErr, p.stub, p.running = eng, runErr, stub, true
+	p.engine, p.runErr, p.tun, p.tunnelMode, p.escaped, p.running = eng, runErr, tun, mode, escal, true
 	return nil
 }
 
-// stopLocked drains the engine and the tproxy stub. Caller holds mu.
+// stopLocked drains the engine and the tunnel. Caller holds mu.
 func (p *capturePipeline) stopLocked() {
 	if !p.running {
 		return
 	}
-	eng, runErr, stub := p.engine, p.runErr, p.stub
-	p.engine, p.runErr, p.stub, p.running = nil, nil, nil, false
+	eng, runErr, tun := p.engine, p.runErr, p.tun
+	p.engine, p.runErr, p.tun, p.running = nil, nil, nil, false
+	p.provider.eng.Store(nil)
 	eng.Stop() // graceful drain; closes the WinDivert handles it owns
 	if runErr != nil {
 		select {
@@ -265,7 +335,9 @@ func (p *capturePipeline) stopLocked() {
 		case <-time.After(2 * time.Second):
 		}
 	}
-	if stub != nil {
-		stub.Stop()
+	if tun != nil {
+		if err := tun.Stop(); err != nil {
+			p.log.Printf("app: tunnel stop: %v", err)
+		}
 	}
 }

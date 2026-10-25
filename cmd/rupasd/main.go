@@ -21,7 +21,7 @@ import (
 func main() {
 	configPath := flag.String("config", "", "path to the rupas YAML config (default: ./config.yaml, falling back to the built-in profile)")
 	pipePath := flag.String("pipe", rpc.DefaultPipe, "control named pipe path")
-	tunnel := flag.String("tunnel", "on", "tunnel branch: on = NAT-redirect TUNNEL-rule flows (TG CIDRs, UDP relay, ECH) to the loopback tproxy — a stub logger until the tunnel core lands in wave 4; off = demote TUNNEL rules to direct, no NAT")
+	tunnel := flag.String("tunnel", "on", "tunnel branch: on = NAT-redirect TUNNEL-rule flows (TG CIDRs, UDP relay, ECH) to the loopback tproxy and relay them through the configured VLESS+Reality endpoint (empty endpoint: TUNNEL rules escalate to sni→desync / cidr,port→direct, logged and counted); off = demote TUNNEL rules to direct, no NAT")
 	verbose := flag.Bool("verbose", false, "chatty logging on stderr")
 	flag.Parse()
 
@@ -87,9 +87,13 @@ func main() {
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe(ctx) }()
 
-	tunnelNote := "on: NAT-redirect to the stub tproxy logger (tunnel core comes in wave 4)"
+	tunnelNote := "on: NAT-redirect to the loopback tproxy → vless+reality"
 	if !tunnelOn {
 		tunnelNote = "off: TUNNEL rules demoted to direct"
+	} else if cfg.Tunnel != (config.TunnelEndpoint{}) {
+		tunnelNote = fmt.Sprintf("on: vless+reality via %s:%d", cfg.Tunnel.Address, cfg.Tunnel.Port)
+	} else {
+		tunnelNote = "on: no endpoint configured — TUNNEL rules escalated (sni→desync, cidr/port→direct)"
 	}
 	logger.Printf("rupasd up: pipe=%s profile=%s tunnel=%s", *pipePath, cfg.Profile, tunnelNote)
 	application.EventLog().Append("daemon started (profile " + cfg.Profile + ", tunnel " + *tunnel + ")")

@@ -43,7 +43,10 @@ func (t *tunnel) probeOnce() {
 	if down {
 		was := t.healthy.Swap(false)
 		if was {
-			t.logger.Warn("tunnel marked UNHEALTHY",
+			t.logger.Warn("tunnel marked UNHEALTHY; TG flows HELD (dropped) until recovery",
+				slog.Int("fail_streak", int(streak)), slog.Any("err", err))
+		} else if streak == HealthFailThreshold {
+			t.logger.Warn("tunnel entering HOLD: new flows dropped with a counter",
 				slog.Int("fail_streak", int(streak)), slog.Any("err", err))
 		} else {
 			t.logger.Warn("tunnel still unhealthy",

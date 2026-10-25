@@ -42,6 +42,34 @@ type Tunnel interface {
 	// recently: 3 consecutive failures flip it to false, one success flips it
 	// back to true.
 	Healthy() bool
+	// Stats returns the point-in-time counters (bytes, flows, drops) that
+	// `rupasctl status` renders in the tunnel section.
+	Stats() Stats
+}
+
+// Stats is the live tunnel-branch status (§11 observability).
+type Stats struct {
+	// Healthy mirrors Healthy() at snapshot time.
+	Healthy bool
+	// Held is the HOLD state (§6): the marker failed HealthFailThreshold
+	// times in a row, so NEW flows are dropped with a counter instead of
+	// being relayed through a dead tunnel (or escalated to direct, which
+	// the TSPU would black-hole anyway).
+	Held bool
+	// Started is true once Start succeeded.
+	Started bool
+	// RxBytes/TxBytes are the payload bytes relayed client↔tunnel.
+	RxBytes, TxBytes uint64
+	// TCPFlows is the number of active TCP relays; TCPConns the total
+	// accepted flows.
+	TCPFlows, TCPConns int64
+	// UDPSessions is the number of live UDP pseudo-sessions; UDPDgrams the
+	// total datagrams handled.
+	UDPSessions int64
+	UDPDgrams   uint64
+	// Dropped counts flows/datagrams refused: no original dst, dial
+	// failure or HOLD.
+	Dropped uint64
 }
 
 // OriginalDstProvider is the NAT flow-table lookup of the capture layer
@@ -62,6 +90,16 @@ type Options struct {
 	MarkerURL string
 	// Logger defaults to slog.Default().
 	Logger *slog.Logger
+	// HealthInterval overrides the marker probe period (0 → 30 s). Tests
+	// shrink it; production keeps the §6 default.
+	HealthInterval time.Duration
+	// DialTimeout bounds one relay dial (TCP CONNECT / UDP ASSOCIATE) so a
+	// dead endpoint closes the redirected flow promptly instead of hanging
+	// it (0 → DefaultDialTimeout).
+	DialTimeout time.Duration
+	// NoHoldFlows disables the HOLD gate (diagnostics: relay new flows even
+	// while the marker is failing).
+	NoHoldFlows bool
 }
 
 const (
@@ -74,6 +112,9 @@ const (
 	// DefaultUDPSessionTimeout is the idle timeout of a UDP pseudo-session
 	// (§3.3: UDP idle 30 s).
 	DefaultUDPSessionTimeout = 30 * time.Second
+	// DefaultDialTimeout bounds one relay dial so a dead endpoint closes
+	// the redirected flow promptly (§6: honest degradation, no hangs).
+	DefaultDialTimeout = 20 * time.Second
 	// markerTimeout bounds one probe round trip.
 	markerTimeout = 10 * time.Second
 )
@@ -87,12 +128,19 @@ func NewTunnel(cfg config.TunnelEndpoint, tproxyPort uint16, opts Options) Tunne
 	if opts.MarkerURL == "" {
 		opts.MarkerURL = DefaultMarkerURL
 	}
+	if opts.HealthInterval <= 0 {
+		opts.HealthInterval = DefaultHealthInterval
+	}
+	if opts.DialTimeout <= 0 {
+		opts.DialTimeout = DefaultDialTimeout
+	}
 	return &tunnel{
 		cfg:            cfg,
 		tproxyPort:     tproxyPort,
 		opts:           opts,
 		logger:         opts.Logger.With("component", "tunnel"),
-		healthInterval: DefaultHealthInterval,
+		healthInterval: opts.HealthInterval,
+		dialTimeout:    opts.DialTimeout,
 		udpTimeout:     DefaultUDPSessionTimeout,
 	}
 }
@@ -105,6 +153,7 @@ type tunnel struct {
 
 	// test knobs (package-internal)
 	healthInterval time.Duration
+	dialTimeout    time.Duration
 	udpTimeout     time.Duration
 	// probeFunc overrides the marker probe in unit tests.
 	probeFunc func(ctx context.Context) error
@@ -124,6 +173,15 @@ type tunnel struct {
 
 	healthy    atomic.Bool
 	failStreak atomic.Int32
+
+	// observability counters (Stats)
+	started   atomic.Bool
+	rxBytes   atomic.Uint64
+	txBytes   atomic.Uint64
+	tcpFlows  atomic.Int64
+	tcpConns  atomic.Int64
+	udpDgrams atomic.Uint64
+	dropped   atomic.Uint64
 }
 
 var _ Tunnel = (*tunnel)(nil)
@@ -175,6 +233,7 @@ func (t *tunnel) startCore() error {
 	}
 	t.udpConn = udpConn
 	t.sessions = newUDPTable(t)
+	t.started.Store(true)
 
 	t.wg.Add(2)
 	go t.acceptLoop()
@@ -218,6 +277,33 @@ func (t *tunnel) Stop() error {
 
 // Healthy implements Tunnel.
 func (t *tunnel) Healthy() bool { return t.healthy.Load() }
+
+// held reports the HOLD state (§6): HealthFailThreshold consecutive marker
+// failures — new flows are dropped with a counter instead of relayed
+// through a presumed-dead tunnel. The initial "not yet probed" state is
+// NOT held: health starts unknown, not down.
+func (t *tunnel) held() bool {
+	if t.opts.NoHoldFlows {
+		return false
+	}
+	return t.failStreak.Load() >= HealthFailThreshold
+}
+
+// Stats implements Tunnel.
+func (t *tunnel) Stats() Stats {
+	return Stats{
+		Healthy:     t.healthy.Load(),
+		Held:        t.held(),
+		Started:     t.started.Load(),
+		RxBytes:     t.rxBytes.Load(),
+		TxBytes:     t.txBytes.Load(),
+		TCPFlows:    t.tcpFlows.Load(),
+		TCPConns:    t.tcpConns.Load(),
+		UDPSessions: int64(t.sessions.len()),
+		UDPDgrams:   t.udpDgrams.Load(),
+		Dropped:     t.dropped.Load(),
+	}
+}
 
 // transport is the outbound path of the tunnel. The production
 // implementation wraps the embedded sing-box engine (fed via SOCKS5 from
@@ -272,10 +358,23 @@ func (t *tunnel) acceptLoop() {
 // original dst via the provider, then through the tunnel.
 func (t *tunnel) serveTCP(client net.Conn) {
 	defer t.wg.Done()
+	t.tcpConns.Add(1)
 	src := client.RemoteAddr()
 	srcIP, srcPort, ok := splitAddr(src)
 	if !ok {
 		t.logger.Warn("tcp: unparsable remote addr", slog.String("src", src.String()))
+		t.drop()
+		client.Close()
+		return
+	}
+	// HOLD (§6): the marker failed 3× — the tunnel is presumed dead. Drop
+	// the flow with a counter instead of relaying into a black hole (and
+	// instead of escalating to DIRECT: the TSPU blackholes these CIDRs).
+	if t.held() {
+		t.logger.Warn("tcp: tunnel HELD, dropping flow",
+			slog.String("src", src.String()),
+			slog.Int("fail_streak", int(t.failStreak.Load())))
+		t.drop()
 		client.Close()
 		return
 	}
@@ -283,34 +382,45 @@ func (t *tunnel) serveTCP(client net.Conn) {
 	if !ok {
 		t.logger.Warn("tcp: no original dst for flow; dropping",
 			slog.String("src", src.String()))
+		t.drop()
 		client.Close()
 		return
 	}
 	dst := joinAddr(dstIP, dstPort)
-	upstream, err := t.tr.dial(ctxOrBackground(t.ctx), dst)
+	ctx, cancel := context.WithTimeout(ctxOrBackground(t.ctx), t.dialTimeout)
+	defer cancel()
+	upstream, err := t.tr.dial(ctx, dst)
 	if err != nil {
 		t.logger.Warn("tcp: tunnel dial failed",
 			slog.String("src", src.String()), slog.String("dst", dst.String()),
 			slog.Any("err", err))
+		t.drop()
 		client.Close()
 		return
 	}
+	t.tcpFlows.Add(1)
 	t.logger.Debug("tcp flow established",
 		slog.String("src", src.String()), slog.String("dst", dst.String()))
 	t.splice(client, upstream)
 }
 
+// drop counts one refused flow/datagram.
+func (t *tunnel) drop() { t.dropped.Add(1) }
+
 // splice copies both directions until either side closes.
 func (t *tunnel) splice(a, b net.Conn) {
+	defer t.tcpFlows.Add(-1)
 	defer a.Close()
 	defer b.Close()
 	done := make(chan struct{}, 2)
 	go func() {
-		io.Copy(b, a)             //nolint:errcheck // best-effort relay
+		n, _ := io.Copy(b, a) //nolint:errcheck // best-effort relay
+		t.txBytes.Add(uint64(n))
 		b.SetDeadline(time.Now()) //nolint:errcheck // wake the other copier
 		done <- struct{}{}
 	}()
-	io.Copy(a, b)             //nolint:errcheck // best-effort relay
+	n, _ := io.Copy(a, b) //nolint:errcheck // best-effort relay
+	t.rxBytes.Add(uint64(n))
 	a.SetDeadline(time.Now()) //nolint:errcheck // wake the other copier
 	<-done
 }

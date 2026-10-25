@@ -1,0 +1,74 @@
+# Rupas example configuration (copy to config.yaml next to rupasd).
+# Unknown fields are rejected; see internal/config/config.go for the schema
+# and docs/SYSTEM_DESIGN.md §4.2-4.3, §5, §6 for the semantics.
+profile: isp-home-2025-10-25
+
+rules:
+  # Resolution order is fixed: cidr → sni → ports → default (§4.2).
+  - sni: www.youtube.com      # SNI-blackholed by the TSPU
+    action: desync
+  - sni: "*.googlevideo.com"
+    action: desync
+  - sni: discord.com
+    action: desync
+  - sni: gateway.discord.gg
+    action: desync
+  - cidr: 149.154.160.0/20    # Telegram: IP-blackholed → tunnel (§3.3)
+    action: tunnel
+  - cidr: 91.108.0.0/16
+    action: tunnel
+  - cidr: 95.161.76.100/32
+    action: tunnel
+  - ports: 50000-65535        # Discord voice UDP is dead → tunnel (XUDP)
+    action: tunnel
+  - action: direct            # default rule (at most one)
+
+desync:
+  strategy: fake
+  fake_template: chrome-124-pq.bin
+  ttl: 13                     # calibrated by the prober (§7.2)
+  ttl_margin: 2
+  repeats: 6
+
+# ---------------------------------------------------------------------------
+# Tunnel endpoint (§6): your VPS with sing-box/xray VLESS+Reality.
+#
+# BEHAVIOUR WHILE EMPTY (the default below): the tunnel branch is DISABLED
+# and every TUNNEL rule is escalated with an honest log line and a counter
+# visible in `rupasctl status` (tunnel mode: escalated):
+#   - sni rules       → action desync  (the DESYNC fallback)
+#   - cidr/port rules → action direct  (an IP-blackholed CIDR will not
+#                       pass, but flows are never silently black-holed at
+#                       a dead loopback port either)
+# Fill ALL fields or none — a partial section fails validation.
+#
+# While a live tunnel runs but its health marker fails 3×30 s, TG flows
+# are HELD (dropped with a counter), NOT escalated to direct — the TSPU
+# blackholes those CIDRs; recovery resumes the relay automatically.
+#
+# Filled example for your VPS:
+#   tunnel:
+#     protocol: vless             # only "vless" is supported
+#     address: 203.0.113.10       # VPS host or IP
+#     port: 443                   # VLESS+Reality port on the VPS
+#     uuid: 0f4e1c2d-...          # VLESS user UUID
+#     reality_public_key: xkB7... # x25519 public key (base64 RawURL)
+#     reality_short_id: "0123abcd"
+#     sni: www.example.com        # camouflage SNI (a real site your VPS borrows)
+#     fingerprint: chrome         # uTLS client fingerprint
+#     udp_mode: xudp              # xudp | packetaddr
+# ---------------------------------------------------------------------------
+tunnel:
+  protocol: ""
+  address: ""
+  port: 0
+  uuid: ""
+  reality_public_key: ""
+  reality_short_id: ""
+  sni: ""
+  fingerprint: ""
+  udp_mode: ""
+
+exclusions:
+  cidrs: []                   # always-DIRECT destinations (the VPS itself
+  domains: []                 # belongs here in production)

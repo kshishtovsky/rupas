@@ -51,6 +51,55 @@ func TestRenderSnapshotEmpty(t *testing.T) {
 	}
 }
 
+func TestRenderSnapshotTunnelSection(t *testing.T) {
+	s := core.Snapshot{
+		State: "ACTIVE",
+		Flows: map[string]int64{},
+		Tunnel: &core.TunnelStatus{
+			Mode: "tunnel", Healthy: true,
+			RxBytes: 1 << 20, TxBytes: 4 << 20,
+			TCPFlows: 3, TCPConns: 7, UDPSessions: 2, UDPDgrams: 40,
+			Dropped: 5,
+		},
+	}
+	var buf bytes.Buffer
+	renderSnapshot(&buf, s)
+	out := buf.String()
+	for _, want := range []string{
+		"mode: tunnel",
+		"1.0MB / 4.0MB",
+		"3 active / 7 total",
+		"2 sessions / 40 datagrams",
+		"dropped          5",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("tunnel section missing %q:\n%s", want, out)
+		}
+	}
+
+	// Escalated mode: honest, no live counters.
+	buf.Reset()
+	s.Tunnel = &core.TunnelStatus{Mode: "escalated", Healthy: false, EscalatedRules: 4}
+	renderSnapshot(&buf, s)
+	out = buf.String()
+	for _, want := range []string{"mode: escalated", "4 TUNNEL rule(s)", "sni:desync / cidr,port:direct"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("escalated section missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "bytes rx/tx") {
+		t.Errorf("escalated mode must not render live relay counters:\n%s", out)
+	}
+
+	// Held state.
+	buf.Reset()
+	s.Tunnel = &core.TunnelStatus{Mode: "tunnel", Held: true, Dropped: 9}
+	renderSnapshot(&buf, s)
+	if !strings.Contains(buf.String(), "held (new flows dropped)") {
+		t.Errorf("held state not rendered:\n%s", buf.String())
+	}
+}
+
 func TestHumanHelpers(t *testing.T) {
 	if humanBytes(512) != "512B" || humanBytes(2048) != "2.0KB" {
 		t.Errorf("humanBytes: %q %q", humanBytes(512), humanBytes(2048))

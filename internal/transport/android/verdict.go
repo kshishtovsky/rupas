@@ -20,6 +20,11 @@ const (
 	ActionDirect Action = iota
 	// ActionBlock drops the flow (netstack-side, no egress socket).
 	ActionBlock
+	// ActionTunnel relays the flow through the sing-box tunnel (W3):
+	// TCP via socks5-CONNECT, UDP via socks5-UDP-ASSOCIATE. When the
+	// tunnel dial fails the flow is escalated honestly to DIRECT
+	// (counted + logged) or dropped, per the settings' fallback flag.
+	ActionTunnel
 )
 
 // String returns the canonical upper-case action name.
@@ -29,18 +34,27 @@ func (a Action) String() string {
 		return "DIRECT"
 	case ActionBlock:
 		return "BLOCK"
+	case ActionTunnel:
+		return "TUNNEL"
 	default:
 		return "INVALID"
 	}
 }
 
-// FlowMeta describes one flow at decision time. Deliberately tiny: later
-// waves add inspected fields (SNI, host, geo) without changing the seam.
+// FlowMeta describes one flow at decision time. The W3 rules read SNI/ECH
+// from the first ClientHello (TCP flows; UDP flows carry neither).
 type FlowMeta struct {
 	// Network is "tcp" or "udp".
 	Network     string
 	Source      netip.AddrPort
 	Destination netip.AddrPort
+	// SNI is the lower-cased server name from the first ClientHello
+	// (empty when absent / not TLS / UDP).
+	SNI string
+	// ECH is true when the ClientHello carries a REAL Encrypted Client
+	// Hello extension (GREASE payloads of one byte are filtered by the
+	// inspector and never set this).
+	ECH bool
 }
 
 // Verdict decides an action for a flow. It runs once per new TCP flow /

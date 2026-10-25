@@ -19,6 +19,8 @@ type Counters struct {
 	udpSessionsActive atomic.Int64
 	udpSessionsTotal  atomic.Uint64
 	drops             atomic.Uint64
+	tunnelDials       atomic.Uint64
+	tunnelEscalations atomic.Uint64
 }
 
 // StatusSnapshot is a point-in-time copy for Status()/gobind.
@@ -32,6 +34,11 @@ type StatusSnapshot struct {
 	UDPTotal uint64 `json:"udp_total"`
 	// Dropped: flows refused before any byte was relayed.
 	Dropped uint64 `json:"dropped"`
+	// TunnelDials: flows handed to the tunnel relay. TunnelEscalated:
+	// flows whose tunnel dial failed and were honestly escalated to
+	// DIRECT (or dropped when fallback is disabled).
+	TunnelDials     uint64 `json:"tunnel_dials"`
+	TunnelEscalated uint64 `json:"tunnel_escalated"`
 }
 
 // AddRx/AddTx record relayed payload bytes.
@@ -70,6 +77,13 @@ func (c *Counters) UDPSessionClose() { c.udpSessionsActive.Add(-1) }
 // failure). Non-blocking: the flow is closed, never queued.
 func (c *Counters) Drop() { c.drops.Add(1) }
 
+// TunnelDial counts a flow handed to the tunnel relay.
+func (c *Counters) TunnelDial() { c.tunnelDials.Add(1) }
+
+// TunnelEscalate counts a TUNNEL flow that failed to dial through the
+// relay and was escalated (direct or drop).
+func (c *Counters) TunnelEscalate() { c.tunnelEscalations.Add(1) }
+
 // Snapshot returns a consistent-enough point-in-time copy (individual
 // fields are atomic reads; cross-field skew is acceptable for status UI).
 func (c *Counters) Snapshot() StatusSnapshot {
@@ -77,9 +91,11 @@ func (c *Counters) Snapshot() StatusSnapshot {
 		TCPFlows:    c.tcpFlowsActive.Load(),
 		UDPSessions: c.udpSessionsActive.Load(),
 		RxBytes:     c.rxBytes.Load(),
-		TxBytes:     c.txBytes.Load(),
-		TCPTotal:    c.tcpFlowsTotal.Load(),
-		UDPTotal:    c.udpSessionsTotal.Load(),
-		Dropped:     c.drops.Load(),
+		TxBytes:         c.txBytes.Load(),
+		TCPTotal:        c.tcpFlowsTotal.Load(),
+		UDPTotal:        c.udpSessionsTotal.Load(),
+		Dropped:         c.drops.Load(),
+		TunnelDials:     c.tunnelDials.Load(),
+		TunnelEscalated: c.tunnelEscalations.Load(),
 	}
 }

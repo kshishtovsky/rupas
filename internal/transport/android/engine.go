@@ -21,6 +21,13 @@ type Engine struct {
 	dialer   *net.Dialer
 	counters Counters
 
+	// W3: compiled rule tables and the sing-box tunnel relay. rules win
+	// over verdict; a nil relay (or an unavailable one) escalates TUNNEL
+	// flows per the settings' fallback flag.
+	settings *Settings
+	rules    *Rules
+	relay    *Relay
+
 	mu      sync.Mutex
 	running bool
 	cancel  context.CancelFunc
@@ -43,6 +50,83 @@ func NewEngine(verdict Verdict, protect ProtectFunc, logFn func(string)) *Engine
 		protect: protect,
 		logFn:   logFn,
 		dialer:  ProtectedDialer(protect),
+	}
+}
+
+// NewW3Engine assembles a W3 engine: the PRD §5 rule tables are compiled
+// immediately (immutable), and settings drive the sing-box tunnel relay.
+// nil settings mean "tunnel unavailable": every TUNNEL-rule flow escalates
+// to DIRECT (counted + logged) instead of failing.
+func NewW3Engine(settings *Settings, protect ProtectFunc, logFn func(string)) *Engine {
+	e := NewEngine(nil, protect, logFn)
+	e.settings = settings
+	e.rules = CompileRules()
+	if settings != nil {
+		e.relay = NewRelay(settings, func(line string) { e.logf("%s", line) })
+	}
+	return e
+}
+
+// Settings returns the tunnel settings the engine was built with.
+func (e *Engine) Settings() *Settings { return e.settings }
+
+// Rules returns the compiled rule table (immutable).
+func (e *Engine) Rules() *Rules { return e.rules }
+
+// decide maps a flow onto an action: W3 rules when compiled (they take
+// SNI/ECH from FlowMeta), otherwise the wave-2 verdict seam.
+func (e *Engine) decide(m FlowMeta) Action {
+	if e.rules != nil {
+		return e.rules.Decide(m)
+	}
+	return e.verdict(m)
+}
+
+// decidePre is DecidePre for engines without compiled rules (wave-2): the
+// verdict is always final and never needs the ClientHello.
+func (e *Engine) decidePre(m FlowMeta) (Action, bool) {
+	if e.rules != nil {
+		return e.rules.DecidePre(m)
+	}
+	return e.verdict(m), true
+}
+
+// fallbackAllowed reports whether TUNNEL flows may escalate to DIRECT.
+// No settings (tunnel unconfigured) → yes, per the W3 contract; explicit
+// settings honour the fallback flag.
+func (e *Engine) fallbackAllowed() bool {
+	return e.settings == nil || e.settings.Fallback
+}
+
+// dialEgress opens the egress connection for one flow according to its
+// action: DIRECT via the protected dialer, TUNNEL through the relay with
+// honest escalation, BLOCK refused. escalated reports that the flow was
+// originally TUNNEL but fell back to direct/drop.
+func (e *Engine) dialEgress(ctx context.Context, m FlowMeta) (conn net.Conn, escalated bool, err error) {
+	switch e.decide(m) {
+	case ActionBlock:
+		return nil, false, errFlowBlocked
+	case ActionTunnel:
+		e.counters.TunnelDial()
+		if e.relay.Available() {
+			c, dErr := e.relay.DialTCP(ctx, m.Destination)
+			if dErr == nil {
+				return c, false, nil
+			}
+			e.logf("tcp %s: tunnel dial failed: %v", m.Destination, dErr)
+		} else {
+			e.logf("tcp %s: tunnel unavailable (no endpoint settings)", m.Destination)
+		}
+		e.counters.TunnelEscalate()
+		if !e.fallbackAllowed() {
+			return nil, true, fmt.Errorf("android: tunnel dial failed and fallback is disabled")
+		}
+		e.logf("tcp %s: ESCALATED tunnel->direct (counter honest)", m.Destination)
+		c, dErr := e.dialer.DialContext(ctx, "tcp", m.Destination.String())
+		return c, true, dErr
+	default: // ActionDirect
+		c, dErr := e.dialer.DialContext(ctx, "tcp", m.Destination.String())
+		return c, false, dErr
 	}
 }
 

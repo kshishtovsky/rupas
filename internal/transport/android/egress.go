@@ -21,6 +21,9 @@ const (
 	// DefaultTUNAddress must match the VpnService.Builder address
 	// (§3: 26.26.26.1/24).
 	DefaultTUNAddress = "26.26.26.1/24"
+	// DefaultTUNAddress6 is the IPv6 TUN address (W3). The Java side adds
+	// the ::/0 route in parallel — the contract is exactly this prefix.
+	DefaultTUNAddress6 = "fdfe:dcba:9876::1/126"
 )
 
 // ProtectedDialer returns a *net.Dialer whose sockets are protected via

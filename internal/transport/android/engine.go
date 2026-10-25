@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Engine owns one TUN-backed transport session. It is created per Start and
@@ -62,6 +63,10 @@ func (e *Engine) Start(fd int) error {
 	e.cancel = cancel
 	e.done = make(chan struct{})
 	done := e.done
+	// Unlock BEFORE returning: e.mu guards lifecycle fields only. Holding it
+	// across the return deadlocks Status()/Stop() (sync.Mutex не реентерабелен —
+	// тот же поток повиснет на повторном захвате; главный поток Java = ANR).
+	e.mu.Unlock()
 
 	go func() {
 		defer close(done)
@@ -73,18 +78,32 @@ func (e *Engine) Start(fd int) error {
 }
 
 // Stop shuts the transport down. Without a prior Start it is a no-op
-// returning nil (matches the mobile contract).
+// returning nil (matches the mobile contract). The wait for the transport
+// goroutine is bounded: this may be called from the Java main thread, and an
+// unbounded join there is an ANR.
 func (e *Engine) Stop() error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if !e.running {
+		e.mu.Unlock()
 		return nil
 	}
-	e.cancel()
-	<-e.done
+	cancel := e.cancel
+	done := e.done
 	e.running = false
 	e.cancel = nil
 	e.done = nil
+	e.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		// Transport is still draining; it will exit on its own (ctx is
+		// cancelled). Do not block the caller any longer.
+		return fmt.Errorf("android: transport stop timed out after 3s (exiting in background)")
+	}
 	return nil
 }
 

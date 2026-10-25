@@ -72,6 +72,15 @@ type Counters struct {
 	HandshakeFail uint64
 	TunnelRx      uint64
 	TunnelTx      uint64
+	// SendErrors: re-injected packets the WinDivert driver refused
+	// (send-queue overflow / driver error) — i.e. REAL loss this engine
+	// caused. Non-zero means the network was degraded; the counter is
+	// cumulative and surfaced by `rupasctl status`.
+	SendErrors uint64
+	// SendPauses: driver catch-up pauses taken in response to a burst of
+	// send failures (see capture's sendFailed). A rising value with
+	// SendErrors marks an episode of loss under load.
+	SendPauses    uint64
 	LastProbeAt   time.Time
 	LastProbeNote string
 }

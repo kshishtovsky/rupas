@@ -90,7 +90,7 @@ func (e *Engine) natOutbound(pkt []byte, p *pktInfo, key flowtable.FlowKey, f *f
 	// Checksum-valid hints are stale now; FixChecksums recomputes both the
 	// IP and the transport checksum (and refreshes the hint bits in addr).
 	if err := e.transport.FixChecksums(pkt, addr); err != nil {
-		e.cnt.sendErrors.Add(1)
+		e.sendErr()
 	}
 	// Deliver to the local listener: re-inject INBOUND on the same (client)
 	// interface — the only combination the live matrix proved delivers.
@@ -105,7 +105,9 @@ func (e *Engine) natOutbound(pkt []byte, p *pktInfo, key flowtable.FlowKey, f *f
 	e.cnt.tunnelTx.Add(1)
 	e.cnt.countVerdict(core.VerdictRedirect)
 	if err := e.natSend(pkt, addr); err != nil {
-		e.cnt.sendErrors.Add(1)
+		e.sendFailed(err)
+	} else {
+		e.sendOK()
 	}
 }
 
@@ -193,7 +195,7 @@ func (e *Engine) processLoopback(t Transport, pkt []byte, addr *windivert.Addres
 	copy(pkt[16:20], v.clientIP[:])
 	binary.BigEndian.PutUint16(pkt[p.ipLen:p.ipLen+2], f.OrigPort)
 	if err := t.FixChecksums(pkt, addr); err != nil {
-		e.cnt.sendErrors.Add(1)
+		e.sendErr()
 	}
 	// The captured leg is the reply's OUTBOUND leg; the client socket needs
 	// the translated packet INBOUND, on the client-facing interface
@@ -206,7 +208,9 @@ func (e *Engine) processLoopback(t Transport, pkt []byte, addr *windivert.Addres
 	}
 	e.cnt.tunnelRx.Add(1)
 	if err := t.Send(pkt, addr); err != nil {
-		e.cnt.sendErrors.Add(1)
+		e.sendFailed(err)
+	} else {
+		e.sendOK()
 	}
 
 	if p.isTCP() && (p.fin() || p.rst()) {
@@ -217,7 +221,9 @@ func (e *Engine) processLoopback(t Transport, pkt []byte, addr *windivert.Addres
 func (e *Engine) passLoopback(t Transport, pkt []byte, addr *windivert.Address) {
 	e.cnt.countVerdict(core.VerdictPass)
 	if err := t.Send(pkt, addr); err != nil {
-		e.cnt.sendErrors.Add(1)
+		e.sendFailed(err)
+	} else {
+		e.sendOK()
 	}
 }
 

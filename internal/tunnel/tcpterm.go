@@ -401,12 +401,24 @@ type termConn struct {
 	oooBufN  atomic.Uint64 // segments buffered out-of-order
 	oooDropN atomic.Uint64 // segments evicted from the reorder buffer
 	dupAckN  atomic.Uint64 // dup-ACKs sent to prompt a client fast retransmit
+	// qFullWarnAt rate-limits the queue-full WARN: that path runs on the
+	// capture receive goroutine, and an unbounded upload burst defers
+	// thousands of segments — one synchronous log write per segment would
+	// itself stall every other flow (unix-nano; 0 = never logged).
+	qFullWarnAt atomic.Int64
+	// oooWarnAt rate-limits the reorder-buffer-overflow WARN for the same
+	// reason: evictions fire per NEW out-of-order segment, which under a
+	// pathological burst is every packet.
+	oooWarnAt atomic.Int64
 }
 
-type atomicTime struct{ mu sync.Mutex; t time.Time }
+// atomicTime is a lock-free timestamp: feed stores it on EVERY packet of a
+// tunnel flow (i.e. on the capture receive goroutine), so a mutex here is
+// pure per-packet contention for a value only the 30 s sweeper reads.
+type atomicTime struct{ ns atomic.Int64 }
 
-func (a *atomicTime) Store(t time.Time) { a.mu.Lock(); a.t = t; a.mu.Unlock() }
-func (a *atomicTime) Load() time.Time   { a.mu.Lock(); defer a.mu.Unlock(); return a.t }
+func (a *atomicTime) Store(t time.Time) { a.ns.Store(t.UnixNano()) }
+func (a *atomicTime) Load() time.Time   { return time.Unix(0, a.ns.Load()) }
 
 func newTermConn(tm *Terminator, k termKey, syn TermPkt) *termConn {
 	isn := rand.Uint32()
@@ -493,9 +505,14 @@ func (c *termConn) feed(p TermPkt) {
 		// pump too.
 		if int32(p.Ack-c.serverUna) > 0 {
 			c.serverUna = p.Ack
-			c.tm.log.Debug("term: client acked our data",
-				slog.String("flow", c.flowDesc()),
-				slog.Uint64("ack", uint64(p.Ack)), slog.Uint64("serverNext", uint64(c.serverNext)))
+			// Guarded: this runs on the capture receive goroutine for
+			// every ACK, and flowDesc() builds two strings. A disabled
+			// level must cost one bool check, not an allocation.
+			if c.tm.log.Enabled(context.Background(), slog.LevelDebug) {
+				c.tm.log.Debug("term: client acked our data",
+					slog.String("flow", c.flowDesc()),
+					slog.Uint64("ack", uint64(p.Ack)), slog.Uint64("serverNext", uint64(c.serverNext)))
+			}
 		}
 		if c.clientWin != p.Window {
 			c.clientWin = p.Window
@@ -543,28 +560,52 @@ func (c *termConn) feed(p TermPkt) {
 				total := c.qFullN.Add(1)
 				c.dupAckN.Add(1)
 				c.mu.Unlock()
-				c.tm.log.Warn("term: relay queue full, deferring segment for retransmit",
-					slog.String("flow", c.flowDesc()), slog.Uint64("total", total))
+				c.warnQueueFull(total)
 				c.sendACK() // dup-ack: prompts the client's fast retransmit
 				return
 			}
-			c.clientNext = seqEnd
 			c.clientWin = p.Window
-			var batch [8][]byte
-			out := batch[:0]
+			// Build the batch within the room reserved under this same
+			// lock (only feed enqueues; pumpWrites only drains), so
+			// enqueueLocked cannot hit its full-queue arm here.
+			var batch [oooBatchReserve + 1][]byte
+			var seqs [oooBatchReserve + 1]uint32
+			out, outSeq := batch[:0], seqs[:0]
 			out = append(out, copyPayload(p.Payload))
+			outSeq = append(outSeq, p.Seq)
+			next := seqEnd
 			// Close the reorder-buffer gap behind this segment while
 			// the relay queue has room (bounded per feed; the next
 			// ack/segment drains the rest).
 			for len(out) < cap(batch) && len(c.writeCh)+len(out) < cap(c.writeCh) {
-				b, ok := c.oooPop(c.clientNext)
+				b, ok := c.oooPop(next)
 				if !ok {
 					break
 				}
-				c.clientNext += uint32(len(b))
+				outSeq = append(outSeq, next)
+				next += uint32(len(b))
 				out = append(out, b)
 			}
-			c.enqueueLocked(out)
+			c.clientNext = next
+			if left := c.enqueueLocked(out); left > 0 {
+				// Unreachable by construction (room was reserved above),
+				// but never lose data silently: release the tail that did
+				// not fit and rewind clientNext to the first unconsumed
+				// segment. The client's retransmit — prompted by the
+				// dup-ACK below — refills that hole; a silent gap would
+				// have stalled the upload on an RTO.
+				first := len(out) - left
+				for i := first; i < len(out); i++ {
+					putPayload(out[i])
+				}
+				c.clientNext = outSeq[first]
+				c.dupAckN.Add(1)
+				total := c.qFullN.Add(1)
+				c.mu.Unlock()
+				c.warnQueueFull(total)
+				c.sendACK() // dup-ack: prompts the client's fast retransmit
+				return
+			}
 			finNow := hasFIN && c.clientNext == seqEnd
 			empty := false
 			if finNow {
@@ -606,10 +647,8 @@ func (c *termConn) feed(p TermPkt) {
 			c.dupAckN.Add(1)
 			c.mu.Unlock()
 			if evicted {
-				c.tm.log.Warn("term: reorder buffer overflow, evicted oldest segment",
-					slog.String("flow", c.flowDesc()),
-					slog.Uint64("total_drops", c.oooDropN.Load()))
-			} else {
+				c.warnOOOOverflow()
+			} else if c.tm.log.Enabled(context.Background(), slog.LevelDebug) {
 				c.tm.log.Debug("term: out-of-order segment buffered",
 					slog.String("flow", c.flowDesc()),
 					slog.Uint64("seq", uint64(p.Seq)), slog.Int("len", n),
@@ -753,21 +792,70 @@ func (c *termConn) oooPop(seq uint32) ([]byte, bool) {
 	return b, true
 }
 
+// qFullWarnEvery rate-limits the relay-queue-full WARN. The warning is
+// emitted from feed, i.e. on the capture receive goroutine; an upload burst
+// defers a segment per retransmit, so an unthrottled WARN would put a
+// synchronous log write in front of EVERY packet of EVERY flow.
+const qFullWarnEvery = 2 * time.Second
+
+// warnQueueFull emits the queue-full WARN at most once per qFullWarnEvery
+// (the first one immediately) — atomics only, no allocation when silent.
+func (c *termConn) warnQueueFull(total uint64) {
+	if !rateLimit(&c.qFullWarnAt, qFullWarnEvery) {
+		return
+	}
+	c.tm.log.Warn("term: relay queue full, deferring segment for retransmit",
+		slog.String("flow", c.flowDesc()), slog.Uint64("total", total))
+}
+
+// warnOOOOverflow emits the reorder-buffer-overflow WARN, rate-limited like
+// warnQueueFull (evictions can fire on every packet of a bad burst).
+func (c *termConn) warnOOOOverflow() {
+	if !rateLimit(&c.oooWarnAt, qFullWarnEvery) {
+		return
+	}
+	c.tm.log.Warn("term: reorder buffer overflow, evicted oldest segment",
+		slog.String("flow", c.flowDesc()),
+		slog.Uint64("total_drops", c.oooDropN.Load()))
+}
+
+// rateLimit reports whether a log at this site may be emitted now, and marks
+// it emitted. One atomic load when silent — no time.Now on the fast path
+// until the window has plausibly elapsed.
+func rateLimit(last *atomic.Int64, every time.Duration) bool {
+	now := time.Now().UnixNano()
+	prev := last.Load()
+	if prev != 0 && now-prev < int64(every) {
+		return false
+	}
+	return last.CompareAndSwap(prev, now)
+}
+
 // enqueueLocked queues payloads for the carrier in order (caller holds mu).
-// Non-blocking: room is reserved under the same lock that checks it, and
-// pumpWrites only drains — a full queue is handled by feed's backpressure
-// (defer the ACK), never by killing the connection. Every queued byte is
-// counted: it stays charged against the advertised window until the
-// carrier write completes.
-func (c *termConn) enqueueLocked(out [][]byte) {
-	for _, b := range out {
+//
+// TRULY non-blocking: the send has a default arm, so a full queue reports
+// the leftover count instead of parking the caller. The old select had no
+// default and no send-side alternative — with a full queue and a live
+// connection it blocked the SINGLE capture receive goroutine (feed ← Feed
+// ← relayTunnelTCP ← processPacket ← recvLoop), which froze the whole
+// machine's networking, DIRECT flows included, until the carrier drained.
+//
+// Returns the number of payloads that did not fit. Every queued byte is
+// counted and stays charged against the advertised window until the
+// carrier write completes. A non-zero return is backpressure: feed reserves
+// room under this same lock before consuming, so on a live flow it cannot
+// happen (see feed's in-order branch); it can only be observed after kill,
+// when the queue is abandoned and its buffers are reclaimed by the GC.
+func (c *termConn) enqueueLocked(out [][]byte) int {
+	for i, b := range out {
 		select {
 		case c.writeCh <- b:
 			c.queuedBytes.Add(int64(len(b)))
-		case <-c.closed:
-			return
+		default:
+			return len(out) - i
 		}
 	}
+	return 0
 }
 
 // recvWindowLocked computes the window to advertise to the client
@@ -924,8 +1012,27 @@ func (c *termConn) sendData(b []byte) bool {
 	return true
 }
 
+// windowStallTimeout bounds how long a carrier reply waits WITHOUT PROGRESS
+// for the client's window to open before the flow is reset as wedged.
+const windowStallTimeout = 10 * time.Second
+
 // waitWindow blocks until the client window fits n more bytes of our data.
-func (c *termConn) waitWindow(n int) bool {
+func (c *termConn) waitWindow(n int) bool { return c.waitWindowFor(n, windowStallTimeout) }
+
+// waitWindowFor is waitWindow with an explicit stall budget (tests).
+//
+// ONE timer for the whole call: the old code created a fresh time.After on
+// every loop iteration — a timer plus garbage per iteration on a hot path —
+// and, because each iteration re-armed it, a client that kept sending
+// zero-window probes held the pump forever. Here the timer is Reset ONLY on
+// real progress (an ACK advanced our unacked point or changed the advertised
+// window), so:
+//   - a slow but progressing peer is never reset (no data loss),
+//   - a wedged peer is bounded by windowStallTimeout of NO progress,
+//   - the steady path pays one timer per call and no per-iteration alloc.
+func (c *termConn) waitWindowFor(n int, stall time.Duration) bool {
+	t := time.NewTimer(stall)
+	defer t.Stop()
 	for {
 		c.mu.Lock()
 		if c.dead {
@@ -933,16 +1040,30 @@ func (c *termConn) waitWindow(n int) bool {
 			return false
 		}
 		usable := int32(uint32(c.clientWin) - (c.serverNext - c.serverUna))
+		una, win := c.serverUna, c.clientWin
 		c.mu.Unlock()
 		if usable >= int32(n) {
 			return true
 		}
 		select {
 		case <-c.ackSignal:
+			c.mu.Lock()
+			moved := c.serverUna != una || c.clientWin != win
+			c.mu.Unlock()
+			if moved {
+				// Real progress: give the peer a fresh stall budget.
+				if !t.Stop() {
+					select {
+					case <-t.C:
+					default:
+					}
+				}
+				t.Reset(stall)
+			}
 		case <-c.closed:
 			return false
-		case <-time.After(10 * time.Second):
-			// Window never opened: peer wedged.
+		case <-t.C:
+			// No progress for a full stall budget: peer wedged.
 			c.reset(errors.New("client window stalled"))
 			return false
 		}
@@ -1018,6 +1139,12 @@ func (c *termConn) reset(reason error) {
 // kill closes the upstream relay and marks the conn dead; remove=true also
 // drops it from the table (sweeper path). reason is logged once — WARN for
 // relay failures, DEBUG for the orderly teardowns (shutdown/idle/RST/FIN).
+//
+// The upstream Close runs on a DETACHED goroutine: kill is reached from feed
+// on the capture receive goroutine (a client RST, a dial failure, a reset),
+// and net.Conn.Close on a carrier socket can block on a TLS close_notify
+// write. The conn is already marked dead before the close starts, so no
+// reader can observe a half-closed relay.
 func (c *termConn) kill(remove bool, reason string) {
 	c.closeOne.Do(func() {
 		lvl := slog.LevelWarn
@@ -1033,7 +1160,7 @@ func (c *termConn) kill(remove bool, reason string) {
 		up := c.upstream
 		c.mu.Unlock()
 		if up != nil {
-			_ = up.Close()
+			go func() { _ = up.Close() }()
 		}
 	})
 	if remove {

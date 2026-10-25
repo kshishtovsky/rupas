@@ -95,8 +95,10 @@ func (e *Engine) applyDesync(pkt []byte, p *pktInfo, addr *windivert.Address, sn
 // already-counted packets).
 func (e *Engine) sendPkt(pkt []byte, addr *windivert.Address) {
 	if err := e.transport.Send(pkt, addr); err != nil {
-		e.cnt.sendErrors.Add(1)
+		e.sendFailed(err)
+		return
 	}
+	e.sendOK()
 }
 
 // fakeSendAddr builds the synthetic WinDivert address zapret's rawsend
@@ -149,15 +151,16 @@ func (e *Engine) injectFake(base []byte, addr *windivert.Address, op desync.Inje
 	// send address claiming them valid (see fakeSendAddr).
 	fakeAddr := fakeSendAddr(addr)
 	if err := e.transport.FixChecksums(buf, &fakeAddr); err != nil {
-		e.cnt.sendErrors.Add(1)
+		e.sendErr()
 		e.putScratch(buf)
 		return
 	}
 	for i := 0; i < op.Count; i++ {
 		if err := e.transport.Send(buf, &fakeAddr); err != nil {
-			e.cnt.sendErrors.Add(1)
+			e.sendFailed(err)
 			break
 		}
+		e.sendOK()
 	}
 	e.putScratch(buf)
 }
@@ -182,13 +185,14 @@ func (e *Engine) sendSplit(orig []byte, p *pktInfo, addr *windivert.Address, off
 	part1Len := hl + int(off)
 	binary.BigEndian.PutUint16(orig[2:4], uint16(part1Len))
 	if err := e.transport.FixChecksums(orig[:part1Len], addr); err != nil {
-		e.cnt.sendErrors.Add(1)
+		e.sendErr()
 		return
 	}
 	if err := e.transport.Send(orig[:part1Len], addr); err != nil {
-		e.cnt.sendErrors.Add(1)
+		e.sendFailed(err)
 		return
 	}
+	e.sendOK()
 
 	// Part 2: cloned headers + payload[off:], sequence advanced by off.
 	// Crafted packet → synthetic send address (fakeSendAddr: checksum
@@ -201,12 +205,14 @@ func (e *Engine) sendSplit(orig []byte, p *pktInfo, addr *windivert.Address, off
 	binary.BigEndian.PutUint32(buf[p.ipLen+4:p.ipLen+8], p.seq+off)
 	part2Addr := fakeSendAddr(addr)
 	if err := e.transport.FixChecksums(buf, &part2Addr); err != nil {
-		e.cnt.sendErrors.Add(1)
+		e.sendErr()
 		e.putScratch(buf)
 		return
 	}
 	if err := e.transport.Send(buf, &part2Addr); err != nil {
-		e.cnt.sendErrors.Add(1)
+		e.sendFailed(err)
+	} else {
+		e.sendOK()
 	}
 	e.putScratch(buf)
 }

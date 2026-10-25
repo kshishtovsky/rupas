@@ -23,7 +23,15 @@ type counters struct {
 	tunnelTx       atomic.Uint64
 	tunnelRedirect atomic.Uint64
 	sendErrors     atomic.Uint64
-	parseErrors    atomic.Uint64
+	// sendErrBurst counts CONSECUTIVE failed re-injections (reset by
+	// sendOK); it gates the receive throttle — see Engine.sendFailed.
+	sendErrBurst atomic.Uint32
+	// sendPauses counts the driver catch-up pauses taken.
+	sendPauses atomic.Uint64
+	// sendWarnAt is the unix-nano timestamp of the last throttle WARN
+	// (0 = never): the WARN rate limit.
+	sendWarnAt  atomic.Int64
+	parseErrors atomic.Uint64
 }
 
 // countVerdict bumps the per-verdict counters for a processed packet.
@@ -53,5 +61,7 @@ func (c *counters) snapshot() core.Counters {
 		HandshakeFail: c.handshakeFail.Load(),
 		TunnelRx:      c.tunnelRx.Load(),
 		TunnelTx:      c.tunnelTx.Load(),
+		SendErrors:    c.sendErrors.Load(),
+		SendPauses:    c.sendPauses.Load(),
 	}
 }

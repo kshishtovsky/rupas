@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"strings"
 	"sync"
@@ -369,7 +370,11 @@ func (e *Engine) termRecv(ctx context.Context, t Transport) {
 			return
 		}
 		for i := 0; i < n; i++ {
-			_ = t.Send(bb.packets[i], &bb.addrs[i])
+			if err := t.Send(bb.packets[i], &bb.addrs[i]); err != nil {
+				e.sendFailed(err) // loss is loss, even on the drain handle
+			} else {
+				e.sendOK()
+			}
 		}
 		e.putBatch(bb)
 		select {
@@ -864,12 +869,14 @@ func (e *Engine) resetClientFlow(p *pktInfo, addr *windivert.Address) {
 		t = e.transport
 	}
 	if err := t.FixChecksums(b, &rstAddr); err != nil {
-		e.cnt.sendErrors.Add(1)
+		e.sendErr()
 		e.putScratch(buf)
 		return
 	}
 	if err := t.Send(b, &rstAddr); err != nil {
-		e.cnt.sendErrors.Add(1)
+		e.sendFailed(err)
+	} else {
+		e.sendOK()
 	}
 	e.putScratch(buf)
 }
@@ -1102,12 +1109,85 @@ func (e *Engine) processInbound(pkt []byte, addr *windivert.Address, p *pktInfo)
 	e.passVerdict(pkt, addr, core.VerdictPass)
 }
 
+// ---------------------------------------------------------------------------
+// Send-failure backpressure (wave 9)
+// ---------------------------------------------------------------------------
+
+// A WinDivert send failure (its send queue overflowing, or a driver error)
+// means the packet we just decided to re-inject is GONE. For DIRECT traffic
+// that is silent packet loss: the peer retransmits, its congestion window
+// collapses, and the whole machine stalls for seconds — the owner's
+// "network freezes, then recovers on its own". The old code incremented a
+// counter nobody read and ploughed on.
+//
+// Policy: count every failure, and once a BURST of consecutive failures
+// shows the driver cannot keep up, (a) WARN with a rate limit so the log is
+// not flooded, (b) pause the receive loop briefly — a 2 ms pause costs
+// nothing and lets the driver drain, while a dropped packet costs a TCP
+// retransmit (RTO ≥ 200 ms). The pause NEVER happens in the normal path:
+// it is gated behind the burst threshold, so steady-state latency is
+// untouched.
+const (
+	// sendErrBurst is how many consecutive failures trip the throttle.
+	sendErrBurst = 64
+	// sendErrWarnEvery rate-limits the WARN (first burst logs immediately).
+	sendErrWarnEvery = 2 * time.Second
+	// sendErrPause is the receive pause after a failed burst.
+	sendErrPause = 2 * time.Millisecond
+)
+
+// sendOK clears the consecutive-failure burst. One atomic load in the
+// success path (a store only after a failure), so the hot path pays nothing
+// in steady state.
+func (e *Engine) sendOK() {
+	if e.cnt.sendErrBurst.Load() != 0 {
+		e.cnt.sendErrBurst.Store(0)
+	}
+}
+
+// sendFailed records one failed re-injection and, on each burst of
+// consecutive failures, throttles the receive loop. Never returns an error:
+// the caller has nothing better to do with the packet (it is already lost)
+// than to slow the source down.
+func (e *Engine) sendFailed(err error) {
+	total := e.cnt.sendErrors.Add(1)
+	burst := e.cnt.sendErrBurst.Add(1)
+	// One pause per burst (not per packet): a permanently failing driver
+	// must not turn every packet into a 2 ms stall.
+	if burst < sendErrBurst || burst%sendErrBurst != 0 {
+		return
+	}
+	now := time.Now().UnixNano()
+	last := e.cnt.sendWarnAt.Load()
+	if last == 0 || now-last >= int64(sendErrWarnEvery) {
+		if e.cnt.sendWarnAt.CompareAndSwap(last, now) {
+			msg := "send failed"
+			if err != nil {
+				msg = err.Error()
+			}
+			slog.Warn("capture: WARN send failures — throttling receive to drain the driver",
+				slog.Uint64("send_errors_total", total),
+				slog.Uint64("consecutive", uint64(burst)),
+				slog.String("err", msg))
+		}
+	}
+	e.cnt.sendPauses.Add(1)
+	time.Sleep(sendErrPause)
+}
+
+// sendErr counts a failed injection without the burst throttle — for
+// failures a pause cannot help (checksum preparation), which still must be
+// visible in the counters.
+func (e *Engine) sendErr() { e.cnt.sendErrors.Add(1) }
+
 // passVerdict counts and re-injects a packet untouched.
 func (e *Engine) passVerdict(pkt []byte, addr *windivert.Address, v core.Verdict) {
 	e.cnt.countVerdict(v)
 	if err := e.transport.Send(pkt, addr); err != nil {
-		e.cnt.sendErrors.Add(1)
+		e.sendFailed(err)
+		return
 	}
+	e.sendOK()
 }
 
 // unsafeString reinterprets b as a string without copying — the standard

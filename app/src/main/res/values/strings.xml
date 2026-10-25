@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Rupas</string>
+    <string name="turn_on">ON</string>
+    <string name="turn_off">OFF</string>
+    <string name="status_initial">статус: …</string>
+    <string name="status_format">туннель: %1$s\nядро: %2$s</string>
+    <string name="log_title">Лог</string>
+    <string name="vpn_permission_denied">Разрешение VPN не выдано</string>
+</resources>

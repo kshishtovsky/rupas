@@ -1,0 +1,7 @@
+STUB AAR — временная замена ядра для сборки W2.
+Собран из core/rupas-core-test.aar: classes.jar заменён на java-заглушку
+core/Core (start/stop/status/version по фиксированному контракту) + core/Platform;
+jni/*/libgojni.so оставлены из тестового AAR (не используются заглушкой).
+ЗАМЕНИТЬ: gomobile bind -target=android -androidapi 26 -o app/libs/rupas-core.aar .
+после реализации контракта Go-воркером. Java-код приложения ссылается на
+core.Core / core.Platform напрямую.

@@ -1,3 +1,6 @@
 build/lab/
 *.pcap
 configs/rupas.yaml
+build/*.log
+configs/diag.yaml
+goroutines.txt

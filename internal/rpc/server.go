@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"runtime/pprof"
 	"strings"
 	"sync"
 
@@ -201,7 +202,12 @@ func (s *Server) dispatch(cmd string) Response {
 	case "reload":
 		return callDep("reload", s.deps.Reload)
 	default:
-		return Response{OK: false, Error: fmt.Sprintf("unknown cmd %q (want status|on|off|probe|reload|logs)", cmd)}
+		if cmd == "debug" {
+			var buf bytes.Buffer
+			pprof.Lookup("goroutine").WriteTo(&buf, 2)
+			return Response{OK: true, Data: map[string]string{"goroutines": buf.String()}}
+		}
+		return Response{OK: false, Error: fmt.Sprintf("unknown cmd %q (want status|on|off|probe|reload|logs|debug)", cmd)}
 	}
 }
 

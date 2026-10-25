@@ -39,7 +39,7 @@ func main() {
 		cmd = flag.Arg(0)
 	}
 	switch cmd {
-	case "status", "on", "off", "probe", "reload", "logs":
+	case "status", "on", "off", "probe", "reload", "logs", "debug":
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -85,6 +85,24 @@ func run(pipePath string, timeout time.Duration, cmd string) error {
 				return nil // stream finished
 			}
 		}
+	case "debug":
+		line, err := rd.ReadBytes('\n')
+		if err != nil {
+			return fmt.Errorf("read: %w", err)
+		}
+		var r struct {
+			OK    bool              `json:"ok"`
+			Data  map[string]string `json:"data"`
+			Error string            `json:"error"`
+		}
+		if err := json.Unmarshal(line, &r); err != nil {
+			return fmt.Errorf("bad response: %w", err)
+		}
+		if !r.OK {
+			return fmt.Errorf("%s", r.Error)
+		}
+		fmt.Println(r.Data["goroutines"])
+		return nil
 	default:
 		line, err := rd.ReadBytes('\n')
 		if err != nil {

@@ -32,7 +32,7 @@ const (
 
 // Defaults for the engine's resource pools.
 const (
-	defaultBatchSize  = 64  // §3.2: batch ≤ 64 packets
+	defaultBatchSize  = 64 // §3.2: batch ≤ 64 packets
 	defaultPacketSize = 65575
 	defaultIdleTTL    = 5 * time.Minute
 	gcTick            = time.Second
@@ -42,15 +42,15 @@ const (
 // compiled config; TProxyPort is the local loopback listener the NAT branch
 // redirects to (0 disables the tunnel branch and the second handle).
 type Options struct {
-	Rules        *rules.Table      // compiled decision table (required)
+	Rules        *rules.Table        // compiled decision table (required)
 	Desync       config.DesyncParams // desync profile for Engine.Actions
-	FakeTemplate []byte            // fake ClientHello template bytes
-	TProxyPort   uint16            // local tproxy port; must not be 443 or in [50000,65535]
-	TGCIDRs      []string          // Telegram CIDRs, widen the capture filter
-	BatchSize    int               // recv batch slots; 0 = 64
-	PacketSize   int               // per-slot buffer; 0 = 65575
-	FlowIdleTTL  time.Duration     // flow GC idle timeout; 0 = 5 min
-	SniffMode    bool              // open real handles with FlagSniff (diagnostics only)
+	FakeTemplate []byte              // fake ClientHello template bytes
+	TProxyPort   uint16              // local tproxy port; must not be 443 or in [50000,65535]
+	TGCIDRs      []string            // Telegram CIDRs, widen the capture filter
+	BatchSize    int                 // recv batch slots; 0 = 64
+	PacketSize   int                 // per-slot buffer; 0 = 65575
+	FlowIdleTTL  time.Duration       // flow GC idle timeout; 0 = 5 min
+	SniffMode    bool                // open real handles with FlagSniff (diagnostics only)
 }
 
 // Engine is the capture hot path: one WinDivert NETWORK-layer receive loop
@@ -70,19 +70,25 @@ type Engine struct {
 	loopTransport Transport
 	ownsTransport bool
 
-	streams   map[flowtable.FlowKey]*inspector.Stream
-	streamMu  sync.Mutex // guards streams (main loop writes; cleanup from both loops)
+	streams    map[flowtable.FlowKey]*inspector.Stream
+	streamMu   sync.Mutex // guards streams (main loop writes; cleanup from both loops)
 	streamPool sync.Pool
-	nat       map[natKey]*flowtable.Flow
-	natMu     sync.RWMutex // guards nat (main inserts; loopback lookups/deletes)
+	nat        map[natKey]*flowtable.Flow
+	natMu      sync.RWMutex // guards nat (main inserts; loopback lookups/deletes)
+
+	// ClientHello hold buffers (winws parity, wave 4A): partial CH
+	// segments are held until the inspector reaches a verdict so the
+	// fakes can precede the FIRST real segment on the wire.
+	holds    map[flowtable.FlowKey]*chHold
+	holdPool sync.Pool
 
 	batches sync.Pool // *batchBuf
 	scratch sync.Pool // *[]byte
 
 	cnt counters
 
-	stop    chan struct{}
-	runDone chan struct{}
+	stop     chan struct{}
+	runDone  chan struct{}
 	loopDone chan struct{}
 
 	mu         sync.Mutex // guards the transport fields below (cold paths)
@@ -136,19 +142,21 @@ func New(opts Options) (*Engine, error) {
 		return nil, fmt.Errorf("capture: desync engine: %w", err)
 	}
 	e := &Engine{
-		opts:      opts,
-		desync:    de,
-		fakeTpl:   de.Template(),
-		flows:     flowtable.New(),
-		rules:     opts.Rules,
-		tproxyOn:  opts.TProxyPort != 0,
-		streams:   make(map[flowtable.FlowKey]*inspector.Stream),
-		nat:       make(map[natKey]*flowtable.Flow),
-		stop:      make(chan struct{}),
-		runDone:   make(chan struct{}),
-		loopDone:  make(chan struct{}),
+		opts:     opts,
+		desync:   de,
+		fakeTpl:  de.Template(),
+		flows:    flowtable.New(),
+		rules:    opts.Rules,
+		tproxyOn: opts.TProxyPort != 0,
+		streams:  make(map[flowtable.FlowKey]*inspector.Stream),
+		holds:    make(map[flowtable.FlowKey]*chHold),
+		nat:      make(map[natKey]*flowtable.Flow),
+		stop:     make(chan struct{}),
+		runDone:  make(chan struct{}),
+		loopDone: make(chan struct{}),
 	}
 	e.streamPool.New = func() any { return inspector.NewStream() }
+	e.holdPool.New = func() any { return &chHold{buf: make([]byte, 0, 2048)} }
 	e.batches.New = func() any {
 		buf, packets, addrs := windivert.NewBatch(opts.BatchSize, opts.PacketSize)
 		return &batchBuf{buf: buf, packets: packets, addrs: addrs, each: opts.PacketSize}
@@ -479,6 +487,7 @@ func (e *Engine) processOutbound(pkt []byte, addr *windivert.Address, p *pktInfo
 	if p.syn() && !p.ack() {
 		f := e.flows.GetOrCreate(key)
 		f.TouchSyn()
+		f.ClientISN = p.seq // wave 4A: fake CH builds on ISN+1 (winws parity)
 		if f.State.Load() == flowtable.FlowTunnel {
 			e.natOutbound(pkt, p, key, f, addr)
 		} else {
@@ -511,8 +520,16 @@ func (e *Engine) processOutbound(pkt []byte, addr *windivert.Address, p *pktInfo
 
 // inspectClientHello runs the §3.2 pipeline on a data segment of a NEW flow:
 // feed the inspector, then DIRECT / DESYNC / TUNNEL by rules.Match, with ECH
-// forcing TUNNEL. Partial ClientHellos are forwarded untouched while the
-// stream reassembles (the verdict fires on the completing segment).
+// forcing TUNNEL.
+//
+// Wave 4A (winws parity): while the inspector reassembles a multi-segment
+// ClientHello, the earlier segments are HELD (not forwarded) — otherwise the
+// first real CH bytes egress before any fake and the DPI simply parses the
+// real ClientHello (live finding 2026-10-25: engine blocked where winws
+// punched through; winws holds the CH, sends N fakes, then releases the
+// real segments). On the completing segment the verdict fires and every
+// held segment is released in order AFTER the InjectFake ops
+// (see applyDesync).
 func (e *Engine) inspectClientHello(pkt []byte, addr *windivert.Address, p *pktInfo, key flowtable.FlowKey, f *flowtable.Flow) {
 	e.streamMu.Lock()
 	st, ok := e.streams[key]
@@ -523,6 +540,11 @@ func (e *Engine) inspectClientHello(pkt []byte, addr *windivert.Address, p *pktI
 	e.streamMu.Unlock()
 	res, err := st.Feed(p.payload)
 	if err == inspector.ErrNeedMore {
+		if e.holdSegment(key, pkt, addr) {
+			return // segment held until the CH completes
+		}
+		// Hold overflow (pathological segmentation): degrade to the old
+		// immediate pass-through; this CH is simply not protected.
 		e.passVerdict(pkt, addr, core.VerdictPass)
 		return
 	}
@@ -533,10 +555,12 @@ func (e *Engine) inspectClientHello(pkt []byte, addr *windivert.Address, p *pktI
 	e.streamMu.Unlock()
 	st.Reset()
 	e.streamPool.Put(st)
+	held := e.takeHold(key)
 
 	if err != nil || !res.IsTLS {
 		// Not a TLS ClientHello (or malformed): nothing to decide on.
 		f.State.Store(flowtable.FlowDirect)
+		e.releaseHeld(held)
 		e.passVerdict(pkt, addr, core.VerdictPass)
 		return
 	}
@@ -552,14 +576,123 @@ func (e *Engine) inspectClientHello(pkt []byte, addr *windivert.Address, p *pktI
 	switch action {
 	case config.ActionDirect:
 		f.State.Store(flowtable.FlowDirect)
+		e.releaseHeld(held)
 		e.passVerdict(pkt, addr, core.VerdictPass)
 	case config.ActionDesync:
-		e.applyDesync(pkt, p, addr, res.SNI)
+		e.applyDesync(pkt, p, addr, res.SNI, held)
 		f.State.Store(flowtable.FlowDesynced)
 	default: // ActionTunnel (and any invalid value): NAT-redirect
 		f.State.Store(flowtable.FlowTunnel)
+		e.natHeld(held, key, f)
 		e.natOutbound(pkt, p, key, f, addr)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// ClientHello segment hold (winws parity)
+// ---------------------------------------------------------------------------
+
+// maxCHHoldSegs bounds how many segments of one ClientHello the engine will
+// hold. §3.2 reassembles up to 4 segments / 64 KB; the slack absorbs
+// pathological-but-legal segmentations before the overflow fallback.
+const maxCHHoldSegs = 8
+
+// chHold buffers the raw bytes (and WinDivert addresses) of a flow's
+// partial ClientHello segments in arrival order inside one pooled backing
+// buffer. Zero heap allocations after pool warm-up: add() copies into the
+// pooled buffer and only grows it on the cold first oversize.
+type chHold struct {
+	buf  []byte // pooled backing; segments appended contiguously
+	end  [maxCHHoldSegs]uint32
+	addr [maxCHHoldSegs]windivert.Address
+	n    int
+}
+
+func (h *chHold) add(pkt []byte, addr *windivert.Address) bool {
+	if h.n >= maxCHHoldSegs {
+		return false
+	}
+	if cap(h.buf)-len(h.buf) < len(pkt) { // cold growth, at most a few times
+		nb := make([]byte, len(h.buf), max(2*cap(h.buf), len(h.buf)+len(pkt)))
+		copy(nb, h.buf)
+		h.buf = nb
+	}
+	h.buf = append(h.buf, pkt...)
+	h.end[h.n] = uint32(len(h.buf))
+	h.addr[h.n] = *addr
+	h.n++
+	return true
+}
+
+// seg returns the raw bytes of held segment i.
+func (h *chHold) seg(i int) []byte {
+	lo := uint32(0)
+	if i > 0 {
+		lo = h.end[i-1]
+	}
+	return h.buf[lo:h.end[i]]
+}
+
+func (h *chHold) reset() {
+	h.buf = h.buf[:0]
+	h.n = 0
+}
+
+// holdSegment buffers one partial ClientHello segment until the CH
+// completes. Cold except for the copy itself: one map insert per inspected
+// flow, buffers pooled.
+func (e *Engine) holdSegment(key flowtable.FlowKey, pkt []byte, addr *windivert.Address) bool {
+	e.streamMu.Lock()
+	h, ok := e.holds[key]
+	if !ok {
+		h = e.holdPool.Get().(*chHold)
+		e.holds[key] = h
+	}
+	e.streamMu.Unlock()
+	return h.add(pkt, addr)
+}
+
+// takeHold removes and returns the flow's hold (nil when the ClientHello
+// fit in a single segment). The caller releases or recycles it.
+func (e *Engine) takeHold(key flowtable.FlowKey) *chHold {
+	e.streamMu.Lock()
+	h := e.holds[key]
+	delete(e.holds, key)
+	e.streamMu.Unlock()
+	return h
+}
+
+// releaseHeld re-injects held segments in their original order (pass
+// verdicts) and recycles the hold.
+func (e *Engine) releaseHeld(h *chHold) {
+	if h == nil {
+		return
+	}
+	for i := 0; i < h.n; i++ {
+		e.passVerdict(h.seg(i), &h.addr[i], core.VerdictPass)
+	}
+	e.putHold(h)
+}
+
+// natHeld applies the tunnel NAT-redirect to held segments (cold path,
+// re-parses each segment).
+func (e *Engine) natHeld(h *chHold, key flowtable.FlowKey, f *flowtable.Flow) {
+	if h == nil {
+		return
+	}
+	for i := 0; i < h.n; i++ {
+		if p, ok := parsePkt(h.seg(i)); ok {
+			e.natOutbound(h.seg(i), &p, key, f, &h.addr[i])
+		} else {
+			e.passVerdict(h.seg(i), &h.addr[i], core.VerdictPass)
+		}
+	}
+	e.putHold(h)
+}
+
+func (e *Engine) putHold(h *chHold) {
+	h.reset()
+	e.holdPool.Put(h)
 }
 
 // processUDP applies the tunnel branch to UDP relay traffic (ADR-5): no
@@ -582,6 +715,15 @@ func (e *Engine) processUDP(pkt []byte, addr *windivert.Address, p *pktInfo) {
 // handshake for a DESYNCED flow (§3.2, simplified detector: ACK after
 // ServerHello ≈ any server data segment).
 func (e *Engine) processInbound(pkt []byte, addr *windivert.Address, p *pktInfo) {
+	// Best-effort ServerISN capture (wave 4A): the production main filter
+	// is outbound-only, so this only fires where inbound is visible (tests,
+	// loopback handle). The fake's ack is otherwise cloned from the first
+	// data segment (= ServerISN+1), so this is diagnostics/fallback.
+	if p.isTCP() && p.syn() && p.ack() {
+		if f, ok := e.flows.Get(flowKeyIn(p)); ok && f.State.Load() == flowtable.FlowNew {
+			f.ServerISN = p.seq
+		}
+	}
 	if p.isTCP() && len(p.payload) > 0 {
 		if f, ok := e.flows.Get(flowKeyIn(p)); ok && f.State.Load() == flowtable.FlowDesynced {
 			f.State.Store(flowtable.FlowEstablished)

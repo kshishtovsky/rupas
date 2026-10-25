@@ -53,10 +53,17 @@ type Flow struct {
 	Strategy uint8    // index of the applied desync strategy
 	OrigDst  [16]byte // original destination (for redirect)
 	OrigPort uint16
-	SynT     int64 // ns, monotonic since process start
-	DataT    int64 // last data segment, ns monotonic
-	EstT     int64 // handshake completed, ns monotonic
-	Fails    uint8 // handshake retries, drives degradation
+	// ClientISN/ServerISN are captured on the SYN / SYN-ACK (wave 4A:
+	// the fake ClientHello is built from the flow's first data segment —
+	// seq = ClientISN+1, ack = ServerISN+1; winws parity). ClientISN is
+	// set from the outbound SYN (captured by the main filter); ServerISN
+	// only when inbound packets are visible (tests / loopback handle).
+	ClientISN uint32
+	ServerISN uint32
+	SynT      int64 // ns, monotonic since process start
+	DataT     int64 // last data segment, ns monotonic
+	EstT      int64 // handshake completed, ns monotonic
+	Fails     uint8 // handshake retries, drives degradation
 }
 
 // shard is one lock domain of the table.

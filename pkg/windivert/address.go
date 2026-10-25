@@ -69,6 +69,13 @@ func (a *Address) UDPChecksum() bool { return a.flags&flagUDPChecksum != 0 }
 // captured packet on the opposite direction).
 func (a *Address) SetOutbound(v bool) { a.flags = setFlag(a.flags, flagOutbound, v) }
 
+// SetLoopback marks the address as belonging to the loopback interface.
+// Required when re-injecting a packet whose destination was rewritten to
+// 127.0.0.1: without the flag the driver routes by the original interface
+// and the packet never reaches the loopback stack (live-observed: NAT
+// redirects counted, tproxy accepts zero).
+func (a *Address) SetLoopback(v bool) { a.flags = setFlag(a.flags, flagLoopback, v) }
+
 // SetIPChecksum / SetTCPChecksum / SetUDPChecksum invalidate the
 // corresponding checksum-valid hints after in-place packet edits.
 func (a *Address) SetIPChecksum(v bool)  { a.flags = setFlag(a.flags, flagIPChecksum, v) }

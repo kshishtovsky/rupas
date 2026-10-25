@@ -22,8 +22,16 @@ const (
 	DefaultCalibrationBudget = 240 * time.Second
 	// perIPCaliBudget bounds the rigorous CalibrateTTL run on one target.
 	perIPCaliBudget = 90 * time.Second
-	// calibrationDelay paces the 3 repeats within one TTL point.
-	calibrationDelay = 150 * time.Millisecond
+	// ladderFailDecay is the cooldown after a failed ladder rung (see
+	// defaultScanTTLs): lets the TSPU per-host escalation decay so the
+	// next rung is not judged on poisoned state.
+	ladderFailDecay = 8 * time.Second
+	// calibrationDelay paces the repeats within one TTL point. Wave 4A
+	// live finding: back-to-back TLS flows to a blocked SNI trip the
+	// TSPU's per-host escalation for tens of seconds (a freshly succeeded
+	// window check can still poison the point evaluation that follows),
+	// so repeats are spaced by seconds, not milliseconds.
+	calibrationDelay = 4 * time.Second
 	// maxCalTargets caps how many candidate ip/sni pairs calibration
 	// tries before declaring the fake strategy dead. Candidates are
 	// interleaved across the desync-rule targets so one hard target
@@ -32,14 +40,20 @@ const (
 	maxCalTargets = 6
 )
 
-// defaultScanTTLs is the ascending single-attempt ladder used to find a
-// working TTL before the rigorous binary search. Lab + live data: the
-// fake must reach the TSPU but die before the server (the TSPU window is
-// bounded from above on Google front-ends: TTL 8 worked where 16/32 were
-// blackholed), so CalibrateTTL's monotone-to-Hi assumption cannot be
-// seeded with Hi=32 directly — we first locate any passing TTL and seed
-// the binary search just there.
-var defaultScanTTLs = []int{4, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32}
+// defaultScanTTLs is the single-attempt ladder used to find a working TTL
+// before the rigorous binary search. Lab + live data: the fake must reach
+// the TSPU but die before the server (the TSPU window is bounded from
+// above on Google front-ends: TTL 8 worked where 16/32 were blackholed),
+// so CalibrateTTL's monotone-to-Hi assumption cannot be seeded with Hi=32
+// directly — we first locate any passing TTL and seed the binary search
+// just there. Wave-4A live finding (2026-10-25): the TSPU escalates a
+// host that attempts blocked SNIs back-to-back (uTLS flows stay throttled
+// for tens of seconds), so the ladder starts at the profile's calibrated
+// window (12..14) and each failed rung waits for the escalation to decay
+// — the old 4,6,8,… order burned five doomed attempts (~30 s of blackhole
+// timeouts) before reaching the window and heated the channel for the
+// rigorous search that followed.
+var defaultScanTTLs = []int{12, 14, 10, 16, 8, 20, 6, 24, 4, 28, 32}
 
 // calInfo is the outcome of the last TTL calibration (diagnostics/e2e).
 type calInfo struct {
@@ -279,6 +293,13 @@ func (p *ProbeRunner) calibrate(ctx context.Context, cals []calTarget) (prober.C
 			if ok {
 				hi = t
 				break
+			}
+			// A failed rung means six seconds of blackholed flow; the
+			// TSPU's per-host escalation needs several seconds to decay
+			// before the next rung is judged fairly (wave 4A).
+			select {
+			case <-cctx.Done():
+			case <-time.After(ladderFailDecay):
 			}
 		}
 		if hi == 0 {

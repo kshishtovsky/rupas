@@ -125,6 +125,11 @@ func v4mapped(a [4]byte) (b [16]byte) {
 // loopback4 is 127.0.0.1.
 var loopback4 = [4]byte{127, 0, 0, 1}
 
+// loopbackIfIdx is the interface index of the Windows loopback adapter
+// ("MS TCP Loopback Interface"); constant 1 across all observed systems.
+// Used when re-injecting NAT-rewritten packets destined to 127.0.0.1.
+const loopbackIfIdx = 1
+
 func isLoopback(a [4]byte) bool { return a[0] == 127 }
 
 // flowKeyOut builds the flow-table key for an outbound (client → server)

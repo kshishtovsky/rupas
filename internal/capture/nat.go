@@ -48,6 +48,15 @@ func (e *Engine) natOutbound(pkt []byte, p *pktInfo, key flowtable.FlowKey, f *f
 	if err := e.transport.FixChecksums(pkt, addr); err != nil {
 		e.cnt.sendErrors.Add(1)
 	}
+	// The destination is now 127.0.0.1: deliver into the loopback stack.
+	// Keep the outbound direction but raise the Loopback flag and point the
+	// address at the loopback interface — otherwise the driver routes the
+	// packet out the original (Ethernet) interface where it dies (wave-4B
+	// live finding: redir=N, tproxy accepts=0).
+	addr.SetLoopback(true)
+	if na := addr.Network(); na != nil {
+		na.IfIdx, na.SubIfIdx = loopbackIfIdx, 0
+	}
 	if first {
 		nk := natKey{ip: v4mapped(p.src4), port: p.srcPort, proto: p.proto}
 		e.natMu.Lock()
@@ -143,20 +152,27 @@ func flowKeyOf(nk natKey, f *flowtable.Flow) flowtable.FlowKey {
 	}
 }
 
-// cleanupFlow removes the NAT entry, the inspector stream and the flow
-// itself after FIN/RST. Safe from both receive goroutines.
+// cleanupFlow removes the NAT entry, the inspector stream, any pending
+// ClientHello hold and the flow itself after FIN/RST. Safe from both
+// receive goroutines.
 func (e *Engine) cleanupFlow(nk natKey, k flowtable.FlowKey) {
 	e.natMu.Lock()
 	delete(e.nat, nk)
 	e.natMu.Unlock()
 	e.streamMu.Lock()
 	delete(e.streams, k)
+	h := e.holds[k]
+	delete(e.holds, k)
 	e.streamMu.Unlock()
+	if h != nil {
+		e.putHold(h) // flow is dead: drop the held segments
+	}
 	e.flows.Delete(k)
 }
 
-// sweepStreams releases inspector streams whose flow has expired (idle
-// half-open connections removed by the flow-table GC). Cold path.
+// sweepStreams releases inspector streams and ClientHello holds whose flow
+// has expired (idle half-open connections removed by the flow-table GC).
+// Cold path.
 func (e *Engine) sweepStreams() {
 	e.streamMu.Lock()
 	for k, st := range e.streams {
@@ -166,5 +182,15 @@ func (e *Engine) sweepStreams() {
 			e.streamPool.Put(st)
 		}
 	}
+	var stale []*chHold
+	for k, h := range e.holds {
+		if _, ok := e.flows.Get(k); !ok {
+			delete(e.holds, k)
+			stale = append(stale, h)
+		}
+	}
 	e.streamMu.Unlock()
+	for _, h := range stale {
+		e.putHold(h)
+	}
 }

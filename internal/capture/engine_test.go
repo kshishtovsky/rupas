@@ -144,8 +144,10 @@ func TestDirectPathUntouched(t *testing.T) {
 
 // TestDesyncFakePacket: strategy "fake", TTL 8, 2 repeats. The fakes must
 // precede the original, clone its IP/TCP headers, carry the template as
-// payload, use seq-1, TTL from the op, valid checksums and the Impostor
-// address flag.
+// payload, keep the original seq verbatim (winws parity: the fake must
+// occupy the DPI's expected next-seq position, client ISN+1), use the
+// op TTL, valid checksums and a PLAIN address (no Impostor flag: it
+// costs one TTL hop on the wire, doctrine #4 in ops.go).
 func TestDesyncFakePacket(t *testing.T) {
 	cfg := &config.Config{
 		Profile: "test",
@@ -180,8 +182,11 @@ func TestDesyncFakePacket(t *testing.T) {
 		if fake[8] != 8 {
 			t.Fatalf("fake %d TTL = %d, want 8 (op.TTL)", i, fake[8])
 		}
-		if p.seq != seq-1 {
-			t.Fatalf("fake %d seq = %d, want %d (seq-1)", i, p.seq, seq-1)
+		if p.seq != seq {
+			t.Fatalf("fake %d seq = %d, want %d (verbatim, winws parity)", i, p.seq, seq)
+		}
+		if p.ackNum != 1 {
+			t.Fatalf("fake %d ack = %d, want 1 (cloned from the real segment)", i, p.ackNum)
 		}
 		if !bytes.Equal(p.payload, testFakeTemplate) {
 			t.Fatalf("fake %d payload is not the template", i)
@@ -198,8 +203,8 @@ func TestDesyncFakePacket(t *testing.T) {
 		if total := int(binary.BigEndian.Uint16(fake[2:4])); total != 40+len(testFakeTemplate) {
 			t.Fatalf("fake %d total length %d, want %d", i, total, 40+len(testFakeTemplate))
 		}
-		if !sent[i].Addr.Impostor() {
-			t.Fatalf("fake %d not marked impostor", i)
+		if sent[i].Addr.Impostor() {
+			t.Fatalf("fake %d impostor-flagged: would egress with TTL-1", i)
 		}
 		if !sent[i].Addr.Outbound() {
 			t.Fatalf("fake %d lost outbound direction", i)
@@ -278,9 +283,10 @@ func TestDesyncSplit(t *testing.T) {
 	if sent[2].Data[8] != ipTTLDefault {
 		t.Fatalf("part1 TTL changed: %d", sent[2].Data[8])
 	}
-	// Part2 is a crafted packet (cloned headers): impostor flag expected.
-	if !sent[3].Addr.Impostor() {
-		t.Fatal("part2 not marked impostor")
+	// Part2 is a crafted packet (cloned headers), but must NOT carry the
+	// impostor flag: that would decrement its TTL on egress (doctrine #4).
+	if sent[3].Addr.Impostor() {
+		t.Fatal("part2 impostor-flagged: would egress with TTL-1")
 	}
 
 	f, _ := flowOf(e, testServerIP, 443)
@@ -289,9 +295,12 @@ func TestDesyncSplit(t *testing.T) {
 	}
 }
 
-// TestClientHelloTwoSegments: a CH split across two segments is passed
-// through until the completing segment, which then triggers the desync ops
-// with fake seq = completing segment's seq - 1.
+// TestClientHelloTwoSegments: a CH split across two segments (Go 1.26
+// negotiates ML-KEM, so real CHs routinely exceed the MSS). The first
+// segment is HELD (must not egress before the fakes — winws parity); the
+// completing segment triggers the ops: fake ×2 built from the FIRST
+// segment (seq = its seq, i.e. client ISN+1), then the held segment, then
+// the completing one, all in that wire order.
 func TestClientHelloTwoSegments(t *testing.T) {
 	cfg := &config.Config{
 		Profile: "test",
@@ -306,24 +315,85 @@ func TestClientHelloTwoSegments(t *testing.T) {
 	seg1 := buildTCP(testClientIP, testClientPort, testServerIP, 443, 1000, 1, tcpFlagACK|tcpFlagPSH, ch[:cut])
 	seg2 := buildTCP(testClientIP, testClientPort, testServerIP, 443, 1000+uint32(cut), 1, tcpFlagACK|tcpFlagPSH, ch[cut:])
 	feed(t, e, seg1, outboundAddr())
-	if got := ft.Sent(); len(got) != 1 || !bytes.Equal(got[0].Data, seg1) {
-		t.Fatalf("partial CH not passed through untouched: %d sent", len(got))
+	if got := ft.Sent(); len(got) != 0 {
+		t.Fatalf("partial CH segment leaked before the fakes: %d sent", len(got))
 	}
 	feed(t, e, seg2, outboundAddr())
 
 	sent := ft.Sent()
-	if len(sent) != 4 { // seg1 + 2 fakes + seg2
+	if len(sent) != 4 { // 2 fakes + held seg1 + completing seg2
 		t.Fatalf("sent %d packets, want 4", len(sent))
 	}
-	fp, ok := parsePkt(sent[1].Data)
-	if !ok {
-		t.Fatal("fake unparseable")
+	for i := 0; i < 2; i++ {
+		fp, ok := parsePkt(sent[i].Data)
+		if !ok {
+			t.Fatalf("fake %d unparseable", i)
+		}
+		if fp.seq != 1000 {
+			t.Fatalf("fake %d seq = %d, want 1000 (FIRST segment's seq = client ISN+1)", i, fp.seq)
+		}
+		if fp.ackNum != 1 {
+			t.Fatalf("fake %d ack = %d, want 1 (cloned from the first segment)", i, fp.ackNum)
+		}
+		if sent[i].Data[8] != 8 {
+			t.Fatalf("fake %d TTL = %d, want 8", i, sent[i].Data[8])
+		}
 	}
-	if fp.seq != 1000+uint32(cut)-1 {
-		t.Fatalf("fake seq %d, want %d (completing segment seq - 1)", fp.seq, 1000+uint32(cut)-1)
+	if !bytes.Equal(sent[2].Data, seg1) {
+		t.Fatal("held first segment not released after the fakes / modified")
 	}
 	if !bytes.Equal(sent[3].Data, seg2) {
 		t.Fatal("completing segment not forwarded after the fakes")
+	}
+	if c := e.Counters(); c.PacketsDesync != 1 {
+		t.Fatalf("desync verdicts = %d, want 1: %+v", c.PacketsDesync, c)
+	}
+}
+
+// TestClientHelloHoldDIRECT: a multi-segment non-TLS or DIRECT flow still
+// delivers its held segments, in order, once the verdict fires.
+func TestClientHelloHoldDIRECT(t *testing.T) {
+	cfg := &config.Config{
+		Profile: "test",
+		Rules: []config.Rule{
+			{SNI: "ok.example", Action: config.ActionDirect},
+			{Action: config.ActionDirect},
+		},
+	}
+	e, ft, _ := newTestEngine(t, cfg, testDesyncParams("fake", 0), false)
+
+	ch := buildClientHello("ok.example", false)
+	cut := 12
+	seg1 := buildTCP(testClientIP, testClientPort, testServerIP, 443, 2000, 1, tcpFlagACK|tcpFlagPSH, ch[:cut])
+	seg2 := buildTCP(testClientIP, testClientPort, testServerIP, 443, 2000+uint32(cut), 1, tcpFlagACK|tcpFlagPSH, ch[cut:])
+	feed(t, e, seg1, outboundAddr())
+	if got := ft.Sent(); len(got) != 0 {
+		t.Fatalf("partial segment leaked: %d sent", len(got))
+	}
+	feed(t, e, seg2, outboundAddr())
+	sent := ft.Sent()
+	if len(sent) != 2 || !bytes.Equal(sent[0].Data, seg1) || !bytes.Equal(sent[1].Data, seg2) {
+		t.Fatalf("held segments not released in order for DIRECT: %d sent", len(sent))
+	}
+}
+
+// TestSYNStoresISN: the outbound SYN's seq is kept in the Flow as
+// ClientISN (wave 4A), so the desync path can always derive the expected
+// CH seq even if it never saw the SYN.
+func TestSYNStoresISN(t *testing.T) {
+	cfg := &config.Config{
+		Profile: "test",
+		Rules:   []config.Rule{{Action: config.ActionDirect}},
+	}
+	e, _, _ := newTestEngine(t, cfg, testDesyncParams("fake", 0), false)
+	syn := buildTCP(testClientIP, testClientPort, testServerIP, 443, 424242, 0, tcpFlagSYN, nil)
+	feed(t, e, syn, outboundAddr())
+	f, ok := flowOf(e, testServerIP, 443)
+	if !ok {
+		t.Fatal("flow missing")
+	}
+	if f.ClientISN != 424242 {
+		t.Fatalf("ClientISN = %d, want 424242", f.ClientISN)
 	}
 }
 

@@ -12,15 +12,19 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/rupas/rupas/internal/capture"
 	"github.com/rupas/rupas/internal/config"
 	"github.com/rupas/rupas/internal/core"
+	"github.com/rupas/rupas/internal/prober"
 	"github.com/rupas/rupas/internal/rpc"
+	"github.com/rupas/rupas/internal/rules"
 	"github.com/rupas/rupas/pkg/windivert"
 )
 
@@ -250,7 +254,19 @@ func TestLiveEndToEnd(t *testing.T) {
 	// Dial target: the calibrated pair when a window exists, otherwise
 	// the rule's own target — either way the ClientHello traverses the
 	// intercepting engine and must record a DESYNC verdict.
+	// (cal.SNI may be the bare registrable domain of a wildcard rule —
+	// e.g. "googlevideo.com" from "*.googlevideo.com" — which the rule
+	// table does NOT match; dial a rule-matching SNI or the verdict
+	// never fires. Wave-4A live catch.)
 	dialIP, dialSNI := cal.IP, cal.SNI
+	if !strings.HasPrefix(cal.SNI, "www.") {
+		for _, r := range config.Default().Rules {
+			if strings.HasPrefix(r.SNI, "*.") && strings.TrimPrefix(r.SNI, "*.") == cal.SNI {
+				dialSNI = "www." + cal.SNI
+				break
+			}
+		}
+	}
 	if !cal.Found {
 		dialIP, dialSNI = "www.youtube.com", "www.youtube.com"
 	}
@@ -352,15 +368,223 @@ func TestLiveFakeInjector(t *testing.T) {
 	}
 	ip := ips[0].String()
 
-	okHS, err := inj.InjectAndHandshake(ip, "www.cloudflare.com", 4)
+	// TTL=1: the fake must die at the first router. (The old TTL=4 was
+	// fine while the injector's fake was malformed garbage; a well-formed
+	// fake with TTL=4 can REACH nearby anycast edges like cloudflare and
+	// poison the real stream — live-measured wave 4A.)
+	okHS, err := inj.InjectAndHandshake(ip, "www.cloudflare.com", 1)
 	if err != nil {
 		t.Fatalf("inject+handshake: %v", err)
 	}
 	if !okHS {
-		t.Fatal("handshake did not complete with fake TTL=4 (fake should die in transit)")
+		t.Fatal("handshake did not complete with fake TTL=1 (fake should die at the first hop)")
 	}
-	if n := inj.Injected(); n != 1 {
-		t.Fatalf("injected = %d, want exactly 1", n)
+	if n := inj.Injected(); n != int64(calibFakeRepeats) {
+		t.Fatalf("injected = %d, want %d (calibFakeRepeats)", n, calibFakeRepeats)
 	}
-	t.Logf("fake injected ahead of the real ClientHello; handshake completed (target %s)", ip)
+	t.Logf("%d fakes injected ahead of the real ClientHello; handshake completed (target %s)", calibFakeRepeats, ip)
+}
+
+// ---------------------------------------------------------------------------
+// Wave 4A live gates: fake-inject parity with the winws reference
+// ---------------------------------------------------------------------------
+
+// winwsReference locates the reference winws.exe (zapret distro) used to
+// prove the TTL window exists on the current channel.
+const winwsReference = `E:\zapret-discord-youtube-1.10.2\zapret-discord-youtube-1.10.2\bin\winws.exe`
+
+// runWinwsReference starts the reference winws (fake, ttl) filtered to a
+// single target IP and returns a stop function. Skips the test when the
+// distro binary is not on disk.
+func runWinwsReference(t *testing.T, ip string, ttl int, tplPath string) func() {
+	t.Helper()
+	if _, err := os.Stat(winwsReference); err != nil {
+		t.Skipf("winws reference binary unavailable (%v); cannot prove the channel window", err)
+	}
+	ipFile := filepath.Join(t.TempDir(), "ipset.txt")
+	if err := os.WriteFile(ipFile, []byte(ip+"\n"), 0644); err != nil {
+		t.Fatalf("ipset file: %v", err)
+	}
+	absTpl, err := filepath.Abs(tplPath)
+	if err != nil {
+		t.Fatalf("abs template path: %v", err)
+	}
+	args := []string{
+		"--wf-tcp=443",
+		"--filter-tcp=443",
+		"--ipset=" + ipFile,
+		"--dpi-desync=fake",
+		"--dpi-desync-repeats=6",
+		fmt.Sprintf("--dpi-desync-ttl=%d", ttl),
+		"--dpi-desync-fake-tls=" + absTpl,
+	}
+	t.Logf("reference: winws %s", strings.Join(args, " "))
+	cmd := exec.Command(winwsReference, args...)
+	cmd.Dir = filepath.Dir(winwsReference)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start winws: %v", err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	return func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}
+}
+
+// referencePunches proves the channel's fake-TTL window with the winws
+// reference: true when winws(ttl) completes a handshake, false when the
+// reference is itself blocked (channel changed), skips when the binary
+// is missing.
+func referencePunches(t *testing.T, ip string, ttl int, tplPath string) bool {
+	t.Helper()
+	stop := runWinwsReference(t, ip, ttl, tplPath)
+	defer stop()
+	err := tlsDialSNIAddr(ip, "www.youtube.com", 8*time.Second)
+	t.Logf("reference winws ttl=%d dial: %v", ttl, err)
+	return err == nil
+}
+
+// TestLiveEngineFakeParity is the wave-4A strict gate: the capture engine
+// with the fixed fake mechanics (held CH, seq verbatim, synthetic rawsend
+// address — see capture/ops.go doctrine) must complete a real crypto/tls
+// handshake to the SNI-blackholed www.youtube.com at the calibrated TTL,
+// ≥2 of 3 dials. A failure is only excused when the winws reference itself
+// cannot punch through the channel anymore (honest skip, not a soft pass).
+func TestLiveEngineFakeParity(t *testing.T) {
+	driverReady(t)
+	if !internetUp(t) {
+		t.Skip("no internet: control TCP dials failed")
+	}
+	tpl, src, err := loadFakeTemplate("", config.Default())
+	if err != nil {
+		t.Skipf("fake template unavailable: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", "www.youtube.com")
+	if err != nil || len(ips) == 0 {
+		t.Skipf("resolve www.youtube.com failed: %v", err)
+	}
+	ip := ips[0].String()
+
+	// Control: without interception the channel must be blocking this
+	// SNI, otherwise the gate proves nothing.
+	if err := tlsDialSNIAddr(ip, "www.youtube.com", 8*time.Second); err == nil {
+		t.Skipf("channel no longer blocks www.youtube.com (dial succeeded unassisted from %s)", ip)
+	}
+
+	for _, ttl := range []int{12, 13} {
+		okN, ms := engineDialCount(t, ip, tpl, ttl, 3)
+		t.Logf("engine fake ttl=%d: %d/3 handshakes OK (median %.0f ms)", ttl, okN, ms)
+		if okN >= 2 {
+			continue // strict gate met at this TTL
+		}
+		if referencePunches(t, ip, 12, src) {
+			t.Fatalf("engine fake ttl=%d: %d/3 handshakes OK but the winws reference punches through the same channel — fake mechanics regressed", ttl, okN)
+		}
+		t.Skipf("engine fake ttl=%d: %d/3 and the winws reference is blocked too — channel changed, window gone", ttl, okN)
+	}
+}
+
+// engineDialCount starts a capture.Engine (fake strategy, given TTL),
+// performs n dials and returns (successful handshakes, median duration ms).
+func engineDialCount(t *testing.T, ip string, tpl []byte, ttl, n int) (int, float64) {
+	t.Helper()
+	cfg := config.Default()
+	cfg.Rules = []config.Rule{
+		{SNI: "www.youtube.com", Action: config.ActionDesync},
+		{Action: config.ActionDirect},
+	}
+	cfg.Desync = config.DesyncParams{Strategy: "fake", TTL: ttl, Repeats: 6}
+	tbl, err := rules.Compile(cfg)
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+	eng, err := capture.New(capture.Options{Rules: tbl, Desync: cfg.Desync, FakeTemplate: tpl})
+	if err != nil {
+		t.Fatalf("capture.New: %v", err)
+	}
+	go func() { _ = eng.Run(context.Background()) }()
+	defer eng.Stop()
+	time.Sleep(1200 * time.Millisecond)
+
+	ok, ds, hs := 0, uint64(0), time.Duration(0)
+	var durations []time.Duration
+	for i := 0; i < n; i++ {
+		t0 := time.Now()
+		err := tlsDialSNIAddr(ip, "www.youtube.com", 10*time.Second)
+		durations = append(durations, time.Since(t0))
+		if err == nil {
+			ok++
+			hs += time.Since(t0)
+		}
+		t.Logf("dial %d/%d (ttl=%d): %v", i+1, n, ttl, err)
+		time.Sleep(700 * time.Millisecond)
+	}
+	ds = uint64(eng.Counters().PacketsDesync)
+	if ds == 0 {
+		t.Fatalf("engine recorded no DESYNC verdict (captured=%d pass=%d)", eng.Counters().PacketsTotal, eng.Counters().PacketsPass)
+	}
+	sortDurations(durations)
+	med := float64(durations[len(durations)/2].Microseconds()) / 1000
+	return ok, med
+}
+
+func sortDurations(d []time.Duration) {
+	for i := 1; i < len(d); i++ {
+		for j := i; j > 0 && d[j] < d[j-1]; j-- {
+			d[j], d[j-1] = d[j-1], d[j]
+		}
+	}
+}
+
+// TestLiveCalibrateTTLWindow proves the FakeInjector+CalibrateTTL pair
+// finds the channel's real fake-TTL window (wave 4A: expect t*≈12..14,
+// effective t*+margin ≤ 16). The window's existence is first proven with
+// the winws reference; if the reference is blocked the channel changed and
+// the test skips honestly.
+func TestLiveCalibrateTTLWindow(t *testing.T) {
+	driverReady(t)
+	if !internetUp(t) {
+		t.Skip("no internet: control TCP dials failed")
+	}
+	tpl, src, err := loadFakeTemplate("", config.Default())
+	if err != nil {
+		t.Skipf("fake template unavailable: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", "www.youtube.com")
+	if err != nil || len(ips) == 0 {
+		t.Skipf("resolve www.youtube.com failed: %v", err)
+	}
+	ip := ips[0].String()
+
+	// Prove the window exists with the reference BEFORE judging our
+	// calibration (task gate (c): a skip is legitimate only if winws
+	// cannot punch through either).
+	if !referencePunches(t, ip, 12, src) {
+		t.Skip("winws reference ttl=12 is blocked on this channel — TTL window gone, calibration unprovable")
+	}
+
+	inj := newFakeInjector(tpl, log.New(os.Stderr, "calib ", log.LstdFlags))
+	opt := prober.DefaultTTLOptions()
+	// Hi=14: the live channel's upper window edge (live-measured wave 4A:
+	// ok at 12..14; at 16 the fake reaches the server and can poison the
+	// browser-like handshake, so 16 is not a reliable window probe).
+	opt.Lo, opt.Hi, opt.Repeats, opt.MaxIterations = 10, 14, 2, 6
+	cal, err := prober.CalibrateTTL(ctx, inj, ip, "www.youtube.com", opt)
+	if err != nil {
+		if errors.Is(err, prober.ErrNoTTLWindow) {
+			t.Fatalf("no TTL window found while the winws reference punches through ttl=12 — injector mechanics regressed")
+		}
+		t.Fatalf("CalibrateTTL: %v (cal=%+v)", err, cal)
+	}
+	t.Logf("calibration: %+v", cal)
+	if cal.Star < 11 || cal.Star > 15 {
+		t.Fatalf("calibrated t*=%d outside the expected 12..14 window (±1 hop jitter)", cal.Star)
+	}
+	if eff := cal.Star + cal.Margin; eff < 12 || eff > 16 {
+		t.Fatalf("effective TTL %d outside 12..16", eff)
+	}
 }

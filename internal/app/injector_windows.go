@@ -120,10 +120,16 @@ func (w *winInjector) InjectAndHandshake(ip, sni string, fakeTTL uint8) (bool, e
 	return ok, nil
 }
 
+// calibFakeRepeats matches the engine profile's default Repeats and the
+// winws reference (--dpi-desync-repeats=6): the live channel (wave 4A)
+// only latches onto the fake stream when it sees the duplicate ClientHello
+// repeated — a single fake left the real CH unprotected (live-measured).
+const calibFakeRepeats = 6
+
 // pump is the pass-through receive loop: the handle intercepts matched
 // packets, so everything must be re-injected for the flow to live. The
-// fake is injected exactly once, in front of the first ClientHello
-// segment of the calibrated flow.
+// fakes (calibFakeRepeats identical copies, engine parity) are injected
+// in front of the first ClientHello segment of the calibrated flow.
 func (w *winInjector) pump(h *windivert.Handle, localPort *atomic.Uint32, ttl uint8, ctx context.Context) {
 	buf := make([]byte, injectMaxPacketBytes)
 	var a windivert.Address
@@ -140,7 +146,7 @@ func (w *winInjector) pump(h *windivert.Handle, localPort *atomic.Uint32, ttl ui
 				len(p.payload) >= 2 && p.payload[0] == 0x16 && p.payload[1] == 0x03 {
 				if err := w.sendFake(h, pkt, p, &a, ttl); err == nil {
 					injected = true
-					w.injected.Add(1)
+					w.injected.Add(int64(calibFakeRepeats))
 				} else {
 					w.log.Printf("app: injector: fake send failed: %v", err)
 				}
@@ -166,38 +172,49 @@ func (w *winInjector) stopPump(h *windivert.Handle, done chan struct{}) {
 }
 
 // sendFake crafts and sends one fake ClientHello packet, mirroring
-// capture's injectFake: original IP+TCP headers, payload replaced with
-// the template, TTL lowered, seq-1 so the fake precedes the real segment,
-// impostor-flagged and checksum-fixed.
+// capture's injectFake (wave 4A winws parity): the FIRST real ClientHello
+// segment's IP+TCP headers are cloned, payload replaced with the template,
+// TTL lowered. seq/ack/window/flags/IP ID stay verbatim — the fake occupies
+// the DPI's expected stream position (client ISN+1 / server ISN+1) so the
+// DPI latches onto it and treats the real CH as a retransmission; a shifted
+// seq (old `seq-1`) is discarded by the DPI as out-of-window. Sent with the
+// captured address verbatim — NO Impostor flag (WinDivert treats impostor
+// injections as forwarded packets and the stack decrements their TTL by
+// one, which shifts the calibration result). Checksums recomputed.
 func (w *winInjector) sendFake(h *windivert.Handle, orig []byte, p miniTCP, addr *windivert.Address, ttl uint8) error {
-	need := p.ipLen + len(w.tpl)
+	hl := p.ipLen + p.tcpLen // IP + TCP headers (incl. options)
+	need := hl + len(w.tpl)
 	if need > injectMaxPacketBytes {
 		return fmt.Errorf("fake packet %d bytes exceeds limit", need)
 	}
 	buf := make([]byte, need)
-	copy(buf, orig[:p.ipLen])
-	copy(buf[p.ipLen:], w.tpl)
+	copy(buf, orig[:hl])
+	copy(buf[hl:], w.tpl)
 	buf[8] = ttl                                       // IPv4 TTL
 	binary.BigEndian.PutUint16(buf[2:4], uint16(need)) // IPv4 total length
-	seqOff := p.ipLen + 4                              // TCP seq
-	binary.BigEndian.PutUint32(buf[seqOff:seqOff+4], p.seq-1)
-	fa, err := impostorAddr(addr)
-	if err != nil {
-		return err
-	}
+	// seq (offset ipLen+4) and ack stay the triggering segment's own —
+	// the segment IS the first CH segment, so seq = client ISN+1 and
+	// ack = server ISN+1, exactly the reference behavior.
+	// Synthetic send address, zapret rawsend style (capture/ops.go
+	// fakeSendAddr): zeroed, Outbound, IfIdx, checksum-valid flags set —
+	// the captured address's offload-pending checksum state would put an
+	// uncomputed TCP checksum on the wire.
+	fa := windivert.Address{}
+	fa.Layer = addr.Layer
+	fa.SetOutbound(true)
+	fa.SetIPChecksum(true)
+	fa.SetTCPChecksum(true)
+	fa.SetUDPChecksum(true)
+	fa.Network().IfIdx, fa.Network().SubIfIdx = addr.Network().IfIdx, addr.Network().SubIfIdx
 	if err := windivert.CalcChecksums(buf, &fa); err != nil {
 		return err
 	}
-	return h.Send(buf, &fa)
-}
-
-// impostorAddr clones addr with the Impostor flag set, marking the
-// crafted packet on injection (same wire-form trick as capture/ops.go;
-// pkg/windivert exposes no setter).
-func impostorAddr(a *windivert.Address) (windivert.Address, error) {
-	raw := a.Raw()
-	raw[10] |= 1 << 3 // Impostor: bit 3, LSB-first, of the flag byte
-	return windivert.ParseAddress(raw[:])
+	for i := 0; i < calibFakeRepeats; i++ {
+		if err := h.Send(buf, &fa); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // miniTCP is the minimal IPv4+TCP header view the injector needs
@@ -205,6 +222,7 @@ func impostorAddr(a *windivert.Address) (windivert.Address, error) {
 // tiny on purpose).
 type miniTCP struct {
 	ipLen   int
+	tcpLen  int // TCP header length incl. options (data offset)
 	srcPort uint16
 	seq     uint32
 	payload []byte
@@ -228,6 +246,7 @@ func parseMiniTCP(pkt []byte) (miniTCP, bool) {
 	}
 	return miniTCP{
 		ipLen:   ipLen,
+		tcpLen:  dataOff,
 		srcPort: binary.BigEndian.Uint16(pkt[off : off+2]),
 		seq:     binary.BigEndian.Uint32(pkt[off+4 : off+8]),
 		payload: pkt[off+dataOff:],

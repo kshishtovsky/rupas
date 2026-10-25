@@ -100,10 +100,26 @@ Trust boundaries: (1) юзерленд↔SYSTEM-сервис; (2) хост↔Т�
             │                  b) опц. split реального CH по offset
             │                  c) re-inject оригинал(ы)
             │                  flow.state=DESYNCED, t_start
-            │      TUNNEL  → пометить flow; следующий SYN пересоздаём через redirect
-            ├─ ECH (ext 0xfe0d) в CH → DESYNC запрещён → TUNNEL (lab: Schannel-ECH не пробивается)
+            │      TUNNEL  → RST клиенту + кеш dst (tunnelCache, 4-way set-assoc,
+            │                  128 записей, TTL 60 с) → cleanupFlow;
+            │                  следующий SYN того же dst ловится fast-path'ом
+            │                  и уходит в терминатор (см. ниже)
+            ├─ ECH (ext 0xfe0d/0xff0d) с payload > 1 байта → DESYNC запрещён → TUNNEL
+            │    (lab + живой замер: ТСПУ дропает ECH-CH; payload ровно 1 байт —
+            │     GREASE-пустышка, ECH НЕ считается, иначе в туннель уходит ~2/3
+            │     всего браузерного трафика)
             └─ handshake завершён (ACK после ServerHello) → flow.state=ESTABLISHED, desync-снятие счётчиков
       → иначе: re-inject без анализа
+
+Почему TUNNEL требует RST+передial: вердикт выносится по ClientHello, то есть
+уже ПОСЛЕ SYN, который ушёл в сеть и получил SYN-ACK от реального сервера.
+Терминатор (`internal/tunnel/tcpterm.go`) терминирует только соединения,
+начатые его собственным SYN-ACK: данные без SYN он игнорирует, и поток висел бы
+до таймаута без единого carrier dial (живой инцидент: ноль `carrier dial` к
+google-IP при сотнях TUNNEL-вердиктов). Поэтому движок рвёт соединение RST'ом
+от имени dst, кеширует адрес, и клиентский передиал идёт по проверенному
+fast-path'у — той же дорогой, что Telegram-CIDR.
+
 
 Инварианты горячего пути:
 - 0 аллокаций в steady-state: буферы из sync.Pool, WINDIVERT_ADDRESS реиспользуются;
@@ -205,6 +221,21 @@ wintun-адаптер + маршрут TG-CIDR → TUN (второй драйв�
         probed_at: 2025-10-25T14:03+05
         browser_validated: true
 
+**Реализовано (волна 8):** профиль персистентный —
+`%ProgramData%\rupas\profile.json` (атомарная запись tmp+rename, поле
+`schema_version`). Содержит `sni_blackhole`, `ip_blackhole`, `ttl_star`,
+`ttl_margin`, `strategy`, target-хосты, `calibrated_at`.
+
+Старт с валидным профилем (< 72 ч, `DefaultProfileMaxAge`): **OFF → ACTIVE за
+~2 с**, без PROBING. Дальше фоновая ревалидация одним пробом на сохранённом t*
+(pacing 4 с); успех — timestamp обновляется, провал — штатный
+`evDegradation → DEGRADED → PROBING` с полной перекалибровкой и перезаписью
+профиля (пайплайн при этом не глушится). Битый/устаревший/чужой schema_version
+файл → классический полный PROBING. При наличии профиля (даже протухшего)
+лестница TTL начинается с `t*+1, t*, t*-1`.
+
+Путь переопределяется через `app.Options.ProfilePath` (используется тестами).
+
 ---
 
 ## 5. Стратегии desync (контракт)
@@ -286,8 +317,13 @@ wintun-адаптер + маршрут TG-CIDR → TUN (второй драйв�
 
 - Named pipe `\\.\pipe\rupasctl`, ACL: interactive user + SYSTEM;
 - протокол: JSON-line request/response (+ streaming events для логов);
-- команды: status, on, off, probe [--force], profile show/export,
-  diag bundle, config reload;
+- команды: `status`, `on`, `off`, `start` (поднять демон в фоне), `probe`,
+  `reload`, `logs`, `debug`, `tui`;
+- TUI (`rupasctl tui`, bubbletea): вкладки Статус / Правила / Desync / Туннели.
+  Сохранение конфига из TUI: валидация движком (`config.Load` через temp-файл) →
+  `.bak` → атомарная замена → RPC `reload` → откат при отказе демона. Если демон
+  оффлайн, файл сохраняется без отката (валидация уже пройдена). Секреты
+  (uuid/password) в UI маскируются и меняются только через повторный ввод;
 - GUI (позже) использует тот же pipe — единственный интерфейс управления.
 
 ## 10. Безопасность (threat model, краткая STRIDE)

@@ -33,7 +33,11 @@ public class RupasVpnService extends VpnService {
     private static final int VPN_ADDRESS_PREFIX = 24;
     private static final String VPN_ROUTE = "0.0.0.0";
     private static final int VPN_ROUTE_PREFIX = 0;
-    private static final String VPN_DNS = "26.26.26.1";
+    // W2: локального резолвера в ядре ещё нет (SYSTEM_DESIGN §11 — W3), поэтому
+    // DNS = публичный резолвер: его UDP:53 входит в TUN и релеится direct
+    // через защищённый сокет. 26.26.26.1 (адрес TUN) здесь нельзя — запросы
+    // зациклятся, резолв умирает ("unknown host").
+    private static final String VPN_DNS = "8.8.8.8";
     private static final int VPN_MTU = 1500;
 
     // TODO(W5): зашитый список исключений заменить на GUI-экран (выбор приложений).

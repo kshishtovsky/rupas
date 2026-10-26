@@ -1,0 +1,127 @@
+<!doctype html>
+<!-- Rupas GUI — main shell. Theme "dose" (theme.css). Screens: wizard + home/logs/settings. -->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Rupas</title>
+<link rel="stylesheet" href="/theme.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ===================== ONBOARDING WIZARD (first run) ===================== -->
+  <div id="wizard" class="wizard" style="display:none">
+    <div class="wizard-steps" id="wSteps"></div>
+    <div class="wizard-body" id="wBody"><!-- filled by js --></div>
+    <div class="wizard-footer" id="wFooter"></div>
+  </div>
+
+  <!-- ===================== MAIN APP ===================== -->
+  <div id="mainApp" style="display:none; flex-direction:column; height:100vh">
+    <div class="header">
+      <div class="brand"><div class="logo">R</div><div class="title">Rupas</div></div>
+      <div class="status-chip">
+        <div class="status-dot" id="dot"></div>
+        <div class="status-text" id="dotText">Отключено</div>
+      </div>
+    </div>
+
+    <div class="main">
+      <!-- HOME -->
+      <div class="page active" id="page-home">
+        <div class="power-stage">
+          <div class="power-tray"><div class="power-ring">
+            <div class="power-disc" id="powerDisc" title="Включить/выключить">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round">
+                <path d="M12 3v8"/><path d="M6.3 6.3a8 8 0 1 0 11.4 0"/>
+              </svg>
+            </div>
+          </div></div>
+          <div class="power-caption" id="powerCaption">Отключено</div>
+          <div class="power-sub" id="powerSub"></div>
+        </div>
+        <div class="cards">
+          <div class="card"><div class="k">Туннель</div><div class="v" id="cardTunnel">—</div></div>
+          <div class="card"><div class="k">Трафик</div><div class="v" id="cardTraffic">—</div></div>
+          <div class="card wide"><div class="k">Потоки</div><div class="v" id="cardFlows">—</div></div>
+        </div>
+      </div>
+
+      <!-- LOGS -->
+      <div class="page" id="page-logs">
+        <div class="log-toolbar">
+          <button class="btn ghost small" id="btnLogsRefresh">Обновить</button>
+          <button class="btn ghost small" id="btnLogsCopy">Копировать</button>
+          <span class="chip" id="chipLogsCount">0</span>
+        </div>
+        <div class="log-box" id="logBox"><div class="log-empty">Логи появятся после запуска демона…</div></div>
+      </div>
+
+      <!-- SETTINGS -->
+      <div class="page" id="page-settings">
+        <div class="section">
+          <div class="section-title">Туннель</div>
+          <div class="field">
+            <label>vless://-ссылка</label>
+            <div style="display:flex;gap:8px">
+              <input class="input" id="setVless" placeholder="vless://uuid@host:port?pbk=…#label" spellcheck="false" style="user-select:text">
+              <button class="btn small" id="btnVlessParse">Разобрать</button>
+            </div>
+            <div class="hint">Или заполните поля вручную ниже</div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="section-title">Сервер</div>
+          <div class="field"><label>Адрес</label><input class="input" id="setHost" spellcheck="false"></div>
+          <div class="field"><label>Порт</label><input class="input" id="setPort" type="number" min="1" max="65535"></div>
+          <div class="field"><label>SNI (камуфляж-домен)</label><input class="input" id="setSni" spellcheck="false"></div>
+        </div>
+        <div class="section">
+          <div class="section-title">Ключи доступа</div>
+          <div class="field"><label>UUID</label>
+            <div class="pw-wrap"><input class="input" id="setUuid" type="password" spellcheck="false" style="padding-right:44px">
+            <button class="eye" id="eyeUuid" type="button">👁</button></div>
+          </div>
+          <div class="field"><label>Reality public key</label>
+            <div class="pw-wrap"><input class="input" id="setPbk" type="password" spellcheck="false" style="padding-right:44px">
+            <button class="eye" id="eyePbk" type="button">👁</button></div>
+          </div>
+          <div class="field"><label>Reality short ID</label><input class="input" id="setSid" spellcheck="false"></div>
+        </div>
+        <div class="section">
+          <div class="section-title">Обход блокировок (DPI)</div>
+          <div class="row">
+            <div><div class="lbl">DPI-обход (фейки)</div><div class="sub">Локальный desync без сервера</div></div>
+            <label class="switch"><input type="checkbox" id="setDpi" checked><span class="track"></span></label>
+          </div>
+        </div>
+        <div class="section" style="padding-bottom:var(--space-xxl)">
+          <div style="display:flex;gap:var(--space-s)">
+            <button class="btn" id="btnSaveSettings" style="flex:1">Сохранить</button>
+            <button class="btn ghost" id="btnResetSettings">Сброс</button>
+          </div>
+          <div class="hint" id="saveHint"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="nav">
+      <button class="nav-item active" data-page="home">
+        <svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h5v-6h4v6h5V10"/></svg>
+        Главная
+      </button>
+      <button class="nav-item" data-page="logs">
+        <svg viewBox="0 0 24 24"><path d="M4 5h16"/><path d="M4 10h16"/><path d="M4 15h10"/><path d="M4 20h7"/></svg>
+        Журнал
+      </button>
+      <button class="nav-item" data-page="settings">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h0a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h0a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v0a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
+        Настройки
+      </button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

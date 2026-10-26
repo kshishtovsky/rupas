@@ -88,9 +88,9 @@ func (c *Counters) TunnelEscalate() { c.tunnelEscalations.Add(1) }
 // fields are atomic reads; cross-field skew is acceptable for status UI).
 func (c *Counters) Snapshot() StatusSnapshot {
 	return StatusSnapshot{
-		TCPFlows:    c.tcpFlowsActive.Load(),
-		UDPSessions: c.udpSessionsActive.Load(),
-		RxBytes:     c.rxBytes.Load(),
+		TCPFlows:        c.tcpFlowsActive.Load(),
+		UDPSessions:     c.udpSessionsActive.Load(),
+		RxBytes:         c.rxBytes.Load(),
 		TxBytes:         c.txBytes.Load(),
 		TCPTotal:        c.tcpFlowsTotal.Load(),
 		UDPTotal:        c.udpSessionsTotal.Load(),

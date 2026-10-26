@@ -14,12 +14,16 @@ package tunnel
 //	            request header (ver, uuid, addon len, cmd, port, atyp, addr).
 //
 // The session UUID correlates the two directions (the server reaps
-// uncorrelated sessions after 30 s). Every request carries an X-Padding
-// header of a random length within the configured x_padding_bytes range.
+// uncorrelated sessions after 30 s). Every request pads with `x_padding=`
+// (random length within the configured x_padding_bytes range) inside the
+// Referer URL — xray v25.4.30 reads the padding length from the URL query
+// or the Referer only, and silently zeroes a bare X-Padding header.
 //
 // Transport: uTLS (client fingerprint from the config, ALPN h2) and HTTP/2
 // via x/net/http2 on the handshaked connection — the GET and the POSTs
 // multiplex over one connection, mirroring Xray's xmux behavior.
+// :authority/Host is the camouflage domain (xray's inbound host check 404s
+// a raw IP authority).
 
 import (
 	"bytes"
@@ -46,9 +50,10 @@ import (
 )
 
 const (
-	// xhttpMaxPost is the payload cap per packet-up POST (server default
-	// scMaxEachPostBytes = 1 MB).
-	xhttpMaxPost = 1 << 20
+	// xhttpMaxPost is the payload cap per packet-up POST. The panel xray
+	// inbound has scMaxEachPostBytes = 1000000; exceeding it is a 413.
+	// (Live config 2026-10-26.)
+	xhttpMaxPost = 1000 * 1000 // server default scMaxEachPostBytes = 1_000_000 bytes
 	// xhttpInflight bounds the POSTs awaiting their (discarded) responses,
 	// keeping HTTP/2 flow control and memory bounded.
 	xhttpInflight = 8
@@ -58,12 +63,13 @@ const (
 
 // xhttpPath carries TCP streams over one vless_xhttp endpoint.
 type xhttpPath struct {
-	ep       config.Endpoint
-	hostPort string
-	base     *url.URL // scheme://host:port{path}
-	padLo    int
-	padHi    int
-	logger   *slog.Logger
+	ep        config.Endpoint
+	hostPort  string
+	base      *url.URL // scheme://dialhost:port{path} (dial address only)
+	authority string   // HTTP :authority/Host pin (see authorityHost)
+	padLo     int
+	padHi     int
+	logger    *slog.Logger
 }
 
 // newXHTTPPath validates the endpoint shape and precomputes the session
@@ -82,13 +88,57 @@ func newXHTTPPath(ep config.Endpoint, logger *slog.Logger) (*xhttpPath, error) {
 		lo, hi = 100, 1000
 	}
 	return &xhttpPath{
-		ep:       ep,
-		hostPort: base.Host,
-		base:     base,
-		padLo:    lo,
-		padHi:    hi,
-		logger:   logger,
+		ep:        ep,
+		hostPort:  base.Host,
+		base:      base,
+		authority: authorityHost(ep),
+		padLo:     lo,
+		padHi:     hi,
+		logger:    logger,
 	}, nil
+}
+
+// authorityHost returns the value for the HTTP :authority (and Host) header
+// of every request. Xray's own xhttp client wires requestURL.Host to the
+// xhttp "host" setting, falling back to the TLS serverName and only then to
+// the dial address (splithttp dialer.go v25.4.30), and the inbound validates
+// it against its own host setting with 404 on mismatch. A raw IP
+// :authority is always rejected by the panel, so resolve the camouflage
+// domain here instead. Priority: HTTPHost → SNI → dial host if it is a
+// domain, else fall back to the URL authority (host:port).
+func authorityHost(ep config.Endpoint) string {
+	if domain(ep.HTTPHost) {
+		return ep.HTTPHost
+	}
+	switch {
+	case domain(ep.SNI):
+		return ep.SNI
+	case domain(ep.Host):
+		return ep.Host
+	}
+	return ""
+}
+
+func domain(s string) bool {
+	if s == "" {
+		return false
+	}
+	if _, err := netip.ParseAddr(s); err == nil {
+		return false // an IP address, not a domain
+	}
+	return true
+}
+
+// NewXHTTPDialer builds a standalone VLESS+XHTTP dialer from an endpoint
+// description. It is the platform-neutral seam used by the mobile engine
+// (internal/transport/android) to carry xhttp endpoints that sing-box
+// v1.14 cannot; the desktop tunnel uses the same client internally.
+func NewXHTTPDialer(ep config.Endpoint, logger *slog.Logger) (func(ctx context.Context, dst netip.AddrPort) (net.Conn, error), error) {
+	p, err := newXHTTPPath(ep, logger)
+	if err != nil {
+		return nil, err
+	}
+	return p.dial, nil
 }
 
 func (p *xhttpPath) dial(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
@@ -239,9 +289,8 @@ func randomSessionID() (string, error) {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
 
-// paddingValue builds the X-Padding header value: random length within
-// [padLo, padHi], alphanumeric characters (header-safe).
-func (p *xhttpPath) paddingValue() string {
+// paddingLen is the random padding length within [padLo, padHi].
+func (p *xhttpPath) paddingLen() int {
 	lo, hi := p.padLo, p.padHi
 	if hi < lo {
 		lo, hi = hi, lo
@@ -253,19 +302,22 @@ func (p *xhttpPath) paddingValue() string {
 			n = lo + int(b[0])%(hi-lo+1)
 		}
 	}
-	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	out := make([]byte, n)
-	var rb [64]byte
-	if _, err := rand.Read(rb[:]); err != nil {
-		for i := range out {
-			out[i] = 'x'
-		}
-		return string(out)
+	return n
+}
+
+// paddingReferer mirrors Xray's client (config.go GetRequestHeader,
+// v25.4.30): the padding is carried as the query of a Referer URL. The
+// 'X' filler is HPACK/huffman-neutral on h2 (8-bit static-table code), so
+// the on-wire padding length stays exact.
+func (p *xhttpPath) paddingReferer(u *url.URL) string {
+	padded := *u
+	q := padded.Query()
+	q.Set("x_padding", strings.Repeat("X", p.paddingLen()))
+	padded.RawQuery = q.Encode()
+	if p.authority != "" {
+		padded.Host = p.authority
 	}
-	for i := range out {
-		out[i] = chars[int(rb[i%len(rb)])%len(chars)]
-	}
-	return string(out)
+	return padded.String()
 }
 
 // xhttpConn is one VLESS+XHTTP session as a net.Conn: writes become
@@ -297,7 +349,18 @@ func (c *xhttpConn) start(atyp byte, addr []byte, port uint16) error {
 	if err != nil {
 		return err
 	}
-	get.Header.Set("X-Padding", c.path.paddingValue())
+	// :authority must be the camouflage domain the inbound validates against.
+	// Xray's host check compares the request authority with its xhttp "host"
+	// config (404: "failed to validate host") — the dial address (an IP here)
+	// does not pass. Bare-domain :authority is exactly what Xray's client
+	// sends (requestURL.Host = targ config's host setting, no port).
+	if c.path.authority != "" {
+		get.Host = c.path.authority
+	}
+	// Xray v25.4.30 computes the padding length ONLY from the URL query or
+	// the Referer query ("X-Padding" header lengths read as zero → 400).
+	// Mirror the native client: Referer carries `?x_padding=` of 'X's.
+	get.Header.Set("Referer", c.path.paddingReferer(c.path.base.JoinPath(c.sid)))
 	resp, err := c.cc.RoundTrip(get)
 	if err != nil {
 		return fmt.Errorf("xhttp: download stream: %w", err)
@@ -358,7 +421,12 @@ func (c *xhttpConn) post(head, chunk []byte) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("X-Padding", c.path.paddingValue())
+	// :authority — same host pin as the GET (xray's host check applies to
+	// every packet-up POST independently).
+	if c.path.authority != "" {
+		req.Host = c.path.authority
+	}
+	req.Header.Set("Referer", c.path.paddingReferer(c.path.base.JoinPath(c.sid, strconv.FormatInt(seq, 10))))
 	req.ContentLength = int64(len(body))
 	// Bound in-flight POSTs; a full semaphore means the server is not
 	// draining — surface as a write error after a bounded wait.

@@ -16,6 +16,18 @@ import (
 // them the endpoint is plain VLESS over TCP+TLS. fallback=true allows the
 // honest escalation of TUNNEL flows to DIRECT when the socks dial fails;
 // fallback=false drops them instead.
+//
+// Universal endpoint support: the optional "links" array carries standard
+// share links (vless://, hysteria2://, hy2://, trojan://) in dial order —
+// the first is the primary carrier, the rest are fallbacks. When links is
+// set it fully replaces the legacy flat fields.
+//
+// prefer_ipv4 (optional, default TRUE) — PreferIPv4 mode: IPv6 flows are
+// fast-dropped at the TUN and DNS AAAA queries are answered with an empty
+// NOERROR, forcing every app onto IPv4. The server fleet has no IPv6
+// egress today, so v6 targets through the tunnel are guaranteed death;
+// this flag turns "works only sometimes" into "works always". Send false
+// in the settings JSON to disable once the server gains working IPv6.
 type Settings struct {
 	UUID      string `json:"uuid"`
 	Server    string `json:"server"`
@@ -24,6 +36,16 @@ type Settings struct {
 	PublicKey string `json:"public_key"`
 	ShortID   string `json:"short_id"`
 	Fallback  bool   `json:"fallback"`
+	// PreferIPv4: nil (absent in JSON) means enabled.
+	PreferIPv4 *bool `json:"prefer_ipv4,omitempty"`
+	// Links: share links in dial order (optional; replaces the flat fields).
+	Links []string `json:"links,omitempty"`
+}
+
+// PreferIPv4Enabled reports the effective PreferIPv4 mode; absent field →
+// enabled.
+func (s *Settings) PreferIPv4Enabled() bool {
+	return s == nil || s.PreferIPv4 == nil || *s.PreferIPv4
 }
 
 // ParseSettings decodes and validates the SetSettings JSON. Unknown fields
@@ -44,11 +66,17 @@ func ParseSettings(data string) (*Settings, error) {
 	return &s, nil
 }
 
-// Validate checks the mandatory fields.
+// Validate checks the mandatory fields: either share links (parsed and
+// validated by Endpoints) or the legacy flat triple uuid/server/port.
 func (s *Settings) Validate() error {
 	switch {
 	case s == nil:
 		return fmt.Errorf("android: settings: nil")
+	case len(s.Links) > 0:
+		if _, err := s.Endpoints(); err != nil {
+			return err
+		}
+		return nil
 	case s.UUID == "":
 		return fmt.Errorf("android: settings: uuid is required")
 	case s.Server == "":
@@ -59,8 +87,9 @@ func (s *Settings) Validate() error {
 	return nil
 }
 
-// Kind returns the sing-box outbound kind: vless_reality when Reality keys
-// are present, vless_tcp otherwise.
+// Kind returns the sing-box outbound kind of the LEGACY flat endpoint
+// (vless_reality when Reality keys are present, vless_tcp otherwise).
+// With links the per-endpoint Kind field is authoritative instead.
 func (s *Settings) Kind() string {
 	if s.PublicKey != "" {
 		return "vless_reality"
@@ -71,4 +100,44 @@ func (s *Settings) Kind() string {
 // ServerAddr returns the server host:port.
 func (s *Settings) ServerAddr() string {
 	return fmt.Sprintf("%s:%d", s.Server, s.Port)
+}
+
+// Endpoints returns the dial chain: share links when present, otherwise
+// the single legacy flat endpoint. The first endpoint is the primary
+// carrier, the rest are fallbacks.
+func (s *Settings) Endpoints() ([]Endpoint, error) {
+	if len(s.Links) == 0 {
+		return []Endpoint{s.legacyEndpoint()}, nil
+	}
+	eps := make([]Endpoint, 0, len(s.Links))
+	for i, raw := range s.Links {
+		e, err := ParseShareLink(raw)
+		if err != nil {
+			return nil, fmt.Errorf("link %d: %w", i, err)
+		}
+		eps = append(eps, e)
+	}
+	return eps, nil
+}
+
+// legacyEndpoint converts the flat fields into one vless endpoint.
+func (s *Settings) legacyEndpoint() Endpoint {
+	e := Endpoint{
+		Kind:      KindVLESS,
+		Host:      s.Server,
+		Port:      s.Port,
+		UUID:      s.UUID,
+		SNI:       s.SNI,
+		Transport: transportTCP,
+	}
+	if s.PublicKey != "" {
+		e.Security = secReality
+		e.PBK = s.PublicKey
+		e.SID = s.ShortID
+		e.Flow = vlessFlowVision
+		e.Fingerprint = "chrome"
+	} else {
+		e.Security = secTLS
+	}
+	return e
 }

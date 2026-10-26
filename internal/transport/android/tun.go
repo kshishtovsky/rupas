@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"runtime/debug"
 	"sync"
+	"time"
 
 	"github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing/common/buf"
@@ -47,6 +49,10 @@ func (e *Engine) run(ctx context.Context, fd int) error {
 		}
 		defer e.relay.Close() //nolint:errcheck
 	}
+	// Build the TUNNEL dial chain (relay inbounds + own xhttp client).
+	// Works even when the relay start failed: carriers may be empty and
+	// TUNNEL flows escalate honestly.
+	e.buildCarriers(ctx)
 
 	stack, err := tun.NewStack("gvisor", tun.StackOptions{
 		Context:    ctx,
@@ -81,11 +87,19 @@ type flowHandler struct {
 // UDP sessions carry no ClientHello: the whole decision happens here.
 // TCP flows are accepted and finally judged in NewConnectionEx after the
 // ClientHello peek.
-func (h *flowHandler) JudgeFlow(proto uint8, source, destination netip.AddrPort, firstPacket []byte) tun.FlowVerdict {
+func (h *flowHandler) JudgeFlow(proto uint8, source, destination netip.AddrPort, firstPacket []byte) (v tun.FlowVerdict) {
+	defer h.engine.panicGuard("JudgeFlow", &v)
 	meta := FlowMeta{
 		Network:     networkName(proto),
 		Source:      source,
 		Destination: destination,
+	}
+	// PreferIPv4: native IPv6 destinations are fast-dropped — the server
+	// cannot carry v6, and an instant fail lets apps fall back to IPv4
+	// (4-in-6 mapped addresses are IPv4 and pass through).
+	if a := destination.Addr(); h.engine.preferIPv4 && a.Is6() && !a.Is4In6() {
+		h.engine.counters.Drop()
+		return tun.FlowVerdict{Action: tun.ActionDrop}
 	}
 	if h.engine.decide(meta) == ActionBlock {
 		return tun.FlowVerdict{Action: tun.ActionDrop}
@@ -96,16 +110,19 @@ func (h *flowHandler) JudgeFlow(proto uint8, source, destination netip.AddrPort,
 // NewDNSPacket is only invoked on ActionHijackDNS, which wave 2 never
 // returns: DNS:53 is relayed like any other UDP session (ТЗ W2).
 func (h *flowHandler) NewDNSPacket(payload []byte, source, destination M.Socksaddr, writer N.PacketWriter) {
+	defer h.engine.panicGuard("NewDNSPacket")
 }
 
 // NewConnectionEx relays one TCP flow: netstack endpoint ↔ egress socket,
 // bidirectional, byte-counted. The final action is decided here, after the
 // passive ClientHello peek (SNI/ECH).
 func (h *flowHandler) NewConnectionEx(ctx context.Context, conn net.Conn, source, destination M.Socksaddr, onClose N.CloseHandlerFunc) {
+	defer h.engine.panicGuard("NewConnectionEx")
 	h.relayTCP(ctx, conn, source, destination, onClose)
 }
 
 func (h *flowHandler) relayTCP(ctx context.Context, conn net.Conn, source M.Socksaddr, destination M.Socksaddr, onClose N.CloseHandlerFunc) {
+	defer h.engine.panicGuard("relayTCP")
 	e := h.engine
 	e.counters.TCPFlowOpen()
 	defer e.counters.TCPFlowClose()
@@ -147,6 +164,7 @@ func (h *flowHandler) relayTCP(ctx context.Context, conn net.Conn, source M.Sock
 // dialAndRelayTCP resolves the action via dialEgress (rules + tunnel +
 // escalation) and pumps the relay.
 func (h *flowHandler) dialAndRelayTCP(ctx context.Context, conn net.Conn, meta FlowMeta, onClose N.CloseHandlerFunc) {
+	defer h.engine.panicGuard("dialAndRelayTCP")
 	e := h.engine
 	remote, _, err := e.dialEgress(ctx, meta)
 	if err != nil {
@@ -172,6 +190,7 @@ func (h *flowHandler) dialAndRelayTCP(ctx context.Context, conn net.Conn, meta F
 // relayTCPDirect is the wave-2 path: protected dialer, no rules beyond the
 // pre-decision that routed the flow here.
 func (h *flowHandler) relayTCPDirect(ctx context.Context, conn net.Conn, destination netip.AddrPort, onClose N.CloseHandlerFunc) {
+	defer h.engine.panicGuard("relayTCPDirect")
 	e := h.engine
 	remote, err := e.dialer.DialContext(ctx, "tcp", destination.String())
 	if err != nil {
@@ -201,6 +220,7 @@ func (h *flowHandler) relayTCPDirect(ctx context.Context, conn net.Conn, destina
 // ASSOCIATE (XUDP) — with the same honest escalation policy as TCP
 // (SYSTEM_DESIGN §5: "UDP-сокеты тоже защищать").
 func (h *flowHandler) NewPacketConnectionEx(ctx context.Context, conn N.PacketConn, source, destination M.Socksaddr, onClose N.CloseHandlerFunc) {
+	defer h.engine.panicGuard("NewPacketConnectionEx")
 	go h.relayUDP(ctx, conn, source, destination, onClose)
 }
 
@@ -214,6 +234,13 @@ func (h *flowHandler) relayUDP(ctx context.Context, conn N.PacketConn, source M.
 	defer closeOnce()
 
 	dst := destination.AddrPort()
+	// PreferIPv4: hijack plain-UDP DNS (any resolver, v4 or v6): AAAA gets
+	// an empty NOERROR (apps fall back to A), everything else relays to the
+	// original resolver through the protected dialer.
+	if e.preferIPv4 && dst.Port() == 53 {
+		h.serveDNS53(ctx, conn, destination, closeOnce)
+		return
+	}
 	if e.decide(FlowMeta{Network: "udp", Source: source.AddrPort(), Destination: dst}) == ActionTunnel {
 		if h.relayUDPTunnel(ctx, conn, dst, closeOnce) {
 			if onClose != nil {
@@ -282,6 +309,7 @@ func (h *flowHandler) relayUDP(ctx context.Context, conn N.PacketConn, source M.
 // returns false when the tunnel path is not possible (escalation to direct
 // is up to the caller); on true the session was served and closed.
 func (h *flowHandler) relayUDPTunnel(ctx context.Context, conn N.PacketConn, dst netip.AddrPort, closeOnce func()) bool {
+	defer h.engine.panicGuard("relayUDPTunnel")
 	e := h.engine
 	e.counters.TunnelDial()
 	if !e.relay.Available() {
@@ -353,6 +381,88 @@ func (h *flowHandler) relayUDPTunnel(ctx context.Context, conn N.PacketConn, dst
 	}
 }
 
+// serveDNS53 is the PreferIPv4 DNS session body: per-datagram AAAA
+// filtering (empty NOERROR → apps fall back to A records) with transparent
+// upstream relay for everything else. The upstream socket is the protected
+// dialer (direct, VPN bypass) and the original resolver address is kept.
+func (h *flowHandler) serveDNS53(ctx context.Context, conn N.PacketConn, dst M.Socksaddr, closeOnce func()) {
+	defer h.engine.panicGuard("serveDNS53")
+	e := h.engine
+	defer closeOnce()
+	var upstream net.Conn // lazily connected relay socket for passthrough
+	defer func() {
+		if upstream != nil {
+			upstream.Close() //nolint:errcheck
+		}
+	}()
+	writeBack := func(payload []byte) bool {
+		pkt := buf.NewPacket()
+		pkt.Write(payload) //nolint:errcheck
+		wErr := conn.WritePacket(pkt, M.SocksaddrFrom(dst.Addr, dst.Port))
+		pkt.Release()
+		return wErr == nil
+	}
+	for {
+		b := buf.NewPacket()
+		_, rErr := conn.ReadPacket(b)
+		if rErr != nil {
+			b.Release()
+			return
+		}
+		payload := make([]byte, len(b.Bytes()))
+		copy(payload, b.Bytes())
+		b.Release()
+
+		if resp := dns4Response(payload); resp != nil {
+			e.counters.AddRx(int64(len(payload)))
+			if !writeBack(resp) {
+				return
+			}
+			continue
+		}
+
+		// Passthrough: relay the datagram to the original resolver.
+		if upstream == nil {
+			var dErr error
+			upstream, dErr = e.dialer.DialContext(ctx, "udp", dst.String())
+			if dErr != nil {
+				e.counters.Drop()
+				e.logf("dns %s: relay dial refused: %v", dst, dErr)
+				return
+			}
+		}
+		if _, wErr := upstream.Write(payload); wErr != nil {
+			e.counters.Drop()
+			return
+		}
+		e.counters.AddRx(int64(len(payload)))
+		upstream.SetReadDeadline(time.Now().Add(3 * time.Second)) //nolint:errcheck
+		reply := make([]byte, 4096)
+		n, rErr := upstream.Read(reply)
+		if rErr != nil || n == 0 {
+			continue // dropped query: the stub retries
+		}
+		if !writeBack(reply[:n]) {
+			return
+		}
+	}
+}
+
+// panicGuard converts a transport-internal panic into a logged, absorbed
+// error: the gvisor/sing-box callback goroutines have no recover seam, and
+// an unrecovered panic there aborts the whole app (SIGABRT via the Go
+// runtime). The stack is dumped through the log seam for diagnosis.
+func (e *Engine) panicGuard(where string, ret ...any) {
+	if r := recover(); r != nil {
+		e.logf("PANIC in %s: %v\n%s", where, r, debug.Stack())
+		for _, slot := range ret {
+			if p, ok := slot.(*tun.FlowVerdict); ok && p != nil {
+				*p = tun.FlowVerdict{Action: tun.ActionDrop}
+			}
+		}
+	}
+}
+
 // networkName maps an IANA protocol number onto the FlowMeta network tag.
 func networkName(proto uint8) string {
 	switch proto {
@@ -366,13 +476,16 @@ func networkName(proto uint8) string {
 }
 
 // engineLogger forwards sing/sing-tun log lines into the platform log
-// callback (Java side renders them in the log screen).
+// callback (Java side renders them in the log screen). Trace/Debug are
+// dropped on purpose: they fire on per-packet error paths and every line
+// crosses the Go→Java JNI bridge, which is pure battery cost. Warn and
+// above are rare and are what actually needs diagnosing.
 type engineLogger struct {
 	engine *Engine
 }
 
-func (l engineLogger) Trace(args ...any) { l.engine.logln(args...) }
-func (l engineLogger) Debug(args ...any) { l.engine.logln(args...) }
+func (l engineLogger) Trace(args ...any) {}
+func (l engineLogger) Debug(args ...any) {}
 func (l engineLogger) Info(args ...any)  { l.engine.logln(args...) }
 func (l engineLogger) Warn(args ...any)  { l.engine.logln(args...) }
 func (l engineLogger) Error(args ...any) { l.engine.logln(args...) }

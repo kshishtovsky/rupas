@@ -6,16 +6,24 @@
 ## Сборка и проверка
 
 ```bash
-go build -tags "with_utls with_quic" -trimpath -ldflags "-s -w" ./cmd/rupasd ./cmd/rupasctl
+go build -tags "with_utls with_quic with_gvisor" -trimpath -ldflags "-s -w" ./cmd/rupasd ./cmd/rupasctl
 go build ./...                  # быстрая проверка компиляции (без тегов достаточно)
 go test ./internal/... ./cmd/... -count=1
 go vet ./...
 ```
 
-**Теги `with_utls with_quic` обязательны для рабочего бинарника.** Без них
-сборка проходит, но sing-box падает в рантайме (`uTLS is not included in this
-build`), туннель не стартует, и все TUNNEL-правила эскалируются в direct —
-Telegram-CIDR уходит в чёрную дыру. Симптом выглядит как баг кода, а не сборки.
+**Теги `with_utls with_quic with_gvisor` обязательны для рабочего бинарника и
+для gomobile-сборки Android-ядра (`E:\rupas-android`).** Без них сборка
+проходит, но sing-box/sing-tun падают в рантайме, туннель не стартует, и все
+TUNNEL-правила эскалируются в direct — Telegram-CIDR уходит в чёрную дыру.
+Симптом выглядит как баг кода, а не сборки:
+
+- без `with_utls` — `uTLS is not included in this build`: VLESS/trojan outbound
+  не может стартовать;
+- без `with_quic` — hysteria2 outbound недоступен;
+- без `with_gvisor` — `tun.NewStack("gvisor")` отказывает (`gvisor is not
+  included in this build`): Android-транспорт не поднимает TUN, трафик в
+  ядро не попадает вовсе.
 
 `go test -race` требует cgo/gcc; на хосте без gcc используйте обычный прогон.
 
@@ -82,4 +90,4 @@ build\rupasctl.exe on
 - Если пробы классификатора классифицируют всё как заблокированное, проверьте
   строку `prober: probes bound to Ethernet (…)`: при запущенном VPN-клиенте с TUN
   пробы без биндинга уходят в туннель и врут.
-- Живые замеры: `go test -tags "live with_utls" -run TestLive... -v`.
+- Живые замеры: `go test -tags "live with_utls with_quic with_gvisor" -run TestLive... -v`.

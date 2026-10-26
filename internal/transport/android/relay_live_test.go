@@ -67,7 +67,7 @@ func TestRelayLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DialTCP: %v", err)
 	}
-	defer conn.Close() //nolint:errcheck
+	defer conn.Close()                                 //nolint:errcheck
 	conn.SetDeadline(time.Now().Add(15 * time.Second)) //nolint:errcheck
 	if _, err := conn.Write([]byte("GET / HTTP/1.1\r\nHost: 1.1.1.1\r\nConnection: close\r\n\r\n")); err != nil {
 		t.Fatalf("write: %v", err)

@@ -71,10 +71,10 @@ func TestRulesSNI(t *testing.T) {
 	r := CompileRules()
 	direct := []string{
 		"example.ru", "a.b.example.ru", "example.su",
-		"example.xn--p1ai",             // .рф
-		"москва.xn--80adxhks",          // .москва (punycode on the wire)
-		"shop.xn--80asehdb",            // .онлайн
-		"vk.com", "foo.vk.com",         // RU services on .com
+		"example.xn--p1ai",     // .рф
+		"москва.xn--80adxhks",  // .москва (punycode on the wire)
+		"shop.xn--80asehdb",    // .онлайн
+		"vk.com", "foo.vk.com", // RU services on .com
 		"ok.ru", "m.ok.ru",
 		"userapi.com", "cs1.userapi.com",
 	}

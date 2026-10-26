@@ -116,13 +116,17 @@ type statusJSON struct {
 	Dropped     uint64 `json:"dropped"`
 	// TunnelDials/TunnelEscalated: W3 tunnel accounting; TunnelEscalated
 	// counts honestly-marked tunnel→direct degradations.
-	TunnelDials     uint64 `json:"tunnel_dials"`
-	TunnelEscalated uint64 `json:"tunnel_escalated"`
+	TunnelDials     uint64                `json:"tunnel_dials"`
+	TunnelEscalated uint64                `json:"tunnel_escalated"`
+	// Carriers: the live dial chain (name + active/cooldown/ready per
+	// carrier) so the app can show which config is actually in use.
+	Carriers []android.CarrierState `json:"carriers,omitempty"`
 }
 
 // Status returns a JSON status string (running, tcp_flows, udp_sessions,
 // rx_bytes, tx_bytes, tcp_total, udp_total, dropped, tunnel_dials,
-// tunnel_escalated).
+// tunnel_escalated, carriers — the live dial chain with per-carrier
+// active/cooldown/ready state).
 func Status() string {
 	mu.Lock()
 	eng := engine
@@ -141,6 +145,7 @@ func Status() string {
 		st.Dropped = snap.Dropped
 		st.TunnelDials = snap.TunnelDials
 		st.TunnelEscalated = snap.TunnelEscalated
+		st.Carriers = eng.CarrierStates()
 	}
 	b, err := json.Marshal(st)
 	if err != nil {

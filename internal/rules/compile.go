@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/rupas/rupas/internal/config"
+	"github.com/rupas/rupas/internal/geoip"
 )
 
 // Compile builds an immutable decision Table from a validated config.
@@ -46,6 +47,24 @@ func Compile(cfg *config.Config) (*Table, error) {
 			if err := t.insertCIDR(r.CIDR, r.Action, proto); err != nil {
 				return nil, fmt.Errorf("rules: rule %d: bad cidr %q: %v", i, r.CIDR, err)
 			}
+		case r.GeoIP != "":
+			prefixes, err := geoip.List(geoip.Params{
+				Dir:         geoipDir(cfg),
+				RefreshDays: geoIPRefresh(cfg),
+				Mirrors:     geoIPMirrors(cfg),
+			}, r.GeoIP)
+			if err != nil {
+				return nil, fmt.Errorf("rules: rule %d: geoip %s: %w", i, r.GeoIP, err)
+			}
+			for _, pfx := range prefixes {
+				// Longest-prefix match makes bulk insertion order-safe;
+				// first-wins keeps any earlier rule (exclusions, Telegram
+				// CIDRs) on a shared prefix.
+				if err := t.insertCIDR(pfx.String(), r.Action, proto); err != nil {
+					return nil, fmt.Errorf("rules: rule %d: geoip %s: bad %q: %v",
+						i, r.GeoIP, pfx, err)
+				}
+			}
 		case r.SNI != "":
 			t.addSNI(r.SNI, r.Action, proto)
 		case r.Ports != "":
@@ -81,6 +100,29 @@ func Compile(cfg *config.Config) (*Table, error) {
 	}
 	t.ports, t.portsTCP, t.portsUDP = spansAny, spansTCP, spansUDP
 	return t, nil
+}
+
+// geoipDir/geoIPRefresh/geoIPMirrors read the optional `geoip:` section,
+// falling back to the package defaults when it is absent or partial.
+func geoipDir(cfg *config.Config) string {
+	if cfg.GeoIP != nil {
+		return cfg.GeoIP.Dir
+	}
+	return ""
+}
+
+func geoIPRefresh(cfg *config.Config) int {
+	if cfg.GeoIP != nil {
+		return cfg.GeoIP.RefreshDays
+	}
+	return 0
+}
+
+func geoIPMirrors(cfg *config.Config) []string {
+	if cfg.GeoIP != nil {
+		return cfg.GeoIP.Mirrors
+	}
+	return nil
 }
 
 // sortAndCheck sorts spans by lo and rejects overlaps (the resolution

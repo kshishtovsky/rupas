@@ -759,9 +759,17 @@ func (e *Engine) inspectClientHello(pkt []byte, addr *windivert.Address, p *pktI
 	f.ECH = res.ECH
 
 	action := e.rules.MatchProto(v4mapped(p.dst4), unsafeString(res.SNI), p.dstPort, config.ProtoTCP)
-	if res.ECH {
+	if res.ECH && action != config.ActionDirect {
 		// Encrypted Client Hello: desync is pointless (lab: Schannel-ECH
 		// не пробивается) — route to the tunnel instead.
+		//
+		// But an explicit DIRECT rule wins: TSPU only drops ECH CHs for
+		// blocked resources. RU hosts (yandex.net CDN, strm speedtest)
+		// send real ECH from DNS HTTPS records and pass it through fine —
+		// forcing them into the tunnel moves the exit region and caps
+		// throughput (live finding 2026-10-26, internetometer). A browser
+		// retries without ECH if a direct ECH CH ever gets dropped, so the
+		// fallback cost is one RTT, not a hang.
 		action = config.ActionTunnel
 	}
 
@@ -780,7 +788,9 @@ func (e *Engine) inspectClientHello(pkt []byte, addr *windivert.Address, p *pktI
 		// block). The packet AND any held CH segments die here — never
 		// re-injected, so a TCP block cannot leak through the hold path.
 		e.chLog(p, res.SNI, res.ECH, action.String())
-		e.putHold(held)
+		if held != nil {
+			e.putHold(held) // recycle; nil when the CH completed in-segment
+		}
 		e.cnt.countVerdict(core.VerdictDrop)
 	default: // ActionTunnel (and any invalid value): §3.2 reset-and-redial.
 		// Live finding 2026-10-25: relaying the CH into the tunnel branch

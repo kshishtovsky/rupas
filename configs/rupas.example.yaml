@@ -37,6 +37,13 @@ rules:
     action: tunnel
   - cidr: 95.161.76.100/32
     action: tunnel
+  # Country CIDR table (`geoip: <cc>`): auto-downloaded at startup into
+  # geoip.dir, refreshed every geoip.refresh_days; no manual asset work.
+  # Routes every RU-hosted destination (incl. CDNs on .net/.com domains)
+  # without hand-listing domains. Keep AFTER narrower CIDR rules — on a
+  # shared prefix the first rule wins.
+  - geoip: ru
+    action: direct
   - ports: 50000-65535        # Discord voice UDP is dead → tunnel (XUDP)
     action: tunnel
   # QUIC: TSPU blackholes googlevideo with 420s residual censorship — force browsers to TCP (PRD §5)
@@ -44,6 +51,14 @@ rules:
     proto: udp
     action: block
   - action: direct            # default rule (at most one)
+
+# Country-table download/cache settings (optional — these are the defaults).
+# geoip:
+#   dir: build                # cache directory for geoip-<cc>.txt
+#   refresh_days: 30          # re-download when the cached list is older
+#   mirrors:                  # tried in order; {cc} = country code
+#     - https://www.ipdeny.com/ipblocks/data/countries/{cc}.zone
+#     - https://raw.githubusercontent.com/ipverse/{cc}/ip/aggregated.zone
 
 desync:
   strategy: fake

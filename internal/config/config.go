@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/rupas/rupas/internal/geoip"
 )
 
 // vlessFlowVision is the standard VLESS+Reality flow.
@@ -362,6 +364,7 @@ type Rule struct {
 	CIDR   string `yaml:"cidr,omitempty"`
 	SNI    string `yaml:"sni,omitempty"`   // exact name or "*.suffix" wildcard
 	Ports  string `yaml:"ports,omitempty"` // "443", "50000-65535", "53,123"
+	GeoIP  string `yaml:"geoip,omitempty"` // country code, e.g. "ru" — expands to the country's CIDR table
 	Proto  string `yaml:"proto,omitempty"` // "", "tcp" or "udp"
 	Action Action `yaml:"action"`
 }
@@ -385,6 +388,18 @@ func ProtoOK(s string) bool {
 	return false
 }
 
+// GeoIP controls the automatic download/caching of country CIDR tables
+// used by `geoip: <cc>` rules. Absent section + a geoip rule = defaults
+// (cache in "build", refresh monthly, stock mirror chain).
+type GeoIP struct {
+	// Dir is the cache directory for geoip-<cc>.txt files.
+	Dir string `yaml:"dir,omitempty"`
+	// RefreshDays is the max cached-list age before a re-download.
+	RefreshDays int `yaml:"refresh_days,omitempty"`
+	// Mirrors are URL templates ("{cc}" = country code); tried in order.
+	Mirrors []string `yaml:"mirrors,omitempty"`
+}
+
 // Config is the root configuration object.
 type Config struct {
 	Profile    string         `yaml:"profile"`
@@ -393,6 +408,7 @@ type Config struct {
 	Tunnel     TunnelEndpoint `yaml:"tunnel"`  // legacy single endpoint (≤ wave 4)
 	Tunnels    *TunnelConfig  `yaml:"tunnels"` // wave-5 multi-transport plan
 	Exclusions Exclusions     `yaml:"exclusions"`
+	GeoIP      *GeoIP         `yaml:"geoip,omitempty"`
 }
 
 var desyncStrategies = []string{"fake", "fake_split", "multisplit", "disorder", "disorder2"}
@@ -442,13 +458,13 @@ func (c *Config) Validate() error {
 				i, r.Proto, ProtoAny, ProtoTCP, ProtoUDP)
 		}
 		matchers := 0
-		for _, s := range []string{r.CIDR, r.SNI, r.Ports} {
+		for _, s := range []string{r.CIDR, r.SNI, r.Ports, r.GeoIP} {
 			if s != "" {
 				matchers++
 			}
 		}
 		if matchers > 1 {
-			return fmt.Errorf("config: rule %d: at most one of cidr/sni/ports is allowed", i)
+			return fmt.Errorf("config: rule %d: at most one of cidr/sni/ports/geoip is allowed", i)
 		}
 		if r.Action == ActionInvalid {
 			return fmt.Errorf("config: rule %d: missing action", i)
@@ -466,6 +482,11 @@ func (c *Config) Validate() error {
 		case r.Ports != "":
 			if _, err := ParsePortSpec(r.Ports); err != nil {
 				return fmt.Errorf("config: rule %d: %v", i, err)
+			}
+		case r.GeoIP != "":
+			r.GeoIP = strings.ToLower(strings.TrimSpace(r.GeoIP))
+			if !geoip.ValidCountryCode(r.GeoIP) {
+				return fmt.Errorf("config: rule %d: geoip %q: want a two-letter country code", i, r.GeoIP)
 			}
 		default:
 			if r.Proto != "" {

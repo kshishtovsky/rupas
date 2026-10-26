@@ -222,7 +222,7 @@ function showWizardStep(step) {
   switch (step) {
     case WELCOME:
       body.innerHTML = `
-        <div class="logo" style="width:72px;height:72px;font-size:34px;margin-bottom:24px;border-radius:999px;background:var(--accent);color:var(--accent-ink);display:flex;align-items:center;justify-content:center">R</div>
+        <img src="/logo.png" alt="Rupas" style="width:88px;height:88px;border-radius:999px;object-fit:cover;margin-bottom:24px">
         <h2>Добро пожаловать в Rupas</h2>
         <p>Одна кнопка: трафик Telegram, YouTube и Discord работает без настроек.
         Rupas сам решает, что ускорить локально, а что увести в туннель.</p>`;

@@ -273,5 +273,11 @@ public class RupasVpnService extends VpnService {
             Log.d(TAG, line);
             LogBuffer.add(line);
         }
+
+        @Override
+        public String filesDir() {
+            // Go-сторона создаёт здесь protect unix-socket файл релея.
+            return getFilesDir().getAbsolutePath();
+        }
     }
 }

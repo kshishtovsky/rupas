@@ -52,6 +52,7 @@ public class RupasVpnService extends VpnService {
     private static final Set<String> EXTRA_DISALLOWED_PACKAGES = Collections.emptySet();
 
     private static volatile boolean running = false;
+    private static volatile RupasVpnService instance = null;
 
     private ParcelFileDescriptor tun;
     private PlatformImpl platform;
@@ -66,6 +67,32 @@ public class RupasVpnService extends VpnService {
 
     /** Действие: переподнять ядро с новыми настройками (см. onStartCommand). */
     public static final String ACTION_RESTART = "ru.rupas.android.RESTART";
+    /** Действие: отключить VPN по нажатию кнопки в шторке уведомлений. */
+    public static final String ACTION_DISCONNECT = "ru.rupas.android.DISCONNECT";
+
+    /** Запустить VPN-сервис. */
+    public static void start(Context ctx) {
+        Intent i = new Intent(ctx, RupasVpnService.class);
+        if (Build.VERSION.SDK_INT >= 26) {
+            ctx.startForegroundService(i);
+        } else {
+            ctx.startService(i);
+        }
+    }
+
+    /** Остановить VPN-сервис. */
+    public static void stop(Context ctx) {
+        if (instance != null) {
+            instance.stopForegroundAndSelf();
+            return;
+        }
+        Intent i = new Intent(ctx, RupasVpnService.class).setAction(ACTION_DISCONNECT);
+        if (Build.VERSION.SDK_INT >= 26) {
+            ctx.startForegroundService(i);
+        } else {
+            ctx.startService(i);
+        }
+    }
 
     /** Перезапустить VPN с текущими настройками, если он поднят. false — не поднят. */
     public static boolean restartIfRunning(Context ctx) {
@@ -84,11 +111,22 @@ public class RupasVpnService extends VpnService {
     @Override
     public void onCreate() {
         super.onCreate();
-        createNotificationChannel();
+        instance = this;
+        createNotificationChannel(this);
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && ACTION_DISCONNECT.equals(intent.getAction())) {
+            LogBuffer.add("[vpn] отключение по кнопке из шторки");
+            stopForegroundAndSelf();
+            return START_NOT_STICKY;
+        }
+
+        // Не пересоздаём TUN при повторном startService без явного RESTART.
+        if (coreStartedByInstance && (intent == null || !ACTION_RESTART.equals(intent.getAction()))) {
+            return START_STICKY;
+        }
         startForegroundWithStatus();
         // RESTART (пришёл из сохранения настроек): настроек на лету движок не
         // перечитывает (SetSettings при работающем движке = ошибка), поэтому
@@ -103,7 +141,12 @@ public class RupasVpnService extends VpnService {
             return START_NOT_STICKY;
         }
         running = true;
-        updateNotificationText(statusLine());
+        // Статистика отображается на открытом экране; фоновое уведомление
+        // статично, чтобы не будить процесс и SystemUI каждые 1,5 секунды.
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        if (nm != null) {
+            nm.notify(NOTIFICATION_ID, buildNotification("Rupas: защищено", "Защита активна", "VPN подключён"));
+        }
         return START_STICKY;
     }
 
@@ -117,6 +160,9 @@ public class RupasVpnService extends VpnService {
     public void onDestroy() {
         stopCore();
         running = false;
+        if (instance == this) {
+            instance = null;
+        }
         super.onDestroy();
     }
 
@@ -165,15 +211,23 @@ public class RupasVpnService extends VpnService {
             Log.e(TAG, "setSettings failed", e);
             LogBuffer.add("[vpn] setSettings failed: " + e.getMessage() + " — tunnel off");
         }
+        // W3: открепляем fd от ParcelFileDescriptor, передавая владение Go sing-tun (иначе
+        // Android libc fdsan валит процесс SIGABRT при закрытии fd со стороны Go).
+        int fd = tun.detachFd();
         try {
             // gobind: Go error → Java exception, метод возвращает void
-            Core.start(tun.getFd(), platform);
+            Core.start(fd, platform);
         } catch (Exception e) {
             Log.e(TAG, "core.Core.start failed", e);
             LogBuffer.add("[vpn] core start failed: " + e.getMessage());
+            try {
+                ParcelFileDescriptor.adoptFd(fd).close();
+            } catch (Exception ignored) {
+            }
+            tun = null;
             return false;
         }
-        LogBuffer.add("[vpn] TUN fd=" + tun.getFd() + ", core started");
+        LogBuffer.add("[vpn] TUN fd=" + fd + ", core started");
         coreStartedByInstance = true;
         return true;
     }
@@ -202,16 +256,18 @@ public class RupasVpnService extends VpnService {
     private void stopForegroundAndSelf() {
         stopCore();
         running = false;
-        if (Build.VERSION.SDK_INT >= 33) {
+        if (Build.VERSION.SDK_INT >= 24) {
             stopForeground(STOP_FOREGROUND_REMOVE);
         } else {
             stopForeground(true);
         }
+        Context appCtx = getApplicationContext();
+        showOfflineNotification(appCtx);
         stopSelf();
     }
 
-    private void createNotificationChannel() {
-        NotificationManager nm = getSystemService(NotificationManager.class);
+    public static void createNotificationChannel(Context ctx) {
+        NotificationManager nm = ctx.getSystemService(NotificationManager.class);
         if (nm == null) {
             return;
         }
@@ -221,8 +277,54 @@ public class RupasVpnService extends VpnService {
         nm.createNotificationChannel(ch);
     }
 
+    public static void showOfflineNotification(Context context) {
+        NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm == null) return;
+        createNotificationChannel(context);
+
+        Intent open = new Intent(context, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent piOpen = PendingIntent.getActivity(
+                context, 0, open,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        PendingIntent piConnect;
+        Intent prepare = VpnService.prepare(context);
+        if (prepare != null) {
+            Intent actConnect = new Intent(context, MainActivity.class)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    .putExtra("connect", true);
+            piConnect = PendingIntent.getActivity(
+                    context, 2, actConnect,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        } else {
+            Intent srvConnect = new Intent(context, RupasVpnService.class);
+            if (Build.VERSION.SDK_INT >= 26) {
+                piConnect = PendingIntent.getForegroundService(
+                        context, 2, srvConnect,
+                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            } else {
+                piConnect = PendingIntent.getService(
+                        context, 2, srvConnect,
+                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            }
+        }
+
+        NotificationCompat.Builder b = new NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_stat_vpn)
+                .setContentTitle("Туннель выключен")
+                .setContentText("Трафик идёт напрямую")
+                .setSubText("Rupas")
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setContentIntent(piOpen)
+                .addAction(R.drawable.ic_power, "Включить", piConnect);
+
+        nm.notify(NOTIFICATION_ID, b.build());
+    }
+
     private void startForegroundWithStatus() {
-        Notification n = buildNotification(statusLine());
+        Notification n = buildNotification("Туннель включён", "Защита активна", "Запускаем…");
         if (Build.VERSION.SDK_INT >= 34) {
             startForeground(NOTIFICATION_ID, n,
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
@@ -231,33 +333,35 @@ public class RupasVpnService extends VpnService {
         }
     }
 
-    private void updateNotificationText(String text) {
-        NotificationManager nm = getSystemService(NotificationManager.class);
-        if (nm != null) {
-            nm.notify(NOTIFICATION_ID, buildNotification(text));
-        }
-    }
-
-    private Notification buildNotification(String text) {
+    private Notification buildNotification(String title, String content, String subText) {
         Intent open = new Intent(this, MainActivity.class);
-        PendingIntent pi = PendingIntent.getActivity(
+        PendingIntent piOpen = PendingIntent.getActivity(
                 this, 0, open,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        return new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setSmallIcon(R.drawable.ic_stat_vpn)
-                .setContentTitle("Rupas VPN")
-                .setContentText(text)
-                .setOngoing(true)
-                .setContentIntent(pi)
-                .build();
-    }
 
-    private String statusLine() {
-        try {
-            return Core.status();
-        } catch (Throwable t) {
-            return "core: unavailable";
+        Intent disconnect = new Intent(this, RupasVpnService.class).setAction(ACTION_DISCONNECT);
+        PendingIntent piDisconnect;
+        if (Build.VERSION.SDK_INT >= 26) {
+            piDisconnect = PendingIntent.getForegroundService(
+                    this, 1, disconnect,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        } else {
+            piDisconnect = PendingIntent.getService(
+                    this, 1, disconnect,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         }
+
+        NotificationCompat.Builder b = new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_stat_vpn)
+                .setContentTitle(title)
+                .setContentText(content)
+                .setSubText(subText)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setContentIntent(piOpen)
+                .addAction(R.drawable.ic_power, "Отключить", piDisconnect);
+
+        return b.build();
     }
 
     /** Реализация core.Platform: protect() → VpnService.protect(), log() → кольцевой буфер.
@@ -270,7 +374,6 @@ public class RupasVpnService extends VpnService {
 
         @Override
         public void log(String line) {
-            Log.d(TAG, line);
             LogBuffer.add(line);
         }
 

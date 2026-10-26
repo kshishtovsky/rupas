@@ -20,7 +20,7 @@
 ## Проверено
 - `gomobile bind -target=android -androidapi 26` собирает AAR (скелет `core/`,
   артефакт `core/rupas-core-test.aar`: classes.jar + libgojni.so × 4 ABI).
-- Ядро `E:\rupas` собирается под `GOOS=android GOARCH=arm64 -tags "with_utls with_quic"`
+- Ядро `E:\rupas` собирается под `GOOS=android GOARCH=arm64 -tags "with_utls with_quic with_gvisor"`
   без правок: internal/{inspector,rules,tunnel,prober,supervisor,desync,config,flowtable,core}.
   Не собирается (ожидаемо, W2): `cmd/rupasctl`, `cmd/testmutex`, `internal/app` (pipeline_other — заглушка).
 
@@ -31,10 +31,17 @@ export ANDROID_HOME='C:/android-sdk' ANDROID_NDK_HOME='C:/android-sdk/ndk/27.2.1
        JAVA_HOME='C:/android-sdk/jdk-17.0.20.1+1'
 export PATH="$PATH:$(go env GOPATH)/bin"
 
-# сборка AAR ядра
-cd /e/rupas-android/core && gomobile bind -target=android -androidapi 26 -o rupas-core.aar .
+# сборка AAR ядра (реальная обвязка — пакет ./mobile в модуле E:\rupas)
+cd /e/rupas && gomobile bind -target=android -androidapi 26 \
+    -tags "with_utls with_quic with_gvisor" -o out/rupas-core.aar ./mobile
+cp /e/rupas/out/rupas-core.aar /e/rupas-android/app/libs/rupas-core.aar
 ```
 
 ## Примечание
-Теги `with_utls with_quic` обязательны и в gomobile-сборке (тот же грабеж, что на
-десктопе: без них sing-box падает в рантайме «uTLS is not included»).
+Теги `with_utls with_quic with_gvisor` ОБЯЗАТЕЛЬНЫ и в gomobile-сборке (см.
+AGENTS.md десктопного репозитория — требование то же для обоих):
+- без `with_utls` — sing-box падает в рантайме «uTLS is not included»;
+- без `with_quic` — hysteria2-носитель недоступен;
+- без `with_gvisor` — sing-tun отказывает («gvisor is not included»):
+  `tun.NewStack("gvisor")` в internal/transport/android/tun.go не создаётся,
+  VPN поднимается, но трафик в Go-ядро не попадает вовсе.

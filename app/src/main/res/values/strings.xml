@@ -1,36 +1,85 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Rupas</string>
-    <string name="turn_on">ON</string>
-    <string name="turn_off">OFF</string>
-    <string name="status_initial">статус: …</string>
-    <string name="status_format">туннель: %1$s\nядро: %2$s</string>
-    <string name="log_title">Лог</string>
+    <string name="app_subtitle">Тихий обход блокировок</string>
+
+    <!-- Navigation -->
+    <string name="nav_home">Главная</string>
+    <string name="nav_settings">Настройки</string>
+    <string name="nav_logs">Журнал</string>
+
+    <!-- Connection states -->
+    <string name="status_disconnected">Не подключено</string>
+    <string name="status_connecting">Подключаемся</string>
+    <string name="status_connected">Защищено</string>
+    <string name="status_error">Нет сети</string>
+    <string name="btn_connect">Включить</string>
+    <string name="btn_disconnect">Выключить</string>
     <string name="vpn_permission_denied">Разрешение VPN не выдано</string>
 
-    <!-- W3: настройки эндпоинта -->
-    <string name="btn_settings">Настройки</string>
-    <string name="settings_title">Настройки эндпоинта</string>
-    <string name="hint_uuid">UUID</string>
-    <string name="hint_server">Сервер (host)</string>
+    <!-- Home -->
+    <string name="home_session">Сессия %1$s</string>
+    <string name="home_session_zero">Сессия 00:00:00</string>
+    <string name="home_telemetry">Телеметрия</string>
+    <string name="home_down">Загрузка</string>
+    <string name="home_up">Отдача</string>
+    <string name="home_speed_zero">0,0 КБ/с</string>
+    <string name="home_traffic">Принято %1$s, отдано %2$s</string>
+    <string name="home_gateway_none">Шлюз: напрямую</string>
+    <string name="home_gateway">Шлюз: %1$s:%2$d, %3$s</string>
+    <string name="home_health_ok">Потерь нет</string>
+    <string name="home_health_faults">Сбоев: %1$d</string>
+
+    <!-- Journal -->
+    <string name="logs_title">Журнал</string>
+    <string name="logs_subtitle">Последние 1000 событий</string>
+    <string name="logs_filter_info">Обычный</string>
+    <string name="logs_filter_debug">Подробный</string>
+    <string name="logs_share">Поделиться</string>
+    <string name="logs_clear">Очистить</string>
+    <string name="logs_autoscroll">Прокрутка</string>
+    <string name="logs_copied">Журнал скопирован</string>
+    <string name="logs_empty">Записей пока нет. Включите туннель, чтобы увидеть вердикты.</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Настройки</string>
+    <string name="settings_subtitle">Туннель и обход блокировок</string>
+    <string name="settings_section_endpoint">Туннель</string>
+    <string name="settings_section_security">Ключи доступа</string>
+    <string name="settings_section_dpi">Обход блокировок</string>
+    <string name="settings_section_priorities">Приоритеты каналов</string>
+    <string name="settings_priorities_hint">Порядок перебора при сбоях; трафик идёт через первый рабочий канал.</string>
+    <string name="settings_priorities_empty">Импортируйте ссылки — каналы появятся здесь.</string>
+    <string name="settings_priorities_direct">Прямое соединение (крайний резерв)</string>
+    <string name="btn_move_up">Поднять канал</string>
+    <string name="btn_move_down">Опустить канал</string>
+    <string name="home_active_carrier">Активен: %1$s</string>
+    <string name="home_active_none">Канал: —</string>
+
+    <string name="hint_uuid">UUID пользователя</string>
+    <string name="hint_server">Сервер</string>
     <string name="hint_port">Порт</string>
     <string name="hint_sni">SNI</string>
-    <string name="hint_public_key">Public key (reality pbk)</string>
-    <string name="hint_short_id">Short ID (reality sid)</string>
-    <string name="hint_fallback">Fallback</string>
-    <string name="eye_closed">👁</string>
-    <string name="eye_open">🙈</string>
+    <string name="hint_public_key">Публичный ключ Reality</string>
+    <string name="hint_short_id">Short ID</string>
+    <string name="hint_fallback">Прямое соединение при сбое туннеля</string>
+    <string name="hint_dpi_fake">Подмена ClientHello</string>
+
+    <string name="btn_import_vless">Импорт vless://</string>
+    <string name="btn_save_settings">Сохранить и применить</string>
+    <string name="eye_closed">Показать</string>
+    <string name="eye_open">Скрыть</string>
     <string name="btn_import">Импорт vless://</string>
     <string name="btn_save">Сохранить</string>
-    <string name="import_title">Вставьте ссылку vless://</string>
-    <string name="import_hint">vless://uuid@host:port?…</string>
-    <string name="import_ok">Импорт</string>
-    <string name="import_done">Импортировано</string>
-    <string name="import_failed">Ошибка разбора: %1$s</string>
-    <string name="import_warning">Импортировано с предупреждением: %1$s</string>
-    <string name="settings_saved">Сохранено</string>
-    <string name="settings_bad_port">Неверный порт</string>
-    <string name="settings_incomplete">Заполнены не все поля: нужны UUID и сервер, либо очистите оба поля для tunnel off</string>
-    <string name="settings_save_failed">Не удалось сохранить настройки</string>
-    <string name="settings_load_failed">Не удалось прочитать настройки</string>
+    <string name="import_title">Импорт конфигурации</string>
+    <string name="import_hint">Вставьте ссылку vless://uuid@host:port?…</string>
+    <string name="import_ok">Импортировать</string>
+    <string name="import_done">Конфигурация загружена</string>
+    <string name="import_failed">Не удалось прочитать ссылку: %1$s</string>
+    <string name="import_warning">Загружено с замечанием: %1$s</string>
+    <string name="settings_saved">Настройки сохранены</string>
+    <string name="settings_bad_port">Порт должен быть от 1 до 65535</string>
+    <string name="settings_incomplete">Укажите UUID и сервер либо очистите оба поля для режима без туннеля</string>
+    <string name="settings_save_failed">Не удалось сохранить конфигурацию</string>
+    <string name="settings_load_failed">Не удалось прочитать конфигурацию</string>
 </resources>

@@ -1,24 +1,37 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Hallmark · screen: standalone endpoint form · same paper system as the tabs -->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:fillViewport="true">
+    android:fillViewport="true"
+    android:background="@color/paper">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="16dp">
+        android:padding="@dimen/space_l">
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="8dp"
             android:text="@string/settings_title"
-            android:textSize="20sp"
-            android:textStyle="bold" />
+            android:textColor="@color/ink"
+            android:textSize="24sp"
+            android:fontFamily="sans-serif-medium"
+            android:letterSpacing="0" />
 
-        <!-- UUID: маскируется точками, глаз справа -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:layout_marginBottom="@dimen/space_l"
+            android:text="@string/settings_subtitle"
+            android:textColor="@color/ink_soft"
+            android:textSize="13sp"
+            android:fontFamily="sans-serif" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -28,93 +41,148 @@
             <EditText
                 android:id="@+id/etUuid"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="52dp"
                 android:layout_weight="1"
+                android:background="@drawable/bg_input"
                 android:hint="@string/hint_uuid"
                 android:inputType="text"
-                android:fontFamily="monospace" />
+                android:paddingStart="@dimen/space_m"
+                android:paddingEnd="@dimen/space_m"
+                android:fontFamily="sans-serif"
+                android:textSize="15sp"
+                android:textColor="@color/ink"
+                android:textColorHint="@color/ink_soft" />
 
-            <Button
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnToggleUuid"
+                style="@style/Widget.Rupas.Button.Secondary"
                 android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:minWidth="48dp"
+                android:layout_height="@dimen/control_height"
+                android:layout_marginStart="@dimen/space_xs"
+                android:minWidth="96dp"
                 android:text="@string/eye_closed" />
         </LinearLayout>
 
         <EditText
             android:id="@+id/etServer"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="52dp"
+            android:layout_marginTop="@dimen/space_xs"
+            android:background="@drawable/bg_input"
             android:hint="@string/hint_server"
-            android:inputType="textUri" />
+            android:inputType="textUri"
+            android:paddingStart="@dimen/space_m"
+            android:paddingEnd="@dimen/space_m"
+            android:fontFamily="sans-serif"
+            android:textSize="15sp"
+            android:textColor="@color/ink"
+            android:textColorHint="@color/ink_soft" />
 
         <EditText
             android:id="@+id/etPort"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="52dp"
+            android:layout_marginTop="@dimen/space_xs"
+            android:background="@drawable/bg_input"
             android:hint="@string/hint_port"
             android:inputType="number"
-            android:maxLength="5" />
+            android:maxLength="5"
+            android:paddingStart="@dimen/space_m"
+            android:paddingEnd="@dimen/space_m"
+            android:fontFamily="sans-serif"
+            android:textSize="15sp"
+            android:textColor="@color/ink"
+            android:textColorHint="@color/ink_soft" />
 
         <EditText
             android:id="@+id/etSni"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="52dp"
+            android:layout_marginTop="@dimen/space_xs"
+            android:background="@drawable/bg_input"
             android:hint="@string/hint_sni"
-            android:inputType="textUri" />
+            android:inputType="textUri"
+            android:paddingStart="@dimen/space_m"
+            android:paddingEnd="@dimen/space_m"
+            android:fontFamily="sans-serif"
+            android:textSize="15sp"
+            android:textColor="@color/ink"
+            android:textColorHint="@color/ink_soft" />
 
-        <!-- publicKey (reality pbk): маскируется точками, глаз справа -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_xs"
             android:orientation="horizontal"
             android:gravity="center_vertical">
 
             <EditText
                 android:id="@+id/etPublicKey"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="52dp"
                 android:layout_weight="1"
+                android:background="@drawable/bg_input"
                 android:hint="@string/hint_public_key"
                 android:inputType="text"
-                android:fontFamily="monospace" />
+                android:paddingStart="@dimen/space_m"
+                android:paddingEnd="@dimen/space_m"
+                android:fontFamily="sans-serif"
+                android:textSize="15sp"
+                android:textColor="@color/ink"
+                android:textColorHint="@color/ink_soft" />
 
-            <Button
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnTogglePbk"
+                style="@style/Widget.Rupas.Button.Secondary"
                 android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:minWidth="48dp"
+                android:layout_height="@dimen/control_height"
+                android:layout_marginStart="@dimen/space_xs"
+                android:minWidth="96dp"
                 android:text="@string/eye_closed" />
         </LinearLayout>
 
         <EditText
             android:id="@+id/etShortId"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="52dp"
+            android:layout_marginTop="@dimen/space_xs"
+            android:background="@drawable/bg_input"
             android:hint="@string/hint_short_id"
             android:inputType="text"
-            android:fontFamily="monospace" />
+            android:paddingStart="@dimen/space_m"
+            android:paddingEnd="@dimen/space_m"
+            android:fontFamily="sans-serif"
+            android:textSize="15sp"
+            android:textColor="@color/ink"
+            android:textColorHint="@color/ink_soft" />
 
         <CheckBox
             android:id="@+id/cbFallback"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_m"
             android:checked="true"
-            android:text="@string/hint_fallback" />
+            android:buttonTint="@color/accent"
+            android:text="@string/hint_fallback"
+            android:textColor="@color/ink_2"
+            android:textSize="13sp"
+            android:fontFamily="sans-serif"
+            android:letterSpacing="0" />
 
-        <Button
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/btnImport"
+            style="@style/Widget.Rupas.Button.Secondary"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
+            android:layout_height="@dimen/control_height"
+            android:layout_marginTop="@dimen/space_l"
             android:text="@string/btn_import" />
 
-        <Button
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/btnSave"
+            style="@style/Widget.Rupas.Button.Primary"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_height="@dimen/control_height"
+            android:layout_marginTop="@dimen/space_xs"
             android:text="@string/btn_save" />
     </LinearLayout>
 </ScrollView>

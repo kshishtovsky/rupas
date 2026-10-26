@@ -1,0 +1,315 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hallmark · screen: home, wide · the key and its reading share one line -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/tab_home_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center_horizontal"
+    android:paddingStart="@dimen/space_l"
+    android:paddingTop="@dimen/space_s"
+    android:paddingEnd="@dimen/space_l"
+    android:paddingBottom="@dimen/space_xs"
+    android:background="@color/paper">
+
+    <LinearLayout
+        android:layout_width="@dimen/column_wide"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingBottom="@dimen/space_xs">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/app_name"
+                android:textColor="@color/ink"
+                android:textSize="24sp"
+                android:fontFamily="sans-serif-medium"
+                android:letterSpacing="0" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="@string/app_subtitle"
+                android:textColor="@color/ink_soft"
+                android:textSize="13sp"
+                android:fontFamily="sans-serif"
+                android:letterSpacing="0" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/statusPill"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_pill_badge"
+            android:paddingStart="@dimen/space_s"
+            android:paddingTop="6dp"
+            android:paddingEnd="@dimen/space_s"
+            android:paddingBottom="6dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <View
+                android:id="@+id/statusDot"
+                android:layout_width="8dp"
+                android:layout_height="8dp"
+                android:layout_marginEnd="@dimen/space_xs"
+                android:background="@drawable/bg_dot"
+                android:backgroundTint="@color/ink_faint" />
+
+            <TextView
+                android:id="@+id/statusText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/status_disconnected"
+                android:textColor="@color/ink_2"
+                android:textSize="12sp"
+                android:fontFamily="sans-serif"
+                android:letterSpacing="0" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="@dimen/column_wide"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="@dimen/space_xl"
+            android:gravity="center_horizontal"
+            android:orientation="vertical">
+
+            <FrameLayout
+                android:layout_width="@dimen/power_button_tray_land"
+                android:layout_height="@dimen/power_button_tray_land">
+
+                <View
+                    android:id="@+id/powerOuterRing"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/bg_power_outer_ring" />
+
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/btnPower"
+                    android:layout_width="@dimen/power_button_size_land"
+                    android:layout_height="@dimen/power_button_size_land"
+                    android:layout_gravity="center"
+                    app:cardCornerRadius="@dimen/radius_circle"
+                    app:cardElevation="2dp"
+                    app:strokeWidth="1dp"
+                    app:strokeColor="@color/rule"
+                    app:cardBackgroundColor="@color/paper_2"
+                    android:clickable="true"
+                    android:focusable="true">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:gravity="center"
+                        android:orientation="vertical">
+
+                        <ImageView
+                            android:id="@+id/ivPowerIcon"
+                            android:layout_width="32dp"
+                            android:layout_height="32dp"
+                            android:src="@drawable/ic_power"
+                            android:contentDescription="@null"
+                            android:importantForAccessibility="no"
+                            app:tint="@color/ink_soft" />
+
+                        <TextView
+                            android:id="@+id/tvPowerLabel"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/space_xxs"
+                            android:text="@string/btn_connect"
+                            android:textColor="@color/ink"
+                            android:textSize="15sp"
+                            android:fontFamily="sans-serif-medium"
+                            android:letterSpacing="0" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+            </FrameLayout>
+
+            <TextView
+                android:id="@+id/tvDuration"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_xs"
+                android:text="@string/home_session_zero"
+                android:textColor="@color/ink_soft"
+                android:textSize="13sp"
+                android:fontFamily="sans-serif"
+                android:fontFeatureSettings="tnum"
+                android:visibility="invisible" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/hudCard"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="@dimen/space_m">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginBottom="@dimen/space_s">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/home_telemetry"
+                    android:textColor="@color/ink_2"
+                    android:textSize="16sp"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0" />
+
+                <TextView
+                    android:id="@+id/tvActiveFlows"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0 соединений"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="13sp"
+                    android:fontFamily="sans-serif" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/home_down"
+                        android:textColor="@color/ink_soft"
+                        android:textSize="13sp"
+                        android:fontFamily="sans-serif" />
+
+                    <TextView
+                        android:id="@+id/tvSpeedDown"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="@string/home_speed_zero"
+                        android:textColor="@color/ink"
+                        android:textSize="26sp"
+                        android:fontFamily="sans-serif-medium"
+                        android:fontFeatureSettings="tnum" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginStart="@dimen/space_m"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/home_up"
+                        android:textColor="@color/ink_soft"
+                        android:textSize="13sp"
+                        android:fontFamily="sans-serif" />
+
+                    <TextView
+                        android:id="@+id/tvSpeedUp"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="@string/home_speed_zero"
+                        android:textColor="@color/ink"
+                        android:textSize="26sp"
+                        android:fontFamily="sans-serif-medium"
+                        android:fontFeatureSettings="tnum" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginTop="@dimen/space_m"
+                android:background="@color/rule" />
+
+            <TextView
+                android:id="@+id/tvTotalTraffic"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_s"
+                android:text="Принято 0 Б, отдано 0 Б"
+                android:textColor="@color/ink_soft"
+                android:textSize="13sp"
+                android:fontFamily="sans-serif"
+                android:fontFeatureSettings="tnum" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="6dp"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:id="@+id/tvEndpoint"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/home_gateway_none"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="12sp"
+                    android:fontFamily="sans-serif"
+                    android:singleLine="true"
+                    android:ellipsize="end" />
+
+                <TextView
+                    android:id="@+id/tvHealth"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="@dimen/space_s"
+                    android:text="@string/home_health_ok"
+                    android:textColor="@color/accent"
+                    android:textSize="12sp"
+                    android:fontFamily="sans-serif" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/tvCarrier"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="@string/home_active_none"
+                android:textColor="@color/ink_soft"
+                android:textSize="12sp"
+                android:fontFamily="sans-serif"
+                android:singleLine="true"
+                android:ellipsize="end" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>

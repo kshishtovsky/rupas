@@ -29,6 +29,8 @@ public class SettingsActivity extends AppCompatActivity {
 
     private boolean uuidVisible;
     private boolean publicKeyVisible;
+    /** Share links from the latest import (dial chain); empty = legacy flat config. */
+    private String pendingLinks = "";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -88,6 +90,7 @@ public class SettingsActivity extends AppCompatActivity {
             etPublicKey.setText(s.publicKey);
             etShortId.setText(s.shortId);
             cbFallback.setChecked(s.fallback);
+            pendingLinks = s.links == null ? "" : s.links;
         } catch (Exception e) {
             Toast.makeText(this, getString(R.string.settings_load_failed), Toast.LENGTH_LONG).show();
         }
@@ -106,20 +109,23 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void applyImport(EditText input) {
-        ParseVless.Result r;
+        java.util.List<String> links;
+        ParseLink.Flat r;
         try {
-            r = ParseVless.parse(input.getText().toString());
+            links = ParseLink.splitInput(input.getText().toString());
+            r = ParseLink.flattenLegacy(links.get(0));
         } catch (IllegalArgumentException e) {
             Toast.makeText(this, getString(R.string.import_failed, e.getMessage()), Toast.LENGTH_LONG).show();
             return;
         }
+        pendingLinks = String.join("\n", links);
         etUuid.setText(r.uuid);
         etServer.setText(r.server);
         etPort.setText(String.valueOf(r.port));
         etSni.setText(r.sni);
         etPublicKey.setText(r.publicKey);
         etShortId.setText(r.shortId);
-        cbFallback.setChecked(r.fallback);
+        cbFallback.setChecked(true);
         if (r.warning != null) {
             Toast.makeText(this, getString(R.string.import_warning, r.warning), Toast.LENGTH_LONG).show();
         } else {
@@ -135,6 +141,7 @@ public class SettingsActivity extends AppCompatActivity {
         s.publicKey = text(etPublicKey);
         s.shortId = text(etShortId);
         s.fallback = cbFallback.isChecked();
+        s.links = pendingLinks;
         String portStr = text(etPort);
         if (portStr.isEmpty()) {
             s.port = 0;

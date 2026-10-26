@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hallmark · dose tray: translucent mint plastic, light at the top, a deeper foot -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <gradient
+        android:angle="270"
+        android:centerColor="@color/accent_tint"
+        android:endColor="@color/plastic_lo"
+        android:startColor="@color/plastic_hi"
+        android:type="linear" />
+</shape>

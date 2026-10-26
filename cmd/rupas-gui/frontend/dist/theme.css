@@ -82,8 +82,17 @@ html, body {
 .page.active { display: block; }
 @keyframes fadein { from { opacity: 0; transform: translateY(4px); } }
 
+/* Home fills the viewport: disc centered in the free space, cards pinned
+   above the nav (mirrors Android tab_home: weight=1 stage + bottom HUD) —
+   no dead space under the cards. */
+#page-home.active { display: flex; flex-direction: column; height: 100%; }
+
 /* ---------- Power disc (tab_home.xml) ---------- */
-.power-stage { display: flex; flex-direction: column; align-items: center; padding-top: var(--space-xxl); }
+.power-stage {
+  flex: 1; min-height: 320px;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+}
 .power-tray {
   width: var(--power-tray); height: var(--power-tray);
   border-radius: var(--radius-circle);
@@ -117,7 +126,7 @@ html, body {
 .power-sub { margin-top: var(--space-xxs); font-size: 12px; color: var(--ink-soft); min-height: 16px; }
 
 /* ---------- Cards ---------- */
-.cards { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-s); margin-top: var(--space-xl); }
+.cards { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-s); margin-top: var(--space-s); }
 .card {
   background: var(--paper-2);
   border: 1px solid var(--rule);

@@ -82,4 +82,144 @@
     <string name="settings_incomplete">Укажите UUID и сервер либо очистите оба поля для режима без туннеля</string>
     <string name="settings_save_failed">Не удалось сохранить конфигурацию</string>
     <string name="settings_load_failed">Не удалось прочитать конфигурацию</string>
+
+    <!-- Маршрутизация · копирайт дословно из docs/ROUTING_UI.md §9 -->
+    <string name="routing_title">Маршруты</string>
+    <string name="routing_back">Назад</string>
+    <string name="routing_more">Ещё</string>
+    <string name="sym_more">⋮</string>
+    <string name="sym_drag_handle">≡</string>
+    <string name="routing_summary">%1$s · по умолчанию %2$s</string>
+    <string name="routing_summary_unknown">Правила не загружены</string>
+    <string name="routing_stage_ip">IP-адреса</string>
+    <string name="routing_stage_domains">Домены</string>
+    <string name="routing_stage_ports">Порты</string>
+    <string name="routing_stage_default">Всё остальное — закреплено</string>
+    <string name="routing_default_name">весь прочий трафик</string>
+    <string name="routing_default_hint">не удаляется</string>
+    <string name="routing_empty">Правил нет. Весь трафик пойдёт по умолчанию.</string>
+    <string name="routing_empty_add">Добавить первое правило</string>
+    <string name="routing_empty_preset">Загрузить пресет</string>
+    <string name="routing_danger_default">По умолчанию DIRECT — реальный IP не скрыт.</string>
+    <string name="routing_load_error">Не удалось прочитать правила</string>
+    <string name="routing_save_error">Не удалось сохранить правила</string>
+    <string name="routing_retry">Повторить</string>
+    <string name="btn_apply_rules">Применить правила</string>
+    <string name="btn_cancel">Отменить</string>
+    <string name="btn_check">Проверить</string>
+    <string name="routing_add_rule">Добавить правило</string>
+    <string name="routing_add_short">+ Правило</string>
+    <string name="routing_apply_caption">VPN перезапустится (~2 с)</string>
+    <string name="routing_saved">Применено</string>
+    <string name="routing_saving">Применяю…</string>
+    <string name="routing_apply_not_running">Правила применятся при следующем включении</string>
+    <string name="routing_unsaved_title">Несохранённые изменения</string>
+    <string name="routing_unsaved_text">Правила изменены, но не применены к ядру.</string>
+    <string name="routing_discard">Отменить изменения</string>
+    <string name="routing_stay">Остаться</string>
+    <string name="routing_delete_title">Удалить правило?</string>
+    <string name="routing_deleted">Правило удалено</string>
+    <string name="routing_duplicated">Правило продублировано</string>
+
+    <!-- Проверка маршрута (§5.5) -->
+    <string name="routing_check_title">Проверить домен или IP</string>
+    <string name="routing_check_hint">example.com или 91.105.192.1</string>
+    <string name="routing_check_unavailable">проверка недоступна: демон не отвечает</string>
+    <string name="routing_check_unavailable_detail">проверка недоступна: демон не отвечает\n%1$s</string>
+    <string name="routing_check_stage">стадия %1$d · %2$s</string>
+    <string name="routing_check_default_stage">стадия 4 · по умолчанию</string>
+    <string name="routing_check_rule">правило: %1$s</string>
+    <string name="routing_check_no_domains">домены не проверяются для IP</string>
+    <string name="routing_check_ip_exposed">IP не скрыт</string>
+    <string name="routing_check_warning">%1$s — часть правил не проверена</string>
+
+    <!-- Подписи правил (вторая строка) -->
+    <string name="routing_caption_geoip">Категория %1$s · таблица стран, обновляется раз в 30 дней</string>
+    <string name="routing_caption_cidr_pow">2^%1$d адресов</string>
+    <string name="routing_caption_sni_exact">точный домен</string>
+    <string name="routing_caption_sni_wild">домен и поддомены</string>
+    <string name="routing_caption_port">порт %1$s</string>
+    <string name="routing_caption_ports">порты %1$s</string>
+    <string name="routing_caption_with_proto">%1$s · %2$s</string>
+    <string name="a11y_stage_open">развёрнуто</string>
+    <string name="a11y_stage_closed">свёрнуто</string>
+    <string name="a11y_stage_state">%1$s, %2$d · %3$s</string>
+    <string name="routing_a11y_rule">%1$s, %2$s, %3$s, правило %4$d из %5$d в стадии %6$s</string>
+
+    <!-- Редактор правила (§5.4) -->
+    <string name="editor_new_rule">Новое правило</string>
+    <string name="editor_edit_rule">Правило</string>
+    <string name="editor_default_action">Действие по умолчанию</string>
+    <string name="editor_kind">Вид</string>
+    <string name="editor_value">Значение</string>
+    <string name="editor_proto">Протокол</string>
+    <string name="editor_action">Действие</string>
+    <string name="editor_save">Сохранить</string>
+    <string name="editor_kind_ip">IP/CIDR</string>
+    <string name="editor_kind_country">Страна</string>
+    <string name="editor_kind_domain">Домен</string>
+    <string name="editor_kind_port">Порт</string>
+    <string name="editor_hint_ip">91.105.192.0/23</string>
+    <string name="editor_hint_country">ru</string>
+    <string name="editor_hint_domain">*.googlevideo.com</string>
+    <string name="editor_hint_port">443 или 50000-65535</string>
+    <string name="proto_any">любой</string>
+    <string name="proto_tcp">tcp</string>
+    <string name="proto_udp">udp</string>
+    <string name="editor_err_empty">Укажите значение</string>
+    <string name="editor_err_cidr">Неверный CIDR, например 91.105.192.0/23</string>
+    <string name="editor_err_country">Код страны из двух букв, например ru</string>
+    <string name="editor_err_domain">Домен без пробелов, например example.com или *.example.com</string>
+    <string name="editor_err_port">Порт должен быть от 1 до 65535</string>
+    <string name="editor_err_range">Начало диапазона больше конца</string>
+    <string name="editor_conflict">пересекается с правилом «%1$s» %2$s</string>
+    <string name="editor_quic_note">Без протокола правило действует и на tcp, и на udp (включая QUIC).</string>
+
+    <!-- Действия (§5.3) -->
+    <string name="action_direct">DIRECT</string>
+    <string name="action_tunnel">TUNNEL</string>
+    <string name="action_desync">DESYNC</string>
+    <string name="action_block">BLOCK</string>
+    <string name="action_direct_hint">напрямую, без обхода</string>
+    <string name="action_tunnel_hint">через канал</string>
+    <string name="action_desync_hint">обход DPI без сервера</string>
+    <string name="action_block_hint">отбрасывать</string>
+
+    <!-- Меню строки -->
+    <string name="menu_edit">Изменить</string>
+    <string name="menu_duplicate">Дублировать</string>
+    <string name="menu_delete">Удалить</string>
+
+    <!-- Пресеты (§5.6) -->
+    <string name="routing_presets">Пресеты</string>
+    <string name="preset_owner">Политика владельца (51)</string>
+    <string name="preset_ru">RU напрямую, остальное в туннель</string>
+    <string name="preset_all_tunnel">Всё через туннель</string>
+    <string name="preset_all_direct">Всё напрямую</string>
+    <string name="preset_all_direct_confirm">Разрешить весь трафик мимо туннеля? IP будет виден</string>
+    <string name="preset_unavailable">нет данных пресета в ядре</string>
+
+    <!-- Вход из Настроек (§3) -->
+    <string name="routing_entry_title">Маршрутизация</string>
+
+    <plurals name="rules_count">
+        <item quantity="one">%d правило</item>
+        <item quantity="few">%d правила</item>
+        <item quantity="many">%d правил</item>
+        <item quantity="other">%d правила</item>
+    </plurals>
+
+    <plurals name="changes_count">
+        <item quantity="one">%d изменение</item>
+        <item quantity="few">%d изменения</item>
+        <item quantity="many">%d изменений</item>
+        <item quantity="other">%d изменения</item>
+    </plurals>
+
+    <plurals name="addresses_count">
+        <item quantity="one">%d адрес</item>
+        <item quantity="few">%d адреса</item>
+        <item quantity="many">%d адресов</item>
+        <item quantity="other">%d адреса</item>
+    </plurals>
 </resources>

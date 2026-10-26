@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/rupas/rupas/internal/config"
 )
 
 // Engine owns one TUN-backed transport session. It is created per Start and
@@ -74,11 +76,23 @@ func NewEngine(verdict Verdict, protect ProtectFunc, logFn func(string)) *Engine
 // NewW3Engine assembles a W3 engine: the PRD §5 rule tables are compiled
 // immediately (immutable), and settings drive the sing-box tunnel relay.
 // nil settings mean "tunnel unavailable": every TUNNEL-rule flow escalates
-// to DIRECT (counted + logged) instead of failing.
+// to DIRECT (counted + logged) instead of failing. Routing rules come from
+// settings.Rules when present, else from the W3 preset (DefaultRules).
 func NewW3Engine(settings *Settings, protect ProtectFunc, logFn func(string), filesDir string) *Engine {
+	return NewW3EngineWithRules(settings, protect, logFn, filesDir, nil)
+}
+
+// NewW3EngineWithRules is NewW3Engine with an explicit rule set: ruleSet (the
+// app's Routing screen) wins over settings.Rules, and both being empty falls
+// back to DefaultRules. Rules and tunnel settings stay independent inputs, so
+// a core can run user rules with no endpoint configured.
+func NewW3EngineWithRules(settings *Settings, protect ProtectFunc, logFn func(string), filesDir string, ruleSet []config.Rule) *Engine {
 	e := NewEngine(nil, protect, logFn)
 	e.settings = settings
-	e.rules = CompileRulesEx(filesDir, func(line string) { e.logf("%s", line) })
+	if len(ruleSet) == 0 && settings != nil {
+		ruleSet = settings.Rules
+	}
+	e.rules = CompileRulesWith(ruleSet, filesDir, func(line string) { e.logf("%s", line) })
 	e.filesDir = filesDir
 	if settings != nil {
 		e.relay = NewRelay(settings, func(line string) { e.logf("%s", line) })

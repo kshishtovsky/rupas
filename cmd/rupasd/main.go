@@ -114,6 +114,10 @@ func main() {
 		},
 		Logs:   application.EventLog().Last,
 		Logger: logger,
+		// Routing screen commands (rules / rules-set / route-test) work off
+		// the same YAML the daemon runs with; rules-set rewrites it
+		// atomically and hot-applies through the reload path above.
+		ConfigPath: *configPath,
 	})
 
 	errCh := make(chan error, 1)

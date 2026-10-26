@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hallmark · dose · segment text block: selected state only, no literal colour -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:color="@color/danger" android:state_selected="true" />
+    <item android:color="@color/ink_soft" />
+</selector>

@@ -1,0 +1,477 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hallmark · v2.0.0 · screen: routing · genre: modern-minimal · theme: dose
+     anatomy §4.2: toolbar → summary → check card → stages (scroll) → pinned default
+     → apply panel (only while dirty). No literal colour: every value is a token. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/routingRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/paper"
+    android:orientation="vertical">
+
+    <!-- Toolbar: ‹ Маршруты + -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:background="@color/paper"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="@dimen/space_xxs"
+        android:paddingEnd="@dimen/space_xxs">
+
+        <ImageButton
+            android:id="@+id/btnBack"
+            android:layout_width="@dimen/touch_target_min"
+            android:layout_height="@dimen/touch_target_min"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/routing_back"
+            android:padding="@dimen/space_s"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_arrow_back" />
+
+        <TextView
+            android:id="@+id/tvTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/space_xxs"
+            android:layout_weight="1"
+            android:fontFamily="sans-serif-medium"
+            android:letterSpacing="0"
+            android:text="@string/routing_title"
+            android:textColor="@color/ink"
+            android:textSize="20sp" />
+
+        <ImageButton
+            android:id="@+id/btnAdd"
+            android:layout_width="@dimen/touch_target_min"
+            android:layout_height="@dimen/touch_target_min"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/routing_add_rule"
+            android:padding="@dimen/space_s"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_plus" />
+    </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/rule" />
+
+    <!-- saved (§6): 2s accent strip under the header -->
+    <LinearLayout
+        android:id="@+id/savedStrip"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/accent_tint"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="@dimen/space_l"
+        android:paddingTop="@dimen/space_xs"
+        android:paddingEnd="@dimen/space_l"
+        android:paddingBottom="@dimen/space_xs"
+        android:visibility="gone">
+
+        <View
+            android:layout_width="3dp"
+            android:layout_height="16dp"
+            android:background="@color/accent" />
+
+        <TextView
+            android:id="@+id/tvSaved"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/space_xs"
+            android:fontFamily="sans-serif-medium"
+            android:text="@string/routing_saved"
+            android:textColor="@color/accent_deep"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+    <!-- Summary: «51 правило · по умолчанию TUNNEL» -->
+    <TextView
+        android:id="@+id/tvSummary"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fontFamily="sans-serif"
+        android:paddingStart="@dimen/space_l"
+        android:paddingTop="@dimen/space_s"
+        android:paddingEnd="@dimen/space_l"
+        android:text="@string/routing_summary_unknown"
+        android:textColor="@color/ink_2"
+        android:textSize="13sp" />
+
+    <View
+        android:id="@+id/summarySkeleton"
+        android:layout_width="170dp"
+        android:layout_height="12dp"
+        android:layout_marginStart="@dimen/space_l"
+        android:layout_marginTop="@dimen/space_s"
+        android:background="@drawable/bg_skeleton_line"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/tvDangerDefault"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fontFamily="sans-serif"
+        android:paddingStart="@dimen/space_l"
+        android:paddingTop="@dimen/space_xxs"
+        android:paddingEnd="@dimen/space_l"
+        android:text="@string/routing_danger_default"
+        android:textColor="@color/danger"
+        android:textSize="12sp"
+        android:visibility="gone" />
+
+    <!-- Signature block: check a domain or IP (§5.5) -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="@dimen/space_l"
+        android:layout_marginTop="@dimen/space_s"
+        android:layout_marginEnd="@dimen/space_l"
+        android:background="@drawable/bg_check_card"
+        android:orientation="vertical"
+        android:padding="@dimen/space_m">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="sans-serif-medium"
+            android:letterSpacing="0"
+            android:text="@string/routing_check_title"
+            android:textColor="@color/ink_2"
+            android:textSize="13sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_xs"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <EditText
+                android:id="@+id/etQuery"
+                android:layout_width="0dp"
+                android:layout_height="@dimen/touch_target_min"
+                android:layout_weight="1"
+                android:background="@drawable/bg_input"
+                android:fontFamily="sans-serif"
+                android:hint="@string/routing_check_hint"
+                android:imeOptions="actionSearch"
+                android:inputType="textUri"
+                android:maxLines="1"
+                android:paddingStart="@dimen/space_s"
+                android:paddingEnd="@dimen/space_s"
+                android:singleLine="true"
+                android:textColor="@color/ink"
+                android:textColorHint="@color/ink_soft"
+                android:textSize="15sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnCheck"
+                style="@style/Widget.Rupas.Button.Primary"
+                android:layout_width="wrap_content"
+                android:layout_height="@dimen/touch_target_min"
+                android:layout_marginStart="@dimen/space_xs"
+                android:minWidth="0dp"
+                android:text="@string/btn_check" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/checkResult"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_s"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/tvCheckStage"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFamily="sans-serif"
+                android:textColor="@color/ink_soft"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/tvCheckRule"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:fontFamily="monospace"
+                android:textColor="@color/ink"
+                android:textSize="14sp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_xs"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <include
+                    android:id="@+id/chipCheck"
+                    layout="@layout/view_action_chip"
+                    android:layout_width="wrap_content"
+                    android:layout_height="26dp" />
+
+                <TextView
+                    android:id="@+id/tvCheckNote"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="@dimen/space_xs"
+                    android:layout_weight="1"
+                    android:fontFamily="sans-serif"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="12sp"
+                    android:visibility="gone" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/checkErrorBox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_s"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/tvCheckError"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:fontFamily="sans-serif"
+                android:textColor="@color/ink_soft"
+                android:textSize="13sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnCheckRetry"
+                style="@style/Widget.Rupas.Button.Secondary"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:layout_marginStart="@dimen/space_xs"
+                android:minWidth="0dp"
+                android:text="@string/routing_retry" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- empty (§6) -->
+    <LinearLayout
+        android:id="@+id/emptyBox"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="@dimen/space_l"
+        android:layout_marginTop="@dimen/space_s"
+        android:layout_marginEnd="@dimen/space_l"
+        android:background="@drawable/bg_card"
+        android:orientation="vertical"
+        android:padding="@dimen/space_m"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="sans-serif"
+            android:text="@string/routing_empty"
+            android:textColor="@color/ink_2"
+            android:textSize="13sp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnEmptyAdd"
+            style="@style/Widget.Rupas.Button.Primary"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/control_height"
+            android:layout_marginTop="@dimen/space_s"
+            android:text="@string/routing_empty_add" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnEmptyPreset"
+            style="@style/Widget.Rupas.Button.Secondary"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/control_height"
+            android:layout_marginTop="@dimen/space_xs"
+            android:text="@string/routing_empty_preset" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/errorBox"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="@dimen/space_s"
+        android:orientation="vertical"
+        android:paddingStart="@dimen/space_l"
+        android:paddingEnd="@dimen/space_l"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/tvErrorTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="sans-serif-medium"
+            android:text="@string/routing_load_error"
+            android:textColor="@color/ink"
+            android:textSize="15sp" />
+
+        <TextView
+            android:id="@+id/tvErrorText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_xs"
+            android:fontFamily="monospace"
+            android:textColor="@color/ink_2"
+            android:textSize="12sp" />
+
+        <LinearLayout
+            android:id="@+id/llViolations"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_xs"
+            android:orientation="vertical" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_m"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnErrorDismiss"
+                style="@style/Widget.Rupas.Button.Secondary"
+                android:layout_width="0dp"
+                android:layout_height="@dimen/control_height"
+                android:layout_marginEnd="@dimen/space_xs"
+                android:layout_weight="1"
+                android:text="@string/btn_cancel"
+                android:visibility="gone" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnRetry"
+                style="@style/Widget.Rupas.Button.Secondary"
+                android:layout_width="0dp"
+                android:layout_height="@dimen/control_height"
+                android:layout_weight="1"
+                android:text="@string/routing_retry" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- list of stages -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="@dimen/space_xs"
+        android:layout_weight="1">
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/listRules"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:paddingStart="@dimen/space_l"
+            android:paddingEnd="@dimen/space_l"
+            android:scrollbars="none" />
+
+        <LinearLayout
+            android:id="@+id/skeletonBox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingStart="@dimen/space_l"
+            android:paddingEnd="@dimen/space_l"
+            android:visibility="gone">
+
+            <include
+                layout="@layout/item_skeleton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <include
+                layout="@layout/item_skeleton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <include
+                layout="@layout/item_skeleton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <include
+                layout="@layout/item_skeleton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+        </LinearLayout>
+
+        <View
+            android:id="@+id/savingOverlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clickable="true"
+            android:focusable="true"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <!-- apply panel (§5.7): appears only while dirty -->
+    <View
+        android:id="@+id/dirtyRule"
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/rule"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:id="@+id/dirtyPanel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_dirty_panel"
+        android:orientation="vertical"
+        android:paddingStart="@dimen/space_l"
+        android:paddingTop="@dimen/space_xs"
+        android:paddingEnd="@dimen/space_l"
+        android:paddingBottom="@dimen/space_xs"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/tvChanges"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:fontFamily="sans-serif"
+                android:textColor="@color/ink_soft"
+                android:textSize="12sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnRevert"
+                style="@style/Widget.Rupas.Button.Secondary"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:minWidth="0dp"
+                android:text="@string/btn_cancel" />
+        </LinearLayout>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnApply"
+            style="@style/Widget.Rupas.Button.Primary"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/control_height"
+            android:layout_marginTop="@dimen/space_xs"
+            android:text="@string/btn_apply_rules" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_xxs"
+            android:fontFamily="sans-serif"
+            android:gravity="center"
+            android:text="@string/routing_apply_caption"
+            android:textColor="@color/ink_soft"
+            android:textSize="12sp" />
+    </LinearLayout>
+</LinearLayout>

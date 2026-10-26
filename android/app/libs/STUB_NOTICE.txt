@@ -1,7 +1,15 @@
-STUB AAR — временная замена ядра для сборки W2.
-Собран из core/rupas-core-test.aar: classes.jar заменён на java-заглушку
-core/Core (start/stop/status/version по фиксированному контракту) + core/Platform;
-jni/*/libgojni.so оставлены из тестового AAR (не используются заглушкой).
-ЗАМЕНИТЬ: gomobile bind -target=android -androidapi 26 -o app/libs/rupas-core.aar .
-после реализации контракта Go-воркером. Java-код приложения ссылается на
-core.Core / core.Platform напрямую.
+Заглушка снята: android/app/libs/rupas-core.aar собран из реального
+Go-моста (mobile/core.go), а не из тестового AAR.
+
+Сборка AAR (из корня репозитория, NDK 27.2.12479018, 4 ABI):
+  ANDROID_HOME=C:/android-sdk \
+  ANDROID_NDK_HOME=C:/android-sdk/ndk/27.2.12479018 \
+  gomobile bind -tags "with_utls with_quic with_gvisor" -target=android \
+    -androidapi 26 -o android/app/libs/rupas-core.aar ./mobile
+
+Контракт core.Core на момент сборки (проверено javap по classes.jar):
+  setSettings(String) throws Exception · start(long, Platform) throws Exception
+  stop() · status() · version() · rulesJSON() · setRulesJSON(String) throws Exception
+  testRoute(String)
+
+rupas-core-sources.jar перегенерирован тем же прогоном gomobile bind.

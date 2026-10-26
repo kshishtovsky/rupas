@@ -29,6 +29,18 @@
             android:exported="false"
             android:label="@string/settings_title" />
 
+        <!-- T3: экран маршрутов. Вход — карточка «Маршрутизация» в Настройках,
+             bottom-nav не растёт до 4 вкладок (ROUTING_UI §3). -->
+        <activity
+            android:name=".RoutingActivity"
+            android:exported="false"
+            android:label="@string/routing_title"
+            android:parentActivityName=".SettingsActivity">
+            <meta-data
+                android:name="android.support.PARENT_ACTIVITY"
+                android:value=".SettingsActivity" />
+        </activity>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

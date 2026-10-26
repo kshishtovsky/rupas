@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hallmark · dose · loading skeleton row (§6): the shape of a rule, no spinner -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="@dimen/space_s"
+    android:background="@drawable/bg_card"
+    android:minHeight="64dp"
+    android:orientation="vertical"
+    android:padding="@dimen/space_m">
+
+    <View
+        android:layout_width="168dp"
+        android:layout_height="14dp"
+        android:background="@drawable/bg_skeleton_line" />
+
+    <View
+        android:layout_width="96dp"
+        android:layout_height="10dp"
+        android:layout_marginTop="@dimen/space_xs"
+        android:background="@drawable/bg_skeleton_line" />
+</LinearLayout>

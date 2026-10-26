@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+
+	"github.com/rupas/rupas/internal/config"
 )
 
 // Settings is the W3 tunnel endpoint description delivered by the Java
@@ -40,6 +42,11 @@ type Settings struct {
 	PreferIPv4 *bool `json:"prefer_ipv4,omitempty"`
 	// Links: share links in dial order (optional; replaces the flat fields).
 	Links []string `json:"links,omitempty"`
+	// Rules: the routing rule set edited in the app's Routing screen
+	// (optional). When absent or empty the core compiles the built-in W3
+	// preset (android.DefaultRules) — the pre-screen behaviour. Rules are
+	// read at the next Start, so a change requires a VPN restart.
+	Rules []config.Rule `json:"rules,omitempty"`
 }
 
 // PreferIPv4Enabled reports the effective PreferIPv4 mode; absent field →
@@ -69,9 +76,18 @@ func ParseSettings(data string) (*Settings, error) {
 // Validate checks the mandatory fields: either share links (parsed and
 // validated by Endpoints) or the legacy flat triple uuid/server/port.
 func (s *Settings) Validate() error {
-	switch {
-	case s == nil:
+	if s == nil {
 		return fmt.Errorf("android: settings: nil")
+	}
+	if len(s.Rules) > 0 {
+		// The Routing screen sends the same rule shape the desktop config
+		// uses; validate it with the engine's own rules so a bad rule set is
+		// refused at SetSettings instead of at the next Start.
+		if err := config.ValidateRules(s.Rules); err != nil {
+			return fmt.Errorf("android: settings: %w", err)
+		}
+	}
+	switch {
 	case len(s.Links) > 0:
 		if _, err := s.Endpoints(); err != nil {
 			return err

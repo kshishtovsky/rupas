@@ -160,36 +160,80 @@ func (c *Controller) LoadState() GUIState {
 	return st
 }
 
-// presetConfig builds the default rule set with the owner routing policy
-// (2026-10-25) + Android W3 parity: RU zones and RU-services-on-.com →
-// direct, YT → desync, Discord/TG → tunnel, QUIC block, default direct.
+// presetConfig builds the full production routing policy (configs/rupas.yaml
+// of the owner's box, 2026-10-25/27): LAN → direct, TG CIDRs → tunnel,
+// geoip:ru + RU TLDs/services → direct, YT → desync, Discord → tunnel,
+// voice/STUN UDP → tunnel, DNS → direct, QUIC → block, ВСЁ ОСТАЛЬНОЕ → tunnel.
 func presetConfig(dpi bool) config.Config {
-	ruServices := []string{
-		"vk.com", "*.vk.com", "ok.ru", "*.ok.ru", "userapi.com", "*.userapi.com",
-		"ya.ru", "*.ya.ru", "yandex.net", "*.yandex.net",
-		"steamcontent.com", "steamserver.net", "steampipe.akamaized.net",
-		"steamstatic.com", "steampowered.com",
-	}
+	sni := func(s string, a config.Action) config.Rule { return config.Rule{SNI: s, Action: a} }
+	cidr := func(s string, a config.Action) config.Rule { return config.Rule{CIDR: s, Action: a} }
+
 	rules := []config.Rule{
-		{SNI: "www.youtube.com", Action: config.ActionDesync},
-		{SNI: "*.googlevideo.com", Action: config.ActionDesync},
+		// LAN / broadcast → direct (default=tunnel would swallow them).
+		cidr("10.0.0.0/8", config.ActionDirect),
+		cidr("172.16.0.0/12", config.ActionDirect),
+		cidr("192.168.0.0/16", config.ActionDirect),
+		cidr("169.254.0.0/16", config.ActionDirect),
+		cidr("224.0.0.0/4", config.ActionDirect),
+		cidr("255.255.255.255/32", config.ActionDirect),
+		// Telegram DCs + media: IP-blackholed → tunnel.
+		cidr("149.154.160.0/20", config.ActionTunnel),
+		cidr("91.108.0.0/16", config.ActionTunnel),
+		cidr("91.105.192.0/23", config.ActionTunnel),
+		cidr("185.76.151.0/24", config.ActionTunnel),
+		cidr("95.161.76.100/32", config.ActionTunnel),
+		// Country table: every RU-hosted destination → direct (VPS cannot
+		// dial RU ranges anyway).
+		{GeoIP: "ru", Action: config.ActionDirect},
+		// YouTube: SNI-blackholed, IP fine → local desync at full speed.
+		sni("www.youtube.com", config.ActionDesync),
+		sni("*.googlevideo.com", config.ActionDesync),
+		sni("youtube.com", config.ActionDesync),
+		sni("*.youtube.com", config.ActionDesync),
+		// Discord: real ECH dropped by TSPU; the only stable path is tunnel.
+		sni("discord.com", config.ActionTunnel),
+		sni("updates.discord.com", config.ActionTunnel),
+		sni("gateway.discord.gg", config.ActionTunnel),
+		sni("discord.gg", config.ActionTunnel),
+		sni("*.discord.gg", config.ActionTunnel),
+		sni("discordapp.com", config.ActionTunnel),
+		sni("*.discordapp.com", config.ActionTunnel),
+		sni("discordapp.net", config.ActionTunnel),
+		sni("*.discordapp.net", config.ActionTunnel),
+		// RU zones and RU services on foreign TLDs → direct.
+		sni("vk.com", config.ActionDirect),
+		sni("*.vk.com", config.ActionDirect),
+		sni("ok.ru", config.ActionDirect),
+		sni("*.ok.ru", config.ActionDirect),
+		sni("userapi.com", config.ActionDirect),
+		sni("*.userapi.com", config.ActionDirect),
+		sni("*.ru", config.ActionDirect),
+		sni("*.su", config.ActionDirect),
+		sni("*.xn--p1ai", config.ActionDirect),     // .рф
+		sni("*.xn--80adxhks", config.ActionDirect), // .москва
+		sni("*.xn--80asehdb", config.ActionDirect), // .онлайн
+		sni("*.xn--d1acj3b", config.ActionDirect),  // .дети
+		sni("*.xn--90ais", config.ActionDirect),    // .бел
+		sni("*.yandex.net", config.ActionDirect),
+		sni("*.ya.ru", config.ActionDirect),
+		sni("*.steamcontent.com", config.ActionDirect),
+		sni("*.steamserver.net", config.ActionDirect),
+		sni("*.steampipe.akamaized.net", config.ActionDirect),
+		sni("*.steamstatic.com", config.ActionDirect),
+		sni("*.steampowered.com", config.ActionDirect),
+		sni("steampipe.akamaized.net", config.ActionDirect),
+		// Discord voice UDP → tunnel (XUDP/hy2).
+		{Ports: "50000-65535", Proto: "udp", Action: config.ActionTunnel},
+		// STUN (voice handshake): UDP :3478 is TSPU-dropped → tunnel.
+		{Ports: "3478", Proto: "udp", Action: config.ActionTunnel},
+		// DNS → direct (no recursion through the VPS).
+		{Ports: "53", Proto: "udp", Action: config.ActionDirect},
+		// QUIC → block: TSPU blackholes it with residual censorship; force
+		// browsers onto TCP.
+		{Ports: "443", Proto: "udp", Action: config.ActionBlock},
+		// Owner policy: ВСЁ ОСТАЛЬНОЕ → tunnel.
+		{Action: config.ActionTunnel},
 	}
-	for _, d := range ruServices {
-		rules = append(rules, config.Rule{SNI: d, Action: config.ActionDirect})
-	}
-	rules = append(rules,
-		config.Rule{SNI: "discord.com", Action: config.ActionTunnel},
-		config.Rule{SNI: "*.discord.gg", Action: config.ActionTunnel},
-		config.Rule{SNI: "*.discordapp.com", Action: config.ActionTunnel},
-		config.Rule{SNI: "*.discordapp.net", Action: config.ActionTunnel},
-		config.Rule{CIDR: "149.154.160.0/20", Action: config.ActionTunnel},
-		config.Rule{CIDR: "91.108.0.0/16", Action: config.ActionTunnel},
-		config.Rule{CIDR: "91.105.192.0/23", Action: config.ActionTunnel},
-		config.Rule{CIDR: "185.76.151.0/24", Action: config.ActionTunnel},
-		config.Rule{GeoIP: "ru", Action: config.ActionDirect},
-		config.Rule{Ports: "443", Proto: "udp", Action: config.ActionBlock},
-		config.Rule{Action: config.ActionDirect},
-	)
 	cfg := config.Config{Profile: "gui", Rules: rules}
 	if dpi {
 		cfg.Desync = config.DesyncParams{Strategy: "fake", TTL: 13, TTLMargin: 2, Repeats: 6}

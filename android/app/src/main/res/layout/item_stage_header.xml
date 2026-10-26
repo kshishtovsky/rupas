@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hallmark · dose · stage header (§5.1): 40dp, 12sp ink_soft, counter, chevron.
+     Sentence case — no caps tracking. Collapsed state lives in the session only. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/stageHeaderRoot"
+    android:layout_width="match_parent"
+    android:layout_height="40dp"
+    android:background="?attr/selectableItemBackground"
+    android:clickable="true"
+    android:focusable="true"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingStart="@dimen/space_m"
+    android:paddingEnd="@dimen/space_m">
+
+    <TextView
+        android:id="@+id/tvStageName"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:ellipsize="end"
+        android:fontFamily="sans-serif"
+        android:letterSpacing="0"
+        android:maxLines="1"
+        android:textColor="@color/ink_soft"
+        android:textSize="12sp" />
+
+    <TextView
+        android:id="@+id/tvStageCount"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="@dimen/space_xs"
+        android:fontFamily="sans-serif"
+        android:fontFeatureSettings="tnum"
+        android:textColor="@color/ink_soft"
+        android:textSize="12sp" />
+
+    <ImageView
+        android:id="@+id/ivStageChevron"
+        android:layout_width="16dp"
+        android:layout_height="16dp"
+        android:contentDescription="@null"
+        android:src="@drawable/ic_chevron_down" />
+</LinearLayout>

@@ -68,8 +68,71 @@
         <div class="log-box" id="logBox"><div class="log-empty">Логи появятся после запуска демона…</div></div>
       </div>
 
+      <!-- ROUTING (docs/ROUTING_UI.md §4.1) -->
+      <div class="page" id="page-routing">
+        <div class="rt-head">
+          <h1 class="rt-title">Маршруты</h1>
+          <div class="rt-summary" id="rtSummary" aria-live="polite"></div>
+        </div>
+        <div class="rt-saved" id="rtSaved" role="status" aria-live="polite"><i aria-hidden="true"></i><span>Применено</span></div>
+
+        <div id="rtSaveError"></div>
+
+
+        <div class="rt-grid">
+          <div class="rt-col-a">
+            <div id="rtStages"></div>
+            <div id="rtDefaultZone"></div>
+          </div>
+
+          <aside class="rt-col-b">
+            <section class="rt-panel" id="rtCheck">
+              <div class="rt-panel-title">Проверить маршрут</div>
+              <div class="rt-check-form">
+                <input class="rt-value" id="rtQuery" type="text" placeholder="example.com" autocomplete="off" spellcheck="false" aria-label="Домен или IP для проверки">
+                <button class="rt-btn rt-btn-primary" id="rtCheckGo" type="button">Проверить</button>
+              </div>
+              <div class="rt-check-out" id="rtCheckOut" aria-live="polite"></div>
+            </section>
+
+            <section class="rt-panel">
+              <div class="rt-panel-title">Политика по умолчанию</div>
+              <div id="rtDefaultCard"></div>
+            </section>
+
+            <section class="rt-panel rt-presets">
+              <button class="rt-presets-toggle" id="rtPresetsToggle" type="button" aria-expanded="false" aria-controls="rtPresetsList">
+                <span>Пресеты</span>
+                <svg class="rt-chev rt-chev-down" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+              </button>
+              <div class="rt-presets-list" id="rtPresetsList" hidden></div>
+            </section>
+          </aside>
+        </div>
+
+        <div class="rt-savebar" id="rtSaveBar" hidden>
+          <div class="rt-savebar-info">
+            <span class="rt-savebar-count" id="rtSaveCount"></span>
+            <span class="rt-savebar-note">Применится без разрыва</span>
+          </div>
+          <div class="rt-savebar-actions">
+            <button class="rt-btn rt-btn-ghost" id="rtRevert" type="button">Отменить</button>
+            <button class="rt-btn rt-btn-primary" id="rtApply" type="button">Применить правила</button>
+          </div>
+        </div>
+      </div>
+
       <!-- SETTINGS -->
       <div class="page" id="page-settings">
+        <div class="section">
+          <button class="rt-entry" id="btnOpenRouting" type="button">
+            <span class="rt-entry-body">
+              <span class="rt-entry-title">Маршрутизация</span>
+              <span class="rt-entry-sub" id="rtEntrySub">—</span>
+            </span>
+            <svg class="rt-chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+          </button>
+        </div>
         <div class="section">
           <div class="section-title">Каналы (ссылки)</div>
           <div class="field">
@@ -115,6 +178,10 @@
       <button class="nav-item active" data-page="home">
         <svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h5v-6h4v6h5V10"/></svg>
         Главная
+      </button>
+      <button class="nav-item" data-page="routing">
+        <svg viewBox="0 0 24 24"><path d="M3 7h18"/><path d="M3 12h12"/><path d="M3 17h7"/></svg>
+        Маршруты
       </button>
       <button class="nav-item" data-page="logs">
         <svg viewBox="0 0 24 24"><path d="M4 5h16"/><path d="M4 10h16"/><path d="M4 15h10"/><path d="M4 20h7"/></svg>

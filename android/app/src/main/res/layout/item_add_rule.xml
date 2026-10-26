@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hallmark · dose · per-stage add: a quiet text row, 48dp hit target -->
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/addRuleRow"
+    android:layout_width="match_parent"
+    android:layout_height="@dimen/touch_target_min"
+    android:layout_marginBottom="@dimen/space_s"
+    android:background="?attr/selectableItemBackground"
+    android:clickable="true"
+    android:focusable="true"
+    android:fontFamily="sans-serif-medium"
+    android:gravity="center_vertical"
+    android:paddingStart="@dimen/space_m"
+    android:paddingEnd="@dimen/space_m"
+    android:text="@string/routing_add_short"
+    android:textColor="@color/accent_deep"
+    android:textSize="13sp" />

@@ -91,6 +91,8 @@ public class MainActivity extends AppCompatActivity {
     private String pendingLinks = "";
     // Приоритеты: контейнер строк каналов (порядок = порядок в pendingLinks).
     private LinearLayout llCarriers;
+    // T3: подзаголовок карточки «Маршрутизация» (сводка из последнего чтения правил).
+    private TextView tvRoutingSummary;
 
     // Logs Tab Elements
     private MaterialButtonToggleGroup toggleLogLevel;
@@ -199,6 +201,7 @@ public class MainActivity extends AppCompatActivity {
         btnImport = findViewById(R.id.btnImport);
         btnSave = findViewById(R.id.btnSave);
         llCarriers = findViewById(R.id.llCarriers);
+        tvRoutingSummary = findViewById(R.id.tvRoutingSummary);
 
         // Logs
         toggleLogLevel = findViewById(R.id.toggleLogLevel);
@@ -280,8 +283,25 @@ public class MainActivity extends AppCompatActivity {
         loadSettingsForm();
         btnImport.setOnClickListener(v -> showImportDialog());
         btnSave.setOnClickListener(v -> saveSettingsForm());
+        // Вход в «Маршруты» — отдельная activity, bottom-nav не расширяем (§3).
+        View cardRouting = findViewById(R.id.cardRouting);
+        if (cardRouting != null) {
+            cardRouting.setOnClickListener(v ->
+                    startActivity(new Intent(MainActivity.this, RoutingActivity.class)));
+        }
         // direct-хвост управляется переключателем — перерисовываем список.
         switchFallback.setOnCheckedChangeListener((b, checked) -> renderCarriers());
+    }
+
+    /** Сводка в карточке маршрутов: пишется экраном «Маршруты» после чтения/применения. */
+    private void updateRoutingSummary() {
+        if (tvRoutingSummary == null) {
+            return;
+        }
+        String summary = RoutingActivity.cachedSummary(this);
+        tvRoutingSummary.setText(summary == null
+                ? getString(R.string.routing_summary_unknown)
+                : summary);
     }
 
     private void setupLogsTab() {
@@ -346,6 +366,7 @@ public class MainActivity extends AppCompatActivity {
         LogBuffer.setListener(logListener);
         refreshUI();
         updateEndpointInfo();
+        updateRoutingSummary();
         if (logsVisible) {
             // Полный ре-рендер: за время паузы фильтр/буфер могли измениться.
             userAtBottom = true;
@@ -412,6 +433,11 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void refreshUI() {
+        // Экран «Маршруты» перезапускает ядро при применении правил: в это окно
+        // статус не должен мигать «Не подключено»/ошибкой (ROUTING_UI §5.7).
+        if (RoutingActivity.isApplying()) {
+            return;
+        }
         boolean active = vpnActive();
         if (lastRenderedVpnState != null && lastRenderedVpnState == active) return;
         lastRenderedVpnState = active;

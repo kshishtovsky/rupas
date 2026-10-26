@@ -367,12 +367,12 @@ type Exclusions struct {
 // matches both. Resolution order is fixed by SYSTEM_DESIGN §4.2:
 // CIDR → SNI → port → default.
 type Rule struct {
-	CIDR   string `yaml:"cidr,omitempty"`
-	SNI    string `yaml:"sni,omitempty"`   // exact name or "*.suffix" wildcard
-	Ports  string `yaml:"ports,omitempty"` // "443", "50000-65535", "53,123"
-	GeoIP  string `yaml:"geoip,omitempty"` // country code, e.g. "ru" — expands to the country's CIDR table
-	Proto  string `yaml:"proto,omitempty"` // "", "tcp" or "udp"
-	Action Action `yaml:"action"`
+	CIDR   string `yaml:"cidr,omitempty" json:"cidr,omitempty"`
+	SNI    string `yaml:"sni,omitempty" json:"sni,omitempty"`     // exact name or "*.suffix" wildcard
+	Ports  string `yaml:"ports,omitempty" json:"ports,omitempty"` // "443", "50000-65535", "53,123"
+	GeoIP  string `yaml:"geoip,omitempty" json:"geoip,omitempty"` // country code, e.g. "ru" — expands to the country's CIDR table
+	Proto  string `yaml:"proto,omitempty" json:"proto,omitempty"` // "", "tcp" or "udp"
+	Action Action `yaml:"action" json:"action"`                   // JSON: "direct"|"tunnel"|"desync"|"block"
 }
 
 // Transport protocol selector values for Rule.Proto.

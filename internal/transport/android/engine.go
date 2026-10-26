@@ -29,6 +29,9 @@ type Engine struct {
 	settings *Settings
 	rules    *Rules
 	relay    *Relay
+	// preferIPv4: PreferIPv4 mode (default ON) — v6 flows fast-dropped,
+	// DNS AAAA answered empty (dns4.go). Disabled by settings prefer_ipv4=false.
+	preferIPv4 bool
 	// carriers: the TUNNEL dial chain (relay inbounds + own xhttp client),
 	// built after the relay starts (buildCarriers from engine_chain.go).
 	carriers []tcpCarrier
@@ -60,10 +63,11 @@ func NewEngine(verdict Verdict, protect ProtectFunc, logFn func(string)) *Engine
 		logFn = func(string) {}
 	}
 	return &Engine{
-		verdict: verdict,
-		protect: protect,
-		logFn:   logFn,
-		dialer:  ProtectedDialer(protect),
+		verdict:    verdict,
+		protect:    protect,
+		logFn:      logFn,
+		dialer:     ProtectedDialer(protect),
+		preferIPv4: true, // default ON; settings may disable explicitly
 	}
 }
 
@@ -78,6 +82,7 @@ func NewW3Engine(settings *Settings, protect ProtectFunc, logFn func(string), fi
 	e.filesDir = filesDir
 	if settings != nil {
 		e.relay = NewRelay(settings, func(line string) { e.logf("%s", line) })
+		e.preferIPv4 = settings.PreferIPv4Enabled()
 	}
 	return e
 }

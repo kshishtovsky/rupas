@@ -38,13 +38,13 @@ func (c *stubConn) Read(b []byte) (int, error) {
 	return n, nil
 }
 
-func (c *stubConn) Write(b []byte) (int, error)          { return c.written.Write(b) }
-func (c *stubConn) Close() error                         { c.closed = true; return nil }
-func (c *stubConn) LocalAddr() net.Addr                  { return nil }
-func (c *stubConn) RemoteAddr() net.Addr                 { return nil }
-func (c *stubConn) SetDeadline(t time.Time) error        { return nil }
-func (c *stubConn) SetReadDeadline(t time.Time) error    { return nil }
-func (c *stubConn) SetWriteDeadline(t time.Time) error   { return nil }
+func (c *stubConn) Write(b []byte) (int, error)        { return c.written.Write(b) }
+func (c *stubConn) Close() error                       { c.closed = true; return nil }
+func (c *stubConn) LocalAddr() net.Addr                { return nil }
+func (c *stubConn) RemoteAddr() net.Addr               { return nil }
+func (c *stubConn) SetDeadline(t time.Time) error      { return nil }
+func (c *stubConn) SetReadDeadline(t time.Time) error  { return nil }
+func (c *stubConn) SetWriteDeadline(t time.Time) error { return nil }
 
 func dest() netip.AddrPort { return netip.MustParseAddrPort("93.184.216.34:443") }
 
@@ -113,7 +113,7 @@ func TestRefusalFailoverReplaysRequest(t *testing.T) {
 
 func TestCooldownSkipsDeadCarrier(t *testing.T) {
 	e := stubEngine(t, nil,
-		ok(""),      // dial OK, refusal EOF on read
+		ok(""),         // dial OK, refusal EOF on read
 		ok("OK-OK-OK"), // alive
 	)
 

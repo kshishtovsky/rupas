@@ -36,18 +36,18 @@ const (
 
 // Endpoint is one parsed tunnel carrier.
 type Endpoint struct {
-	Kind       string // vless | trojan | hysteria2
-	Host       string
-	Port       uint16
-	UUID       string // vless uuid / trojan+hysteria2 password
-	Security   string // none | tls | reality
-	SNI        string
-	ALPN       []string
+	Kind        string // vless | trojan | hysteria2
+	Host        string
+	Port        uint16
+	UUID        string // vless uuid / trojan+hysteria2 password
+	Security    string // none | tls | reality
+	SNI         string
+	ALPN        []string
 	Fingerprint string
-	Flow       string // vless flow (reality)
-	PBK        string // reality public key
-	SID        string // reality short id
-	Insecure   bool   // tls allowInsecure/insecure=1
+	Flow        string // vless flow (reality)
+	PBK         string // reality public key
+	SID         string // reality short id
+	Insecure    bool   // tls allowInsecure/insecure=1
 
 	Transport string // tcp | ws | grpc | xhttp | httpupgrade
 	Path      string // ws/httpupgrade/xhttp path
@@ -97,13 +97,13 @@ func parseVLESSLink(raw string) (Endpoint, error) {
 	}
 	q := u.Query()
 	e := Endpoint{
-		Kind:     KindVLESS,
-		Host:     host,
-		Port:     uint16(port),
-		UUID:     u.User.Username(),
-		Name:     u.Fragment,
+		Kind:      KindVLESS,
+		Host:      host,
+		Port:      uint16(port),
+		UUID:      u.User.Username(),
+		Name:      u.Fragment,
 		Transport: strings.ToLower(q.Get("type")),
-		Flow:     q.Get("flow"),
+		Flow:      q.Get("flow"),
 	}
 	if e.Transport == "" {
 		e.Transport = transportTCP
@@ -174,14 +174,14 @@ func parseHysteria2Link(raw string) (Endpoint, error) {
 	}
 	q := u.Query()
 	e := Endpoint{
-		Kind:       KindHysteria2,
-		Host:       host,
-		Port:       uint16(port),
-		UUID:       u.User.Username(), // password
-		Security:   secTLS,            // hysteria2 is always TLS
-		Name:       u.Fragment,
-		Transport:  transportTCP,
-		Insecure:   isTrue(q.Get("insecure")),
+		Kind:        KindHysteria2,
+		Host:        host,
+		Port:        uint16(port),
+		UUID:        u.User.Username(), // password
+		Security:    secTLS,            // hysteria2 is always TLS
+		Name:        u.Fragment,
+		Transport:   transportTCP,
+		Insecure:    isTrue(q.Get("insecure")),
 		Fingerprint: q.Get("fp"),
 	}
 	if sni := q.Get("sni"); sni != "" {
@@ -208,16 +208,16 @@ func parseTrojanLink(raw string) (Endpoint, error) {
 	}
 	q := u.Query()
 	e := Endpoint{
-		Kind:       KindTrojan,
-		Host:       host,
-		Port:       uint16(port),
-		UUID:       u.User.Username(), // password
-		Security:   secTLS,            // trojan is always TLS
-		SNI:        q.Get("sni"),
+		Kind:        KindTrojan,
+		Host:        host,
+		Port:        uint16(port),
+		UUID:        u.User.Username(), // password
+		Security:    secTLS,            // trojan is always TLS
+		SNI:         q.Get("sni"),
 		Fingerprint: q.Get("fp"),
-		Name:       u.Fragment,
-		Transport:  strings.ToLower(q.Get("type")),
-		Insecure:   isTrue(q.Get("allowInsecure")) || isTrue(q.Get("insecure")),
+		Name:        u.Fragment,
+		Transport:   strings.ToLower(q.Get("type")),
+		Insecure:    isTrue(q.Get("allowInsecure")) || isTrue(q.Get("insecure")),
 	}
 	if e.Transport == "" {
 		e.Transport = transportTCP

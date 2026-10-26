@@ -16,8 +16,8 @@ import (
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/option"
-	"github.com/sagernet/sing/common/logger"
 	"github.com/sagernet/sing-tun"
+	"github.com/sagernet/sing/common/logger"
 )
 
 // errNotSupported is the universal stub-platform answer: the stub exists
@@ -39,18 +39,20 @@ func (nopPlatform) OpenInterface(*tun.Options, option.TunPlatformOptions) (tun.T
 }
 func (nopPlatform) ProcessPlatformOptions(option.TunPlatformOptions) error { return nil }
 
-func (nopPlatform) UsePlatformDefaultInterfaceMonitor() bool             { return false }
+func (nopPlatform) UsePlatformDefaultInterfaceMonitor() bool { return false }
 func (nopPlatform) CreateDefaultInterfaceMonitor(logger.Logger) tun.DefaultInterfaceMonitor {
 	return nil
 }
 
-func (nopPlatform) UsePlatformNetworkInterfaces() bool                     { return false }
-func (nopPlatform) NetworkInterfaces() ([]adapter.NetworkInterface, error) { return nil, errNotSupported }
+func (nopPlatform) UsePlatformNetworkInterfaces() bool { return false }
+func (nopPlatform) NetworkInterfaces() ([]adapter.NetworkInterface, error) {
+	return nil, errNotSupported
+}
 
-func (nopPlatform) UnderNetworkExtension() bool                { return false }
-func (nopPlatform) NetworkExtensionIncludeAllNetworks() bool   { return false }
-func (nopPlatform) ClearDNSCache()                             {}
-func (nopPlatform) RequestPermissionForWIFIState() error       { return errNotSupported }
+func (nopPlatform) UnderNetworkExtension() bool                     { return false }
+func (nopPlatform) NetworkExtensionIncludeAllNetworks() bool        { return false }
+func (nopPlatform) ClearDNSCache()                                  {}
+func (nopPlatform) RequestPermissionForWIFIState() error            { return errNotSupported }
 func (nopPlatform) ReadWIFIState(context.Context) adapter.WIFIState { return adapter.WIFIState{} }
 
 func (nopPlatform) UsePlatformConnectionOwnerFinder() bool { return false }
@@ -60,18 +62,18 @@ func (nopPlatform) FindConnectionOwner(*adapter.FindConnectionOwnerRequest) (*ad
 
 func (nopPlatform) UsePlatformWIFIMonitor() bool { return false }
 
-func (nopPlatform) UsePlatformNotification() bool                        { return false }
-func (nopPlatform) SendNotification(*adapter.Notification) error         { return errNotSupported }
-func (nopPlatform) CancelNotification(string, int32) error               { return errNotSupported }
+func (nopPlatform) UsePlatformNotification() bool                { return false }
+func (nopPlatform) SendNotification(*adapter.Notification) error { return errNotSupported }
+func (nopPlatform) CancelNotification(string, int32) error       { return errNotSupported }
 
 func (nopPlatform) MyInterfaceAddress() []netip.Addr { return nil }
 
-func (nopPlatform) UsePlatformNeighborResolver() bool { return false }
+func (nopPlatform) UsePlatformNeighborResolver() bool                         { return false }
 func (nopPlatform) StartNeighborMonitor(adapter.NeighborUpdateListener) error { return errNotSupported }
 func (nopPlatform) CloseNeighborMonitor(adapter.NeighborUpdateListener) error { return errNotSupported }
 
-func (nopPlatform) UsePlatformShell() bool           { return false }
-func (nopPlatform) CheckPlatformShell() error        { return errNotSupported }
+func (nopPlatform) UsePlatformShell() bool    { return false }
+func (nopPlatform) CheckPlatformShell() error { return errNotSupported }
 func (nopPlatform) OpenShellSession(*adapter.PlatformUser, string, []string, string, int32, int32) (adapter.ShellSession, error) {
 	return nil, errNotSupported
 }
@@ -80,7 +82,7 @@ func (nopPlatform) LookupSFTPServer() (string, error)                { return ""
 func (nopPlatform) ReadSystemSSHHostKey() ([]byte, error)            { return nil, errNotSupported }
 func (nopPlatform) TailscaleHostname() string                        { return "" }
 
-func (nopPlatform) UsePlatformBridge() bool                          { return false }
+func (nopPlatform) UsePlatformBridge() bool { return false }
 func (nopPlatform) CreateBridge(adapter.BridgeOptions) (adapter.BridgeSession, error) {
 	return nil, errNotSupported
 }

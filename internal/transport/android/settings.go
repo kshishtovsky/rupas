@@ -21,6 +21,13 @@ import (
 // share links (vless://, hysteria2://, hy2://, trojan://) in dial order —
 // the first is the primary carrier, the rest are fallbacks. When links is
 // set it fully replaces the legacy flat fields.
+//
+// prefer_ipv4 (optional, default TRUE) — PreferIPv4 mode: IPv6 flows are
+// fast-dropped at the TUN and DNS AAAA queries are answered with an empty
+// NOERROR, forcing every app onto IPv4. The server fleet has no IPv6
+// egress today, so v6 targets through the tunnel are guaranteed death;
+// this flag turns "works only sometimes" into "works always". Send false
+// in the settings JSON to disable once the server gains working IPv6.
 type Settings struct {
 	UUID      string `json:"uuid"`
 	Server    string `json:"server"`
@@ -29,8 +36,16 @@ type Settings struct {
 	PublicKey string `json:"public_key"`
 	ShortID   string `json:"short_id"`
 	Fallback  bool   `json:"fallback"`
+	// PreferIPv4: nil (absent in JSON) means enabled.
+	PreferIPv4 *bool `json:"prefer_ipv4,omitempty"`
 	// Links: share links in dial order (optional; replaces the flat fields).
 	Links []string `json:"links,omitempty"`
+}
+
+// PreferIPv4Enabled reports the effective PreferIPv4 mode; absent field →
+// enabled.
+func (s *Settings) PreferIPv4Enabled() bool {
+	return s == nil || s.PreferIPv4 == nil || *s.PreferIPv4
 }
 
 // ParseSettings decodes and validates the SetSettings JSON. Unknown fields
@@ -108,11 +123,11 @@ func (s *Settings) Endpoints() ([]Endpoint, error) {
 // legacyEndpoint converts the flat fields into one vless endpoint.
 func (s *Settings) legacyEndpoint() Endpoint {
 	e := Endpoint{
-		Kind:     KindVLESS,
-		Host:     s.Server,
-		Port:     s.Port,
-		UUID:     s.UUID,
-		SNI:      s.SNI,
+		Kind:      KindVLESS,
+		Host:      s.Server,
+		Port:      s.Port,
+		UUID:      s.UUID,
+		SNI:       s.SNI,
 		Transport: transportTCP,
 	}
 	if s.PublicKey != "" {

@@ -20,7 +20,7 @@ func makeClientHello(t *testing.T, sni string, echPayload []byte) []byte {
 	var exts []byte
 	if sni != "" {
 		var nameList []byte
-		nameList = append(nameList, 0x00)                       // name_type: host_name
+		nameList = append(nameList, 0x00) // name_type: host_name
 		nameList = append(nameList, byte(len(sni)>>8), byte(len(sni)))
 		nameList = append(nameList, sni...)
 		listLen := len(nameList)
@@ -117,7 +117,7 @@ func TestPeekNonTLSTimesOutCleanly(t *testing.T) {
 	}
 	// The conn still works for the relay: a write on the other end must
 	// be readable (prefix empty → passthrough).
-	go func() { server.Write([]byte("SSH-2.0")) }() //nolint:errcheck
+	go func() { server.Write([]byte("SSH-2.0")) }()          //nolint:errcheck
 	wrapped.SetReadDeadline(time.Now().Add(2 * time.Second)) //nolint:errcheck
 	buf := make([]byte, 7)
 	if _, err := io.ReadFull(wrapped, buf); err != nil {

@@ -1,4 +1,4 @@
-﻿// Package android: W3 routing rules (SYSTEM_DESIGN §4/§7, PRD ru §5).
+// Package android: W3 routing rules (SYSTEM_DESIGN §4/§7, PRD ru §5).
 //
 // The rule set is compiled once at Start into immutable tables and then
 // matched per flow with zero allocation. Match order is fixed and mirrors

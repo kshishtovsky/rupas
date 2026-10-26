@@ -12,6 +12,7 @@ import (
 	"log"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 
 	"github.com/rupas/rupas/internal/guictrl"
 )
@@ -73,7 +74,7 @@ func main() {
 		updateTrayLabel(s)
 	})
 
-	app.Window.NewWithOptions(application.WebviewWindowOptions{
+	win := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            "Rupas",
 		Width:            420,
 		Height:           740,
@@ -81,6 +82,18 @@ func main() {
 		MinHeight:        620,
 		BackgroundColour: application.NewRGBA(247, 243, 236, 255), // paper #F7F3EC
 		URL:              "/",
+	})
+
+	// Minimize-to-tray (GUI_DESIGN §6.4): the close (X) button hides the
+	// window instead of quitting; real exit is the tray menu «Выход».
+	// Hooks run synchronously BEFORE the internal WindowClosing listener
+	// that destroys the window — Cancel() keeps the window alive.
+	win.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		if quitting {
+			return // tray «Выход»: let the default close flow run
+		}
+		e.Cancel()
+		win.Hide()
 	})
 
 	// System tray (GUI_DESIGN §6.4): toggle + show + quit.
@@ -96,7 +109,10 @@ func main() {
 				w.Focus()
 			}
 		}),
-		application.NewMenuItem("Выход").OnClick(func(*application.Context) { app.Quit() }),
+		application.NewMenuItem("Выход").OnClick(func(*application.Context) {
+			quitting = true
+			app.Quit()
+		}),
 	))
 	tray.Run()
 
@@ -107,6 +123,10 @@ func main() {
 
 // tray is the live system tray (label updated from the snapshot poller).
 var tray *application.SystemTray
+
+// quitting is set by the tray «Выход»: the WindowClosing hook lets the real
+// close flow run instead of hiding to tray.
+var quitting bool
 
 // toggle turns interception on/off from the tray menu.
 func toggle(on bool) error {

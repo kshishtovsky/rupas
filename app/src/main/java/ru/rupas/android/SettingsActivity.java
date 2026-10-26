@@ -156,6 +156,11 @@ public class SettingsActivity extends AppCompatActivity {
             }
             LogBuffer.add("[settings] сохранено: tunnel "
                     + (s.isConfigured() ? "on (server " + s.server + ")" : "off"));
+            // Настройки на лету не применяются — если VPN поднят, переподнимаем
+            // ядро, иначе новый endpoint не вступит в силу до ручного OFF/ON.
+            if (RupasVpnService.restartIfRunning(this)) {
+                LogBuffer.add("[settings] VPN поднят — перезапускаю ядро с новыми настройками");
+            }
             Toast.makeText(this, R.string.settings_saved, Toast.LENGTH_SHORT).show();
             finish();
         } else {

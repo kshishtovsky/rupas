@@ -25,6 +25,9 @@ public final class LogBuffer {
     }
 
     public static void add(String line) {
+        // Дублируем в logcat: стартовые строки ([vpn]/[settings]/[core]) иначе
+        // видны только на экране приложения и недоступны для adb-диагностики.
+        android.util.Log.d("RupasVpn", line);
         synchronized (LogBuffer.class) {
             LINES.addLast(line);
             while (LINES.size() > MAX_LINES) {

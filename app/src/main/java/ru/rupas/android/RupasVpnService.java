@@ -4,6 +4,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.net.VpnService;
@@ -63,6 +64,23 @@ public class RupasVpnService extends VpnService {
         return running;
     }
 
+    /** Действие: переподнять ядро с новыми настройками (см. onStartCommand). */
+    public static final String ACTION_RESTART = "ru.rupas.android.RESTART";
+
+    /** Перезапустить VPN с текущими настройками, если он поднят. false — не поднят. */
+    public static boolean restartIfRunning(Context ctx) {
+        if (!running) {
+            return false;
+        }
+        Intent i = new Intent(ctx, RupasVpnService.class).setAction(ACTION_RESTART);
+        if (Build.VERSION.SDK_INT >= 26) {
+            ctx.startForegroundService(i);
+        } else {
+            ctx.startService(i);
+        }
+        return true;
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -72,6 +90,13 @@ public class RupasVpnService extends VpnService {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         startForegroundWithStatus();
+        // RESTART (пришёл из сохранения настроек): настроек на лету движок не
+        // перечитывает (SetSettings при работающем движке = ошибка), поэтому
+        // переподнимаем TUN+ядро целиком — иначе новый endpoint не применится.
+        if (intent != null && ACTION_RESTART.equals(intent.getAction())) {
+            LogBuffer.add("[vpn] restart: применяем новые настройки");
+            stopCore();
+        }
         if (!establishAndStartCore()) {
             Log.e(TAG, "failed to establish TUN or start core");
             stopForegroundAndSelf();

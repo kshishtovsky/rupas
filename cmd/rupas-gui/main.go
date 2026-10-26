@@ -19,6 +19,9 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+//go:embed icon.png
+var trayIcon []byte
+
 func main() {
 	startDaemon := flag.Bool("startdaemon", false, "internal: elevated relaunch that spawns rupasd and exits")
 	daemonPath := flag.String("daemon", "", "rupasd.exe path (with -startdaemon)")
@@ -41,6 +44,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("rupas-gui: %v", err)
 	}
+	liveCtrl = ctrl
 
 	app := application.New(application.Options{
 		Name:        "Rupas",
@@ -51,11 +55,22 @@ func main() {
 		Assets: application.AssetOptions{
 			Handler: application.BundledAssetFileServer(assets),
 		},
+		SingleInstance: &application.SingleInstanceOptions{
+			UniqueID: "rupas-gui",
+			OnSecondInstanceLaunch: func(application.SecondInstanceData) {
+				if w := application.Get().Window.Current(); w != nil {
+					w.Show()
+					w.Focus()
+				}
+			},
+		},
 	})
 
-	// Snapshot stream: poller → Wails event → frontend (GUI_DESIGN §6.2).
+	// Snapshot stream: poller → Wails event → frontend (GUI_DESIGN §6.2),
+	// mirrored into the tray label.
 	ctrl.StartPoller(func(s guictrl.Snapshot) {
 		app.Event.Emit("rupas:snapshot", s)
+		updateTrayLabel(s)
 	})
 
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
@@ -68,7 +83,61 @@ func main() {
 		URL:              "/",
 	})
 
+	// System tray (GUI_DESIGN §6.4): toggle + show + quit.
+	tray = app.SystemTray.New()
+	tray.SetIcon(trayIcon)
+	tray.SetMenu(application.NewMenuFromItems(
+		application.NewMenuItem("Включить").OnClick(func(*application.Context) { _ = toggle(true) }),
+		application.NewMenuItem("Выключить").OnClick(func(*application.Context) { _ = toggle(false) }),
+		application.NewMenuItemSeparator(),
+		application.NewMenuItem("Показать окно").OnClick(func(*application.Context) {
+			if w := app.Window.Current(); w != nil {
+				w.Show()
+				w.Focus()
+			}
+		}),
+		application.NewMenuItem("Выход").OnClick(func(*application.Context) { app.Quit() }),
+	))
+	tray.Run()
+
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
+	}
+}
+
+// tray is the live system tray (label updated from the snapshot poller).
+var tray *application.SystemTray
+
+// toggle turns interception on/off from the tray menu.
+func toggle(on bool) error {
+	if on {
+		if err := liveCtrl.EnsureDaemon(); err != nil {
+			return err
+		}
+		return liveCtrl.On()
+	}
+	return liveCtrl.Off()
+}
+
+// liveCtrl is the controller for tray callbacks.
+var liveCtrl *guictrl.Controller
+
+func updateTrayLabel(s guictrl.Snapshot) {
+	if tray == nil {
+		return
+	}
+	switch {
+	case !s.Online:
+		tray.SetLabel("Rupas — демон не запущен")
+	case s.State == "ACTIVE":
+		tray.SetLabel("Rupas — работает")
+	case s.State == "ACTIVE_TUNNEL_ONLY":
+		tray.SetLabel("Rupas — работает (туннель)")
+	case s.State == "PROBING":
+		tray.SetLabel("Rupas — пробинг…")
+	case s.State == "DEGRADED":
+		tray.SetLabel("Rupas — сбой")
+	default:
+		tray.SetLabel("Rupas — выключено")
 	}
 }

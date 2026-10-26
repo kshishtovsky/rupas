@@ -78,9 +78,12 @@ document.querySelectorAll(".nav-item").forEach((b) =>
     document.querySelectorAll(".page").forEach((x) => x.classList.remove("active"));
     b.classList.add("active");
     $("page-" + b.dataset.page).classList.add("active");
-    if (b.dataset.page === "logs") loadLogs();
+    if (b.dataset.page === "logs") { loadLogs(); logsTimer = setInterval(loadLogs, 2000); }
+    else { clearInterval(logsTimer); logsTimer = null; }
+    if (b.dataset.page === "settings") { call("LoadConfig").then(fillSettings).catch(() => {}); call("Autostart").then((v) => ($("setAutostart").checked = !!v)).catch(() => {}); }
   })
 );
+let logsTimer = null;
 
 // ---------- logs ----------
 async function loadLogs() {
@@ -115,6 +118,16 @@ $("btnLogsCopy").addEventListener("click", async () => {
 });
 
 // ---------- settings ----------
+function fillSettings(cfg) {
+  $("setHost").value = cfg.host || "";
+  $("setPort").value = cfg.port || "";
+  $("setUuid").value = cfg.uuid || "";
+  $("setSni").value = cfg.sni || "";
+  $("setPbk").value = cfg.pbk || "";
+  $("setSid").value = cfg.sid || "";
+  $("setDpi").checked = cfg.dpi !== false;
+}
+
 function bindEye(eyeId, inputId) {
   $(eyeId).addEventListener("click", () => {
     const i = $(inputId);
@@ -139,6 +152,15 @@ $("btnVlessParse").addEventListener("click", async () => {
     $("saveHint").textContent = v.warning ? "⚠ " + v.warning : "Ссылка разобрана — проверьте поля и сохраните";
   } catch (e) {
     $("saveHint").textContent = "⚠ " + (e.message || e);
+  }
+});
+
+$("setAutostart").addEventListener("change", async (e) => {
+  try {
+    await call("SetAutostart", e.target.checked);
+  } catch (err) {
+    e.target.checked = !e.target.checked;
+    $("saveHint").textContent = "⚠ Автозапуск: " + (err.message || err);
   }
 });
 

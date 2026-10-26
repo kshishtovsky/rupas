@@ -230,13 +230,19 @@ func decodeSnapshot(resp *rpc.Response, snap *core.Snapshot) error {
 }
 
 // DefaultConfigPath guesses the onboarding config location:
-// <exe dir>/configs/rupas.yaml (repo layout) or %ProgramData%\rupas\rupas.yaml.
+// <exe dir>/configs/rupas.yaml or <exe dir>/../configs/rupas.yaml (repo
+// layout, exe in build/), else %ProgramData%\Rupas\rupas.yaml.
 func DefaultConfigPath() string {
 	exe, err := os.Executable()
 	if err == nil {
-		p := filepath.Join(filepath.Dir(exe), "configs", "rupas.yaml")
-		if _, err := os.Stat(p); err == nil {
-			return p
+		dir := filepath.Dir(exe)
+		for _, p := range []string{
+			filepath.Join(dir, "configs", "rupas.yaml"),
+			filepath.Join(dir, "..", "configs", "rupas.yaml"),
+		} {
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
 		}
 	}
 	return filepath.Join(os.Getenv("ProgramData"), "Rupas", "rupas.yaml")

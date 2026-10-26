@@ -11,17 +11,16 @@ const call = (method, ...args) => callRaw(`${FQN}.${method}`, ...args);
 
 // ---------- state ----------
 let snap = { online: false, state: "" };
-let wizardStep = 0;
 
 // ---------- UI-state mapping (GUI_DESIGN §7) ----------
 function uiState(s) {
-  if (!s.online) return "off"; // daemon down == button shows off
+  if (!s.online) return "off";
   switch (s.state) {
     case "ACTIVE":
     case "ACTIVE_TUNNEL_ONLY": return "on";
     case "PROBING": return "connecting";
     case "DEGRADED": return "error";
-    default: return "off"; // OFF or unknown
+    default: return "off";
   }
 }
 const CAPTIONS = {
@@ -31,11 +30,18 @@ const CAPTIONS = {
   error: "Сбой",
 };
 
-function fmtBytes(n) {
-  if (n > 1024 * 1024 * 1024) return (n / 1024 ** 3).toFixed(1) + " ГБ";
-  if (n > 1024 * 1024) return (n / 1024 ** 2).toFixed(1) + " МБ";
-  if (n > 1024) return (n / 1024).toFixed(1) + " КБ";
-  return n + " Б";
+function fmtRate(bps) {
+  if (bps > 1024 * 1024) return (bps / 1024 ** 2).toFixed(1) + " МБ/с";
+  if (bps > 1024) return (bps / 1024).toFixed(1).replace(".", ",") + " КБ/с";
+  return Math.round(bps) + " Б/с";
+}
+
+function fmtSession(sec) {
+  if (!sec || sec < 0) sec = 0;
+  const h = String(Math.floor(sec / 3600)).padStart(2, "0");
+  const m = String(Math.floor((sec % 3600) / 60)).padStart(2, "0");
+  const s = String(sec % 60).padStart(2, "0");
+  return `${h}:${m}:${s}`;
 }
 
 function render(s) {
@@ -43,19 +49,30 @@ function render(s) {
   const st = uiState(s);
   const disc = $("powerDisc");
   disc.className = "power-disc " + (st === "off" ? "" : st);
-  $("powerCaption").textContent = s.online && s.state === "ACTIVE_TUNNEL_ONLY" ? "Работает (только туннель)" : CAPTIONS[st];
+  $("powerCaption").textContent =
+    s.online && s.state === "ACTIVE_TUNNEL_ONLY" ? "Работает (только туннель)" : CAPTIONS[st];
   $("powerSub").textContent = st === "error" ? "Нажмите, чтобы переподключить" : "";
+  $("sessionTime").textContent =
+    s.online && (s.state === "ACTIVE" || s.state === "ACTIVE_TUNNEL_ONLY")
+      ? "Сессия " + fmtSession(s.sessionSec) : "";
   const dot = $("dot");
   dot.className = "status-dot " + (st === "off" ? "" : st);
   $("dotText").textContent = CAPTIONS[st];
-  // cards
-  $("cardTunnel").innerHTML = !s.online ? "—" :
-    s.tunnelMode === "tunnel" ? `<small>VLESS</small> работает` :
-    s.tunnelMode === "escalated" ? `<span class="chip warn">эскалация</span>` :
-    s.tunnelMode === "off" ? "выключен" : "—";
-  $("cardTraffic").textContent = !s.online ? "—" : `↓${fmtBytes(s.rxBytes)} ↑${fmtBytes(s.txBytes)}`;
+  // telemetry cards (Android W3 home parity)
+  $("cardDown").textContent = s.online ? fmtRate(s.rxRate || 0) : "—";
+  $("cardUp").textContent = s.online ? fmtRate(s.txRate || 0) : "—";
+  $("cardGateway").innerHTML = !s.online
+    ? "—"
+    : s.gateway
+      ? s.gateway
+      : '<span class="chip">напрямую</span>';
   const flows = s.tcpFlows || 0;
-  $("cardFlows").textContent = !s.online ? "—" : `${flows} активных TCP-потоков через туннель`;
+  $("cardFlows").textContent = !s.online ? "—" : `${flows} TCP`;
+  $("cardHealth").innerHTML = !s.online
+    ? "—"
+    : s.healthFails > 0
+      ? `<span class="chip warn">Сбоев: ${s.healthFails}</span>`
+      : '<span class="chip accent">Потерь нет</span>';
 }
 
 // ---------- custom caption buttons (frameless window) ----------
@@ -86,7 +103,7 @@ document.querySelectorAll(".nav-item").forEach((b) =>
     $("page-" + b.dataset.page).classList.add("active");
     if (b.dataset.page === "logs") { loadLogs(); logsTimer = setInterval(loadLogs, 2000); }
     else { clearInterval(logsTimer); logsTimer = null; }
-    if (b.dataset.page === "settings") { call("LoadConfig").then(fillSettings).catch(() => {}); call("Autostart").then((v) => ($("setAutostart").checked = !!v)).catch(() => {}); }
+    if (b.dataset.page === "settings") loadSettings();
   })
 );
 let logsTimer = null;
@@ -103,7 +120,6 @@ async function loadLogs() {
       for (const l of lines.slice(-300)) {
         const d = document.createElement("div");
         d.className = "log-line";
-        // highlight CH-lines (verdict log)
         d.textContent = l;
         if (l.includes("verdict=")) d.classList.add("hl");
         box.appendChild(d);
@@ -123,43 +139,77 @@ $("btnLogsCopy").addEventListener("click", async () => {
   setTimeout(() => ($("btnLogsCopy").textContent = "Копировать"), 1200);
 });
 
-// ---------- settings ----------
-function fillSettings(cfg) {
-  $("setHost").value = cfg.host || "";
-  $("setPort").value = cfg.port || "";
-  $("setUuid").value = cfg.uuid || "";
-  $("setSni").value = cfg.sni || "";
-  $("setPbk").value = cfg.pbk || "";
-  $("setSid").value = cfg.sid || "";
-  $("setDpi").checked = cfg.dpi !== false;
+// ---------- settings: links + channel priorities (Android W3 parity) ----------
+let channels = [];
+
+async function loadSettings() {
+  try {
+    const st = await call("LoadState");
+    if (document.activeElement !== $("setLinks")) $("setLinks").value = st.links || "";
+    $("setDpi").checked = st.dpi !== false;
+    $("setAutostart").checked = !!st.autostart;
+    await parseLinks();
+  } catch (_) {}
 }
 
-function bindEye(eyeId, inputId) {
-  $(eyeId).addEventListener("click", () => {
-    const i = $(inputId);
-    i.type = i.type === "password" ? "text" : "password";
+async function parseLinks() {
+  const blob = $("setLinks").value.trim();
+  if (!blob) {
+    channels = [];
+    $("channelsSection").style.display = "none";
+    $("linksHint").textContent = "";
+    return;
+  }
+  try {
+    channels = await call("ParseChannels", blob);
+    $("linksHint").textContent = "";
+  } catch (e) {
+    channels = [];
+    $("linksHint").textContent = "⚠ " + (e.message || e);
+  }
+  renderChannels();
+}
+
+function renderChannels() {
+  const sec = $("channelsSection");
+  const list = $("channelList");
+  list.innerHTML = "";
+  if (!channels.length) { sec.style.display = "none"; return; }
+  sec.style.display = "block";
+  channels.forEach((ch, i) => {
+    const row = document.createElement("div");
+    row.className = "channel-row";
+    const roleChip =
+      ch.role === "unsupported"
+        ? `<span class="chip danger">${ch.kind}</span>`
+        : `<span class="chip accent">${ch.kind} → ${ch.role === "tcp" ? "основной" : ch.role === "udp" ? "голос/UDP" : "резерв"}</span>`;
+    const warn = ch.warning ? `<div class="hint" style="color:var(--warn)">⚠ ${ch.warning}</div>` : "";
+    row.innerHTML = `
+      <div class="ch-info">
+        <div class="ch-name">${ch.name}</div>
+        ${roleChip}${warn}
+      </div>
+      <div class="ch-btns">
+        <button class="cap-btn" data-act="up" title="Поднять" ${i === 0 ? "disabled" : ""}>
+          <svg viewBox="0 0 12 12"><path d="M2 8l4-4 4 4"/></svg>
+        </button>
+        <button class="cap-btn" data-act="down" title="Опустить" ${i === channels.length - 1 ? "disabled" : ""}>
+          <svg viewBox="0 0 12 12"><path d="M2 4l4 4 4-4"/></svg>
+        </button>
+      </div>`;
+    row.querySelectorAll("button[data-act]").forEach((b) =>
+      b.addEventListener("click", () => {
+        const j = b.dataset.act === "up" ? i - 1 : i + 1;
+        [channels[i], channels[j]] = [channels[j], channels[i]];
+        $("setLinks").value = channels.map((c) => c.link).join("\n");
+        renderChannels();
+      })
+    );
+    list.appendChild(row);
   });
 }
-bindEye("eyeUuid", "setUuid");
-bindEye("eyePbk", "setPbk");
 
-$("btnVlessParse").addEventListener("click", async () => {
-  const link = $("setVless").value.trim();
-  if (!link) return;
-  try {
-    const v = await call("ParseVless", link);
-    $("setHost").value = v.server || "";
-    $("setPort").value = v.port || "";
-    $("setUuid").value = v.uuid || "";
-    $("setSni").value = v.sni || "";
-    $("setPbk").value = v.publicKey || "";
-    $("setSid").value = v.shortId || "";
-    $("setVless").value = "";
-    $("saveHint").textContent = v.warning ? "⚠ " + v.warning : "Ссылка разобрана — проверьте поля и сохраните";
-  } catch (e) {
-    $("saveHint").textContent = "⚠ " + (e.message || e);
-  }
-});
+$("btnLinksParse").addEventListener("click", parseLinks);
 
 $("setAutostart").addEventListener("change", async (e) => {
   try {
@@ -171,25 +221,19 @@ $("setAutostart").addEventListener("change", async (e) => {
 });
 
 $("btnSaveSettings").addEventListener("click", async () => {
-  const ep = {
-    host: $("setHost").value.trim(),
-    port: parseInt($("setPort").value || "0", 10),
-    uuid: $("setUuid").value.trim(),
-    sni: $("setSni").value.trim(),
-    pbk: $("setPbk").value.trim(),
-    sid: $("setSid").value.trim(),
-    dpi: $("setDpi").checked,
-  };
+  $("saveHint").textContent = "Сохраняю…";
   try {
-    await call("SaveConfig", ep);
-    $("saveHint").textContent = "Сохранено ✓ (демон перезагрузит конфиг)";
+    const warns = await call("SaveLinks", $("setLinks").value);
+    $("saveHint").textContent = warns && warns.length
+      ? "Сохранено ✓ (пропущено: " + warns.length + ")"
+      : "Сохранено ✓ (демон перезагрузит конфиг)";
   } catch (e) {
     $("saveHint").textContent = "⚠ " + (e.message || e);
   }
 });
 
 // ---------- wizard (GUI_DESIGN §5) ----------
-const WELCOME = 0, PERMS = 1, VLESS = 2, ASSETS = 3, PROBE = 4, DONE = 5;
+const WELCOME = 0, PERMS = 1, LINKS = 2, ASSETS = 3, PROBE = 4, DONE = 5;
 
 function wizardStepsEl(step) {
   const w = $("wSteps");
@@ -216,7 +260,6 @@ function setWizardFooter(buttons) {
 }
 
 function showWizardStep(step) {
-  wizardStep = step;
   wizardStepsEl(step);
   const body = $("wBody");
   switch (step) {
@@ -241,7 +284,7 @@ function showWizardStep(step) {
             err.style.display = "none";
             try {
               await call("EnsureDaemon");
-              showWizardStep(VLESS);
+              showWizardStep(LINKS);
             } catch (e) {
               err.style.display = "block";
               err.textContent = "Не удалось запустить демон: " + (e.message || e) + ". Нажмите «Запустить сервис» ещё раз и подтвердите UAC.";
@@ -250,28 +293,29 @@ function showWizardStep(step) {
       ]);
       break;
 
-    case VLESS:
+    case LINKS:
       body.innerHTML = `
         <h2>Туннель</h2>
-        <p>Вставьте vless://-ссылку от вашего сервера — или нажмите «Пропустить»,
-        чтобы использовать только локальный DPI-обход.</p>
+        <p>Вставьте ссылки серверов (vless://, hysteria2://) — по одной в строке,
+        в порядке перебора. Или нажмите «Пропустить» для режима только DPI-обхода.</p>
         <div class="wizard-form">
           <div class="field">
-            <label>vless://-ссылка</label>
-            <textarea class="textarea" id="wVless" placeholder="vless://uuid@host:443?security=reality&pbk=…&sid=…&sni=…#мой сервер" spellcheck="false"></textarea>
-            <div class="hint" id="wVlessHint"></div>
+            <textarea class="textarea" id="wLinks" placeholder="vless://uuid@host:443?security=reality&pbk=…&sni=…#канал 1" spellcheck="false"></textarea>
+            <div class="hint" id="wLinksHint"></div>
           </div>
         </div>
         <div class="err-box" id="wErr" style="display:none"></div>`;
       setWizardFooter([
         { label: "Пропустить", ghost: true, onClick: () => showWizardStep(ASSETS) },
         { label: "Далее", onClick: async () => {
-            const link = $("wVless").value.trim();
-            if (!link) { $("wVlessHint").textContent = "Вставьте ссылку или нажмите «Пропустить»"; return; }
+            const blob = $("wLinks").value.trim();
+            if (!blob) { $("wLinksHint").textContent = "Вставьте ссылки или нажмите «Пропустить»"; return; }
             try {
-              const v = await call("ParseVless", link);
-              await call("SaveConfig", { host: v.server, port: v.port, uuid: v.uuid, sni: v.sni, pbk: v.publicKey, sid: v.shortId, dpi: true });
-              if (v.warning) $("wVlessHint").textContent = "⚠ " + v.warning + " — ссылка сохранена";
+              await call("ParseChannels", blob);
+              const warns = await call("SaveLinks", blob);
+              if (warns && warns.length) {
+                $("wLinksHint").textContent = "⚠ Часть ссылок пропущена: " + warns.join("; ");
+              }
               showWizardStep(ASSETS);
             } catch (e) {
               const err = $("wErr"); err.style.display = "block";
@@ -304,8 +348,6 @@ function showWizardStep(step) {
           await call("ReloadConfig");
           done(li2);
         } catch (e) {
-          // GeoIP downloads happen on first compile inside the daemon; a reload
-          // failure with the daemon offline is non-fatal for onboarding.
           done(li2);
         }
         $("wBar").style.width = "100%";
@@ -327,7 +369,6 @@ function showWizardStep(step) {
         try {
           await call("EnsureDaemon");
           await call("On");
-          // wait for ACTIVE via Status polling
           const deadline = Date.now() + 90000;
           while (Date.now() < deadline) {
             const s = await call("Status");
@@ -374,7 +415,6 @@ function showWizardStep(step) {
       showWizardStep(WELCOME);
     }
   } catch (e) {
-    // Service unreachable: show main with off state
     $("wizard").style.display = "none";
     $("mainApp").style.display = "flex";
     render({ online: false, state: "" });

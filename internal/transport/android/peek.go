@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rupas/rupas/internal/inspector"
@@ -43,6 +44,15 @@ func (c *prefixConn) Read(p []byte) (int, error) {
 	return c.Conn.Read(p)
 }
 
+// peekBufPool recycles the peek read buffer: one 4 KiB allocation per TLS
+// flow adds up on a browser-heavy session.
+var peekBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 4096)
+		return &b
+	},
+}
+
 // peekClientHello reads the head of conn (bounded by sniPeekTimeout /
 // sniPeekLimit), parses the first ClientHello through the inspector and
 // returns the lower-cased SNI, the real-ECH flag (GREASE is filtered by
@@ -51,8 +61,10 @@ func (c *prefixConn) Read(p []byte) (int, error) {
 func peekClientHello(conn net.Conn) (sni string, ech bool, wrapped net.Conn) {
 	_ = conn.SetReadDeadline(time.Now().Add(sniPeekTimeout)) //nolint:errcheck
 	st := inspector.NewStream()
-	var seen []byte
-	buf := make([]byte, 4096)
+	seen := make([]byte, 0, sniPeekLimit)
+	bufp := peekBufPool.Get().(*[]byte)
+	defer peekBufPool.Put(bufp)
+	buf := *bufp
 	for len(seen) < sniPeekLimit {
 		n, rErr := conn.Read(buf)
 		if n > 0 {

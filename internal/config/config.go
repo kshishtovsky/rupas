@@ -160,6 +160,11 @@ type Endpoint struct {
 	// XPadding is the XHTTP X-Padding length range "min-max" (vless_xhttp
 	// only; default 100-1000).
 	XPadding string `yaml:"x_padding_bytes,omitempty"`
+	// HTTPHost is the HTTP Host/:authority pin for vless_xhttp (the panel's
+	// "host" setting). Xray's own client sends the authority from this
+	// setting, falling back to SNI; the inbound 404s other values — an IP
+	// authority never passes. Empty → SNI → Host (if a domain).
+	HTTPHost string `yaml:"http_host,omitempty"`
 	// RealityPBK/RealitySID authenticate vless_reality.
 	RealityPBK string `yaml:"reality_public_key,omitempty"`
 	RealitySID string `yaml:"reality_short_id,omitempty"`
@@ -182,6 +187,7 @@ func (e Endpoint) IsZero() bool {
 	return e.Kind == "" && e.Host == "" && e.Port == 0 && e.UUID == "" &&
 		e.Password == "" && e.SNI == "" && len(e.ALPN) == 0 && e.Fingerprint == "" &&
 		e.Flow == "" && e.Path == "" && e.Mode == "" && e.XPadding == "" &&
+		e.HTTPHost == "" &&
 		e.RealityPBK == "" && e.RealitySID == "" && e.UDPMode == ""
 }
 

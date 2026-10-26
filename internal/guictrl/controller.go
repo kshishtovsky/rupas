@@ -59,6 +59,10 @@ type Controller struct {
 
 	// last is the last poll result (nil until the first answer).
 	last *Snapshot
+	// prev is the previous poll sample for rate computation.
+	prev ratePrev
+	// gatewayHost is the primary channel description (Home «Шлюз» line).
+	gatewayHost string
 	// listeners are notified on every snapshot change.
 	listeners map[int]func(Snapshot)
 	nextHook  int
@@ -80,7 +84,8 @@ func New(opts Options) (*Controller, error) {
 }
 
 // Snapshot is the JSON shape sent to the frontend: the daemon status plus
-// daemon-online flag and a human note. It mirrors core.Snapshot but stays a
+// daemon-online flag, derived telemetry (Android W3 home parity: session,
+// speeds, health) and the gateway line. It mirrors core.Snapshot but stays a
 // separate type so the GUI never couples to core's internals.
 type Snapshot struct {
 	Online bool   `json:"online"`
@@ -94,6 +99,13 @@ type Snapshot struct {
 	RxBytes       uint64 `json:"rxBytes"`
 	TxBytes       uint64 `json:"txBytes"`
 	TCPFlows      int64  `json:"tcpFlows"`
+	// Derived telemetry (computed across polls, 1 s cadence).
+	SessionSec  int64   `json:"sessionSec"`  // seconds in the current ACTIVE state
+	RxRate      float64 `json:"rxRate"`      // bytes/s over the last poll gap
+	TxRate      float64 `json:"txRate"`      // bytes/s over the last poll gap
+	HealthFails uint64  `json:"healthFails"` // tunnel dropped flows counter
+	// Gateway is the primary channel description (set from the saved links).
+	Gateway string `json:"gateway"`
 }
 
 // poll queries the daemon once and returns the GUI snapshot.
@@ -119,8 +131,42 @@ func (c *Controller) poll() Snapshot {
 		s.RxBytes = snap.Tunnel.RxBytes
 		s.TxBytes = snap.Tunnel.TxBytes
 		s.TCPFlows = snap.Tunnel.TCPFlows
+		s.HealthFails = snap.Tunnel.Dropped
 	}
+	// Session: time in the current steady state.
+	if s.State == "ACTIVE" || s.State == "ACTIVE_TUNNEL_ONLY" {
+		s.SessionSec = int64(time.Since(snap.Since).Seconds())
+		if s.SessionSec < 0 {
+			s.SessionSec = 0
+		}
+	}
+	// Speeds: byte deltas over the poll gap (field-gated on state change so
+	// a jump from OFF does not produce a spike).
+	s.Gateway = c.gateway()
+	s.RxRate, s.TxRate = c.rates(s.State, s.RxBytes, s.TxBytes)
 	return s
+}
+
+// rates computes per-second rates from byte deltas between consecutive polls.
+func (c *Controller) rates(state string, rx, tx uint64) (float64, float64) {
+	now := time.Now()
+	c.mu.Lock()
+	prev := c.prev
+	c.prev = ratePrev{at: now, state: state, rx: rx, tx: tx}
+	c.mu.Unlock()
+	dt := now.Sub(prev.at).Seconds()
+	if dt <= 0.2 || dt > 10 || prev.state != state || prev.rx > rx || prev.tx > tx {
+		return 0, 0 // first sample, state change or counter reset
+	}
+	return float64(rx-prev.rx) / dt, float64(tx-prev.tx) / dt
+}
+
+// ratePrev is the previous poll sample for rate computation.
+type ratePrev struct {
+	at    time.Time
+	state string
+	rx    uint64
+	tx    uint64
 }
 
 // Status returns the current snapshot without touching the daemon.

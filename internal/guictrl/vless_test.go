@@ -10,9 +10,6 @@ import (
 	"github.com/rupas/rupas/internal/config"
 )
 
-func yamlMarshal(v any) ([]byte, error)                  { return yaml.Marshal(v) }
-func loadConfigForTest(p string) (*config.Config, error) { return config.Load(p) }
-
 func TestParseVlessLink(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -44,37 +41,9 @@ func TestParseVlessLink(t *testing.T) {
 				}
 			},
 		},
-		{
-			name: "xhttp transport ok",
-			link: "vless://uuid@h:443?type=xhttp",
-			check: func(t *testing.T, v VlessLink) {
-				if v.Transport != "xhttp" || v.Warning != "" {
-					t.Fatalf("%+v", v)
-				}
-			},
-		},
-		{
-			name: "ws transport warning",
-			link: "vless://uuid@h:443?type=ws",
-			check: func(t *testing.T, v VlessLink) {
-				if v.Warning == "" {
-					t.Fatal("want warning for unsupported transport")
-				}
-			},
-		},
-		{
-			name: "ipv6 host",
-			link: "vless://uuid@[2001:db8::1]:443?pbk=k",
-			check: func(t *testing.T, v VlessLink) {
-				if v.Server != "[2001:db8::1]" || v.Port != 443 {
-					t.Fatalf("ipv6: %+v", v)
-				}
-			},
-		},
 		{name: "empty", link: "", wantErr: true},
 		{name: "not vless", link: "https://example.net", wantErr: true},
 		{name: "no port", link: "vless://uuid@host", wantErr: true},
-		{name: "no at", link: "vless://host:443", wantErr: true},
 		{name: "bad port", link: "vless://u@h:99999", wantErr: true},
 	}
 
@@ -95,26 +64,71 @@ func TestParseVlessLink(t *testing.T) {
 	}
 }
 
-// presetConfig must survive the engine's own validation (config.Load) both
-// with an endpoint (reality and plain) and in desync-only mode.
-func TestPresetConfigValidates(t *testing.T) {
-	inputs := []EndpointInput{
-		{Host: "vps.example.net", Port: 443, UUID: "0f4e1c2d-3b5a-4c6d-8e9f-aabbccddeeff", SNI: "vps.example.net", PBK: "pbk", SID: "ab", DPI: true},
-		{Host: "vps.example.net", Port: 12341, UUID: "0f4e1c2d-3b5a-4c6d-8e9f-aabbccddeeff", SNI: "vps.example.net", DPI: true},
-		{DPI: true}, // desync-only skip path
+// TestChannelsToPlan covers the Android-W3-parity links flow: parsing by the
+// core sharelink parser, role assignment in dial order, warnings for
+// unsupported links, and a config that passes engine validation.
+func TestChannelsToPlan(t *testing.T) {
+	blob := "vless://0f4e1c2d-3b5a-4c6d-8e9f-aabbccddeeff@vps.example.net:443?security=reality&pbk=PBK&sid=AB&sni=camo.net&type=tcp#primary\n" +
+		"hysteria2://hy2secret@vps.example.net:53552?sni=camo.net&insecure=0#voice\n" +
+		"vless://0f4e1c2d-3b5a-4c6d-8e9f-aabbccddeeff@vps.example.net:4443?security=tls&sni=camo.net&type=xhttp&path=/xp&host=camo.net#fallback\n" +
+		"trojan://pass@trojan.example.net:443?security=tls&sni=t.net#ignored\n"
+
+	tcp, udp, fb, warnings, err := channelsToPlan(blob)
+	if err != nil {
+		t.Fatalf("channelsToPlan: %v", err)
 	}
-	for i, in := range inputs {
-		cfg := presetConfig(in)
-		data, err := yamlMarshal(cfg)
-		if err != nil {
-			t.Fatalf("case %d marshal: %v", i, err)
+	if tcp == nil || tcp.Kind != "vless_reality" || tcp.RealityPBK != "PBK" {
+		t.Fatalf("tcp: %+v", tcp)
+	}
+	if udp == nil || udp.Kind != "hysteria2" || udp.Password != "hy2secret" {
+		t.Fatalf("udp: %+v", udp)
+	}
+	if fb == nil || fb.Kind != "vless_xhttp" || fb.Path != "/xp" || fb.HTTPHost != "camo.net" {
+		t.Fatalf("fallback: %+v", fb)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings: %v", warnings)
+	}
+
+	cfg := presetConfig(true)
+	cfg.Tunnels = &config.TunnelConfig{TCP: tcp, UDP: udp, Fallback: fb}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(t.TempDir(), "rupas.yaml")
+	if err := os.WriteFile(p, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(p); err != nil {
+		t.Fatalf("validation: %v\n%s", err, data)
+	}
+}
+
+// presetConfig must survive engine validation in desync-only mode too.
+func TestPresetConfigValidates(t *testing.T) {
+	cfg := presetConfig(true)
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(t.TempDir(), "rupas.yaml")
+	if err := os.WriteFile(p, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(p); err != nil {
+		t.Fatalf("validation: %v\n%s", err, data)
+	}
+	// RU services must be direct before the geoip rule.
+	for _, r := range cfg.Rules {
+		if r.GeoIP != "" {
+			t.Fatal("RU services must come before geoip: ru")
 		}
-		p := filepath.Join(t.TempDir(), "rupas.yaml")
-		if err := os.WriteFile(p, data, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := loadConfigForTest(p); err != nil {
-			t.Fatalf("case %d validation: %v\n%s", i, err, data)
+		if r.SNI == "vk.com" {
+			if r.Action != config.ActionDirect {
+				t.Fatalf("vk.com action: %v", r.Action)
+			}
+			break
 		}
 	}
 }

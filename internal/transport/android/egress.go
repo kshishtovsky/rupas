@@ -13,8 +13,11 @@ const (
 	DefaultMTU = 1500
 	// DialTimeout bounds TCP/UDP egress establishment.
 	DialTimeout = 15 * time.Second
-	// KeepAlive keeps relayed TCP flows alive through mobile NATs.
-	KeepAlive = 30 * time.Second
+	// KeepAlive keeps relayed TCP flows alive through mobile NATs. 30 s is
+	// the Go default but wakes the cellular radio far more often than the
+	// OS keepalive (Linux default ~2 h idle / 75 s probes); 2 minutes still
+	// survives carrier NAT and keeps idle pooled connections quiet.
+	KeepAlive = 2 * time.Minute
 	// UDPTimeout is the idle timeout for UDP pseudo-sessions (mirrors
 	// sing-tun's default; explicit here so both sides agree).
 	UDPTimeout = 5 * time.Minute

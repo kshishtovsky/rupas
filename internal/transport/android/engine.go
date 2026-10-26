@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,6 +29,15 @@ type Engine struct {
 	settings *Settings
 	rules    *Rules
 	relay    *Relay
+	// carriers: the TUNNEL dial chain (relay inbounds + own xhttp client),
+	// built after the relay starts (buildCarriers from engine_chain.go).
+	carriers []tcpCarrier
+	// health: per-carrier failure cooldowns, same length/order as carriers
+	// (engine_chain.go carrierHealth).
+	health []carrierHealth
+	// activeIdx: dial-chain index of the carrier that delivered the last
+	// payload (markCarrierSuccess); surfaced to the UI via CarrierStates.
+	activeIdx atomic.Int64
 	// filesDir: app-private dir (from Platform.FilesDir) where the relay
 	// creates its protect unix-socket file. Empty on the dev host.
 	filesDir string
@@ -63,7 +74,7 @@ func NewEngine(verdict Verdict, protect ProtectFunc, logFn func(string)) *Engine
 func NewW3Engine(settings *Settings, protect ProtectFunc, logFn func(string), filesDir string) *Engine {
 	e := NewEngine(nil, protect, logFn)
 	e.settings = settings
-	e.rules = CompileRules()
+	e.rules = CompileRulesEx(filesDir, func(line string) { e.logf("%s", line) })
 	e.filesDir = filesDir
 	if settings != nil {
 		e.relay = NewRelay(settings, func(line string) { e.logf("%s", line) })
@@ -77,9 +88,45 @@ func (e *Engine) Settings() *Settings { return e.settings }
 // Rules returns the compiled rule table (immutable).
 func (e *Engine) Rules() *Rules { return e.rules }
 
+// isEndpoint reports whether a flow is destined to one of the tunnel
+// endpoints themselves (IP:port or camouflage SNI). Endpoint traffic must
+// NEVER be looped into the tunnel relay.
+func (e *Engine) isEndpoint(m FlowMeta) bool {
+	if e.settings == nil {
+		return false
+	}
+	eps, err := e.settings.Endpoints()
+	if err != nil || len(eps) == 0 {
+		return false
+	}
+	addrStr := m.Destination.Addr().String()
+	for n, ep := range eps {
+		if ep.Port > 0 && m.Destination.Port() == ep.Port && addrStr == ep.Host {
+			return true
+		}
+		if e.relay != nil && e.relay.resolvedServer != "" &&
+			n < len(e.relay.endpoints) && ep.Host == e.relay.endpoints[0].Host &&
+			m.Destination.Port() == ep.Port && addrStr == e.relay.resolvedServer {
+			return true
+		}
+		if m.SNI != "" {
+			if ep.SNI != "" && strings.EqualFold(m.SNI, ep.SNI) {
+				return true
+			}
+			if strings.EqualFold(m.SNI, ep.Host) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // decide maps a flow onto an action: W3 rules when compiled (they take
 // SNI/ECH from FlowMeta), otherwise the wave-2 verdict seam.
 func (e *Engine) decide(m FlowMeta) Action {
+	if e.isEndpoint(m) {
+		return ActionDirect
+	}
 	if e.rules != nil {
 		return e.rules.Decide(m)
 	}
@@ -89,6 +136,9 @@ func (e *Engine) decide(m FlowMeta) Action {
 // decidePre is DecidePre for engines without compiled rules (wave-2): the
 // verdict is always final and never needs the ClientHello.
 func (e *Engine) decidePre(m FlowMeta) (Action, bool) {
+	if e.isEndpoint(m) {
+		return ActionDirect, true
+	}
 	if e.rules != nil {
 		return e.rules.DecidePre(m)
 	}
@@ -112,8 +162,8 @@ func (e *Engine) dialEgress(ctx context.Context, m FlowMeta) (conn net.Conn, esc
 		return nil, false, errFlowBlocked
 	case ActionTunnel:
 		e.counters.TunnelDial()
-		if e.relay.Available() {
-			c, dErr := e.relay.DialTCP(ctx, m.Destination)
+		if len(e.carriers) > 0 {
+			c, dErr := e.dialChain(m.Destination)
 			if dErr == nil {
 				return c, false, nil
 			}
@@ -158,6 +208,15 @@ func (e *Engine) Start(fd int) error {
 
 	go func() {
 		defer close(done)
+		// A Go panic in the transport goroutine aborts the whole app
+		// (gomobile has no recover seam). Dump the stack through the log
+		// seam so the failure is diagnosable on-device, then re-panic.
+		defer func() {
+			if r := recover(); r != nil {
+				e.logf("PANIC in transport: %v\n%s", r, debug.Stack())
+				panic(r)
+			}
+		}()
 		if err := e.run(ctx, fd); err != nil && ctx.Err() == nil {
 			e.logf("transport exited: %v", err)
 		}
@@ -220,10 +279,22 @@ func (e *Engine) pump(dst, src net.Conn, add func(int64)) {
 	add(n)
 }
 
+// relayBufPool recycles the 16 KiB relay buffers. On Android every TCP flow
+// allocates two of them (one per direction); browsers open hundreds of flows,
+// so pooling removes megabytes of steady-state garbage per session.
+var relayBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 16*1024)
+		return &b
+	},
+}
+
 // copyConn copies src→dst with a 16 KiB buffer (comfortably above the TUN
 // MTU, so MTU-sized netstack reads complete in one write).
 func copyConn(dst, src net.Conn) (int64, error) {
-	buf := make([]byte, 16*1024)
+	bufp := relayBufPool.Get().(*[]byte)
+	defer relayBufPool.Put(bufp)
+	buf := *bufp
 	var total int64
 	for {
 		n, rErr := src.Read(buf)

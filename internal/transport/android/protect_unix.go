@@ -80,7 +80,6 @@ func serveProtect(c *net.UnixConn, protect ProtectFunc, logFn func(string)) {
 		logFn(fmt.Sprintf("android: protect: receive failed: n=%d oob=%d err=%v", n, oobn, err))
 		return
 	}
-	logFn(fmt.Sprintf("android: protect: fd message n=%d oob=%d", n, oobn))
 	ok := true
 	if oobn <= 0 {
 		ok = false
@@ -100,9 +99,9 @@ func serveProtect(c *net.UnixConn, protect ProtectFunc, logFn func(string)) {
 				// refers to the same open socket description, so
 				// protecting the dup unhooks the peer's socket too.
 				protected := protect(fd)
-				logFn(fmt.Sprintf("android: protect: fd=%d result=%t", fd, protected))
 				if !protected {
 					ok = false
+					logFn(fmt.Sprintf("android: protect: fd=%d refused", fd))
 				}
 				syscall.Close(fd) //nolint:errcheck // dup, not the peer's copy
 			}

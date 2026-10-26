@@ -2,6 +2,8 @@
 // Talks to the Go service via the vendored @wailsio/runtime (offline).
 import { ByName as callRaw } from "./vendor/runtime/calls.js";
 import { On } from "./vendor/runtime/events.js";
+import Window from "./vendor/runtime/window.js";
+import "./vendor/runtime/drag.js"; // side-effect: installs --wails-draggable handlers
 
 const $ = (id) => document.getElementById(id);
 const FQN = "github.com/rupas/rupas/internal/guictrl.Controller";
@@ -55,6 +57,10 @@ function render(s) {
   const flows = s.tcpFlows || 0;
   $("cardFlows").textContent = !s.online ? "—" : `${flows} активных TCP-потоков через туннель`;
 }
+
+// ---------- custom caption buttons (frameless window) ----------
+$("btnMinimize").addEventListener("click", () => { try { Window.Minimise(); } catch (_) {} });
+$("btnClose").addEventListener("click", () => { try { Window.Hide(); } catch (_) {} }); // close = to tray
 
 // ---------- power button ----------
 $("powerDisc").addEventListener("click", async () => {

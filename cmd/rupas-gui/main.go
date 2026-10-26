@@ -10,6 +10,8 @@ import (
 	"embed"
 	"flag"
 	"log"
+	"os"
+	"path/filepath"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -40,6 +42,10 @@ func main() {
 		}
 		return
 	}
+
+	// The binary is built with -H=windowsgui (no console): diagnostics go to
+	// %LocalAppData%\rupas\gui.log instead of the void stderr.
+	redirectLogs()
 
 	ctrl, err := guictrl.New(guictrl.Options{ConfigPath: *configPath, LogPath: *logPath})
 	if err != nil {
@@ -80,6 +86,7 @@ func main() {
 		Height:           740,
 		MinWidth:         380,
 		MinHeight:        620,
+		Frameless:        true,                                    // custom caption buttons (frontend header)
 		BackgroundColour: application.NewRGBA(247, 243, 236, 255), // paper #F7F3EC
 		URL:              "/",
 	})
@@ -99,6 +106,15 @@ func main() {
 	// System tray (GUI_DESIGN §6.4): toggle + show + quit.
 	tray = app.SystemTray.New()
 	tray.SetIcon(trayIcon)
+	// Double-click on the tray icon reopens the hidden window (single click
+	// stays inert so it does not fight the double-click: WM_LBUTTONUP has
+	// no handler, only WM_LBUTTONDBLCLK does).
+	tray.OnDoubleClick(func() {
+		if w := application.Get().Window.Current(); w != nil {
+			w.Show()
+			w.Focus()
+		}
+	})
 	tray.SetMenu(application.NewMenuFromItems(
 		application.NewMenuItem("Включить").OnClick(func(*application.Context) { _ = toggle(true) }),
 		application.NewMenuItem("Выключить").OnClick(func(*application.Context) { _ = toggle(false) }),
@@ -119,6 +135,23 @@ func main() {
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// redirectLogs sends the default logger to %LocalAppData%\rupas\gui.log
+// (windowsgui builds have no stderr).
+func redirectLogs() {
+	dir := os.Getenv("LocalAppData")
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "rupas"), 0o700); err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "rupas", "gui.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	log.SetOutput(f)
 }
 
 // tray is the live system tray (label updated from the snapshot poller).

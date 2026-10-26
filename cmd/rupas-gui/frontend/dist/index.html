@@ -18,11 +18,19 @@
 
   <!-- ===================== MAIN APP ===================== -->
   <div id="mainApp" style="display:none; flex-direction:column; height:100vh">
-    <div class="header">
+    <div class="header" id="titlebar">
       <div class="brand"><div class="logo">R</div><div class="title">Rupas</div></div>
       <div class="status-chip">
         <div class="status-dot" id="dot"></div>
         <div class="status-text" id="dotText">Отключено</div>
+      </div>
+      <div class="caption-btns">
+        <button class="cap-btn" id="btnMinimize" title="Свернуть" aria-label="Свернуть">
+          <svg viewBox="0 0 12 12"><path d="M2 6h8"/></svg>
+        </button>
+        <button class="cap-btn cap-close" id="btnClose" title="Свернуть в трей" aria-label="Свернуть в трей">
+          <svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg>
+        </button>
       </div>
     </div>
 

@@ -353,6 +353,10 @@ type termConn struct {
 
 	lastSeen atomicTime
 
+	// flowDesc cache (immutable 4-tuple; see flowDesc).
+	fdOnce sync.Once
+	fdStr  string
+
 	mu         sync.Mutex // guards the fields below
 	clientNext uint32     // next expected client byte
 	clientWin  uint16     // client's advertised window
@@ -707,6 +711,31 @@ const payloadBufSize = 2048
 // relay runs with zero per-segment allocations.
 var payloadPool = sync.Pool{New: func() any { b := make([]byte, payloadBufSize); return &b }}
 
+// craftPool recycles forged-packet buffers (ACK / window-update / FIN / RST
+// injections run at per-segment frequency on bulk flows). craft rents from
+// it; the caller MUST return the buffer with putCraftBuf right after the
+// synchronous SendInboundTCP call — neither sender retains the slice.
+// Fixed-size arrays: boxing a *[N]byte in sync.Pool is allocation-free.
+var craftPool = sync.Pool{New: func() any { return new([payloadBufSize]byte) }}
+
+// craftBuf rents a buffer with at least n bytes (len == n). Outliers above
+// the pooled size get a plain allocation (documented, not pooled).
+func craftBuf(n int) []byte {
+	if n > payloadBufSize {
+		return make([]byte, n)
+	}
+	return craftPool.Get().(*[payloadBufSize]byte)[:n]
+}
+
+// putCraftBuf returns a rented buffer to craftPool. Oversized (non-pooled)
+// outliers are dropped for GC.
+func putCraftBuf(pkt []byte) {
+	if cap(pkt) != payloadBufSize {
+		return
+	}
+	craftPool.Put((*[payloadBufSize]byte)(pkt[:cap(pkt)]))
+}
+
 // copyPayload copies a client payload into a pooled buffer.
 func copyPayload(p []byte) []byte {
 	if len(p) > payloadBufSize {
@@ -904,6 +933,7 @@ func (c *termConn) maybeWindowUpdate() {
 	pkt := c.craft(c.serverNext, c.clientNext, termACK, nil, w)
 	c.mu.Unlock()
 	_ = c.tm.send.SendInboundTCP(pkt, c.ifIdx(), c.subIfIdx())
+	putCraftBuf(pkt)
 }
 
 // pumpWrites forwards client payload into the carrier.
@@ -1002,8 +1032,10 @@ func (c *termConn) sendData(b []byte) bool {
 		if err := c.tm.send.SendInboundTCP(pkt, c.ifIdx(), c.subIfIdx()); err != nil {
 			c.tm.log.Warn("term: data inject failed", slog.String("err", err.Error()))
 			c.kill(false, "data inject failed: "+err.Error())
+			putCraftBuf(pkt)
 			return false
 		}
+		putCraftBuf(pkt)
 		c.tm.log.Debug("term: data injected",
 			slog.String("flow", c.flowDesc()), slog.Int("len", n),
 			slog.Uint64("seq", uint64(seq)), slog.Uint64("una", uint64(una)))
@@ -1081,6 +1113,7 @@ func (c *termConn) sendSYNACK() {
 	if err := c.tm.send.SendInboundTCP(pkt, c.ifIdx(), c.subIfIdx()); err != nil {
 		c.tm.log.Warn("term: syn-ack inject failed", slog.String("err", err.Error()))
 	}
+	putCraftBuf(pkt)
 }
 
 func (c *termConn) sendACK() {
@@ -1097,6 +1130,7 @@ func (c *termConn) sendACK() {
 	pkt := c.craft(c.serverNext, c.clientNext, termACK, nil, c.advWin)
 	c.mu.Unlock()
 	_ = c.tm.send.SendInboundTCP(pkt, c.ifIdx(), c.subIfIdx())
+	putCraftBuf(pkt)
 }
 
 func (c *termConn) sendFIN() {
@@ -1112,6 +1146,7 @@ func (c *termConn) sendFIN() {
 		c.tm.log.Warn("term: fin inject failed", slog.String("err", err.Error()))
 		c.kill(false, "fin inject failed: "+err.Error())
 	}
+	putCraftBuf(pkt)
 }
 
 func (c *termConn) reset(reason error) {
@@ -1130,6 +1165,7 @@ func (c *termConn) reset(reason error) {
 		pkt := c.craft(c.serverNext, c.clientNext, termRST|termACK, nil, c.recvWindowLocked())
 		c.mu.Unlock()
 		_ = c.tm.send.SendInboundTCP(pkt, c.ifIdx(), c.subIfIdx())
+		putCraftBuf(pkt)
 	} else {
 		c.mu.Unlock()
 	}
@@ -1193,7 +1229,7 @@ func (c *termConn) craft(seq, ack uint32, flags byte, payload []byte, win uint16
 		optLen = 4
 	}
 	ipLen, tcpLen := 20, 20+optLen+len(payload)
-	pkt := make([]byte, ipLen+tcpLen)
+	pkt := craftBuf(ipLen + tcpLen)
 
 	pkt[0] = 0x45
 	binary.BigEndian.PutUint16(pkt[2:], uint16(ipLen+tcpLen))
@@ -1203,6 +1239,7 @@ func (c *termConn) craft(seq, ack uint32, flags byte, payload []byte, win uint16
 	pkt[9] = 6                  // TCP
 	copy(pkt[12:16], c.k.dstIP[:]) // src = the "server"
 	copy(pkt[16:20], c.k.srcIP[:]) // dst = the client
+	pkt[10], pkt[11] = 0, 0        // pooled buffer: stale checksum must not leak into the sum
 	sum := ipChecksum(pkt[:20])
 	pkt[10], pkt[11] = byte(sum>>8), byte(sum)
 
@@ -1220,23 +1257,28 @@ func (c *termConn) craft(seq, ack uint32, flags byte, payload []byte, win uint16
 	}
 	copy(tcp[20+optLen:], payload)
 
-	// TCP checksum over the pseudo-header + segment.
+	// TCP checksum over the pseudo-header + segment (no concat buffer).
+	// Pooled buffer: stale bytes 16-17 must be zeroed or they poison the sum.
+	tcp[16], tcp[17] = 0, 0
 	var pseudo [12]byte
 	copy(pseudo[0:4], c.k.dstIP[:])
 	copy(pseudo[4:8], c.k.srcIP[:])
 	pseudo[8] = 6
 	binary.BigEndian.PutUint16(pseudo[10:], uint16(tcpLen))
-	sums := make([]byte, 0, 12+tcpLen)
-	sums = append(sums, pseudo[:]...)
-	sums = append(sums, tcp...)
-	tcpSum := ipChecksum(sums)
+	tcpSum := ipChecksum2(pseudo[:], tcp)
 	tcp[16], tcp[17] = byte(tcpSum>>8), byte(tcpSum&0xff)
 	return pkt
 }
 
 func (c *termConn) flowDesc() string {
-	return net.IP(c.k.srcIP[:]).String() + ":" + fmt.Sprint(c.k.srcPort) +
-		" -> " + net.IP(c.k.dstIP[:]).String() + ":" + fmt.Sprint(c.k.dstPort)
+	// Cached: the 4-tuple is immutable, and flowDesc sits in per-segment
+	// log calls (data injected / reorder warnings) — building the string
+	// on every call allocated per segment.
+	c.fdOnce.Do(func() {
+		c.fdStr = net.IP(c.k.srcIP[:]).String() + ":" + fmt.Sprint(c.k.srcPort) +
+			" -> " + net.IP(c.k.dstIP[:]).String() + ":" + fmt.Sprint(c.k.dstPort)
+	})
+	return c.fdStr
 }
 
 // ipChecksum computes the 16-bit one's-complement sum (RFC 1071), pre-zeroed
@@ -1248,6 +1290,26 @@ func ipChecksum(b []byte) uint16 {
 	}
 	if len(b)%2 == 1 {
 		sum += uint32(b[len(b)-1]) << 8
+	}
+	for sum>>16 != 0 {
+		sum = (sum & 0xFFFF) + (sum >> 16)
+	}
+	return ^uint16(sum)
+}
+
+// ipChecksum2 is ipChecksum over the concatenation of a and b, without
+// allocating the concatenated buffer (hot path: per-forged-packet).
+// Requires len(a) to be even (true for the 12-byte TCP pseudo-header),
+// otherwise word alignment would differ from a true concat.
+func ipChecksum2(a, b []byte) uint16 {
+	var sum uint32
+	for _, s := range [2][]byte{a, b} {
+		for i := 0; i+1 < len(s); i += 2 {
+			sum += uint32(s[i])<<8 | uint32(s[i+1])
+		}
+		if len(s)%2 == 1 {
+			sum += uint32(s[len(s)-1]) << 8
+		}
 	}
 	for sum>>16 != 0 {
 		sum = (sum & 0xFFFF) + (sum >> 16)

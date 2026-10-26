@@ -224,6 +224,21 @@ $("setAutostart").addEventListener("change", async (e) => {
   }
 });
 
+$("btnRecalibrate").addEventListener("click", async () => {
+  if (!confirm("Запустить полную рекалибровку DPI?\nСохранённый t* будет стёрт, обход подберётся заново (1–3 минуты). На это время перехват приостановится.")) return;
+  const btn = $("btnRecalibrate");
+  btn.disabled = true;
+  btn.textContent = "Калибрую…";
+  try {
+    await call("Recalibrate");
+    $("saveHint").textContent = "Рекалибровка запущена — следи за статусом на Главной";
+  } catch (e) {
+    $("saveHint").textContent = "⚠ " + (e.message || e);
+  }
+  btn.disabled = false;
+  btn.textContent = "Рекалибровать";
+});
+
 $("btnSaveSettings").addEventListener("click", async () => {
   $("saveHint").textContent = "Сохраняю…";
   try {

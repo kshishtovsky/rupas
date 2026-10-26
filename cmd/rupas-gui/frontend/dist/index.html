@@ -47,11 +47,14 @@
           </div></div>
           <div class="power-caption" id="powerCaption">Отключено</div>
           <div class="power-sub" id="powerSub"></div>
+          <div class="session" id="sessionTime"></div>
         </div>
         <div class="cards">
-          <div class="card"><div class="k">Туннель</div><div class="v" id="cardTunnel">—</div></div>
-          <div class="card"><div class="k">Трафик</div><div class="v" id="cardTraffic">—</div></div>
-          <div class="card wide"><div class="k">Потоки</div><div class="v" id="cardFlows">—</div></div>
+          <div class="card"><div class="k">Загрузка</div><div class="v" id="cardDown">0,0 КБ/с</div></div>
+          <div class="card"><div class="k">Отдача</div><div class="v" id="cardUp">0,0 КБ/с</div></div>
+          <div class="card wide"><div class="k">Шлюз</div><div class="v" id="cardGateway">—</div></div>
+          <div class="card"><div class="k">Потоки</div><div class="v" id="cardFlows">—</div></div>
+          <div class="card"><div class="k">Здоровье</div><div class="v" id="cardHealth">—</div></div>
         </div>
       </div>
 
@@ -68,33 +71,18 @@
       <!-- SETTINGS -->
       <div class="page" id="page-settings">
         <div class="section">
-          <div class="section-title">Туннель</div>
+          <div class="section-title">Каналы (ссылки)</div>
           <div class="field">
-            <label>vless://-ссылка</label>
-            <div style="display:flex;gap:8px">
-              <input class="input" id="setVless" placeholder="vless://uuid@host:port?pbk=…#label" spellcheck="false" style="user-select:text">
-              <button class="btn small" id="btnVlessParse">Разобрать</button>
-            </div>
-            <div class="hint">Или заполните поля вручную ниже</div>
+            <label>vless:// hysteria2:// — по одной в строке, порядок = порядок перебора</label>
+            <textarea class="textarea" id="setLinks" placeholder="vless://uuid@host:443?security=reality&pbk=…&sni=…#канал 1&#10;hysteria2://pass@host:53552?sni=…#канал 2" spellcheck="false"></textarea>
+            <div class="hint" id="linksHint"></div>
           </div>
+          <button class="btn ghost small" id="btnLinksParse">Разобрать</button>
         </div>
-        <div class="section">
-          <div class="section-title">Сервер</div>
-          <div class="field"><label>Адрес</label><input class="input" id="setHost" spellcheck="false"></div>
-          <div class="field"><label>Порт</label><input class="input" id="setPort" type="number" min="1" max="65535"></div>
-          <div class="field"><label>SNI (камуфляж-домен)</label><input class="input" id="setSni" spellcheck="false"></div>
-        </div>
-        <div class="section">
-          <div class="section-title">Ключи доступа</div>
-          <div class="field"><label>UUID</label>
-            <div class="pw-wrap"><input class="input" id="setUuid" type="password" spellcheck="false" style="padding-right:44px">
-            <button class="eye" id="eyeUuid" type="button">👁</button></div>
-          </div>
-          <div class="field"><label>Reality public key</label>
-            <div class="pw-wrap"><input class="input" id="setPbk" type="password" spellcheck="false" style="padding-right:44px">
-            <button class="eye" id="eyePbk" type="button">👁</button></div>
-          </div>
-          <div class="field"><label>Reality short ID</label><input class="input" id="setSid" spellcheck="false"></div>
+        <div class="section" id="channelsSection" style="display:none">
+          <div class="section-title">Приоритеты каналов</div>
+          <div class="hint" style="margin-bottom:8px">Трафик идёт через первый рабочий канал: vless-tcp → основной, hysteria2 → голос, xhttp → резерв.</div>
+          <div id="channelList"></div>
         </div>
         <div class="section">
           <div class="section-title">Обход блокировок (DPI)</div>
@@ -113,7 +101,6 @@
         <div class="section" style="padding-bottom:var(--space-xxl)">
           <div style="display:flex;gap:var(--space-s)">
             <button class="btn" id="btnSaveSettings" style="flex:1">Сохранить</button>
-            <button class="btn ghost" id="btnResetSettings">Сброс</button>
           </div>
           <div class="hint" id="saveHint"></div>
         </div>

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"runtime/debug"
 	"sync"
 
 	"github.com/sagernet/sing-tun"
@@ -47,6 +48,10 @@ func (e *Engine) run(ctx context.Context, fd int) error {
 		}
 		defer e.relay.Close() //nolint:errcheck
 	}
+	// Build the TUNNEL dial chain (relay inbounds + own xhttp client).
+	// Works even when the relay start failed: carriers may be empty and
+	// TUNNEL flows escalate honestly.
+	e.buildCarriers(ctx)
 
 	stack, err := tun.NewStack("gvisor", tun.StackOptions{
 		Context:    ctx,
@@ -81,7 +86,8 @@ type flowHandler struct {
 // UDP sessions carry no ClientHello: the whole decision happens here.
 // TCP flows are accepted and finally judged in NewConnectionEx after the
 // ClientHello peek.
-func (h *flowHandler) JudgeFlow(proto uint8, source, destination netip.AddrPort, firstPacket []byte) tun.FlowVerdict {
+func (h *flowHandler) JudgeFlow(proto uint8, source, destination netip.AddrPort, firstPacket []byte) (v tun.FlowVerdict) {
+	defer h.engine.panicGuard("JudgeFlow", &v)
 	meta := FlowMeta{
 		Network:     networkName(proto),
 		Source:      source,
@@ -96,16 +102,19 @@ func (h *flowHandler) JudgeFlow(proto uint8, source, destination netip.AddrPort,
 // NewDNSPacket is only invoked on ActionHijackDNS, which wave 2 never
 // returns: DNS:53 is relayed like any other UDP session (ТЗ W2).
 func (h *flowHandler) NewDNSPacket(payload []byte, source, destination M.Socksaddr, writer N.PacketWriter) {
+	defer h.engine.panicGuard("NewDNSPacket")
 }
 
 // NewConnectionEx relays one TCP flow: netstack endpoint ↔ egress socket,
 // bidirectional, byte-counted. The final action is decided here, after the
 // passive ClientHello peek (SNI/ECH).
 func (h *flowHandler) NewConnectionEx(ctx context.Context, conn net.Conn, source, destination M.Socksaddr, onClose N.CloseHandlerFunc) {
+	defer h.engine.panicGuard("NewConnectionEx")
 	h.relayTCP(ctx, conn, source, destination, onClose)
 }
 
 func (h *flowHandler) relayTCP(ctx context.Context, conn net.Conn, source M.Socksaddr, destination M.Socksaddr, onClose N.CloseHandlerFunc) {
+	defer h.engine.panicGuard("relayTCP")
 	e := h.engine
 	e.counters.TCPFlowOpen()
 	defer e.counters.TCPFlowClose()
@@ -147,6 +156,7 @@ func (h *flowHandler) relayTCP(ctx context.Context, conn net.Conn, source M.Sock
 // dialAndRelayTCP resolves the action via dialEgress (rules + tunnel +
 // escalation) and pumps the relay.
 func (h *flowHandler) dialAndRelayTCP(ctx context.Context, conn net.Conn, meta FlowMeta, onClose N.CloseHandlerFunc) {
+	defer h.engine.panicGuard("dialAndRelayTCP")
 	e := h.engine
 	remote, _, err := e.dialEgress(ctx, meta)
 	if err != nil {
@@ -172,6 +182,7 @@ func (h *flowHandler) dialAndRelayTCP(ctx context.Context, conn net.Conn, meta F
 // relayTCPDirect is the wave-2 path: protected dialer, no rules beyond the
 // pre-decision that routed the flow here.
 func (h *flowHandler) relayTCPDirect(ctx context.Context, conn net.Conn, destination netip.AddrPort, onClose N.CloseHandlerFunc) {
+	defer h.engine.panicGuard("relayTCPDirect")
 	e := h.engine
 	remote, err := e.dialer.DialContext(ctx, "tcp", destination.String())
 	if err != nil {
@@ -201,6 +212,7 @@ func (h *flowHandler) relayTCPDirect(ctx context.Context, conn net.Conn, destina
 // ASSOCIATE (XUDP) — with the same honest escalation policy as TCP
 // (SYSTEM_DESIGN §5: "UDP-сокеты тоже защищать").
 func (h *flowHandler) NewPacketConnectionEx(ctx context.Context, conn N.PacketConn, source, destination M.Socksaddr, onClose N.CloseHandlerFunc) {
+	defer h.engine.panicGuard("NewPacketConnectionEx")
 	go h.relayUDP(ctx, conn, source, destination, onClose)
 }
 
@@ -282,6 +294,7 @@ func (h *flowHandler) relayUDP(ctx context.Context, conn N.PacketConn, source M.
 // returns false when the tunnel path is not possible (escalation to direct
 // is up to the caller); on true the session was served and closed.
 func (h *flowHandler) relayUDPTunnel(ctx context.Context, conn N.PacketConn, dst netip.AddrPort, closeOnce func()) bool {
+	defer h.engine.panicGuard("relayUDPTunnel")
 	e := h.engine
 	e.counters.TunnelDial()
 	if !e.relay.Available() {
@@ -353,6 +366,21 @@ func (h *flowHandler) relayUDPTunnel(ctx context.Context, conn N.PacketConn, dst
 	}
 }
 
+// panicGuard converts a transport-internal panic into a logged, absorbed
+// error: the gvisor/sing-box callback goroutines have no recover seam, and
+// an unrecovered panic there aborts the whole app (SIGABRT via the Go
+// runtime). The stack is dumped through the log seam for diagnosis.
+func (e *Engine) panicGuard(where string, ret ...any) {
+	if r := recover(); r != nil {
+		e.logf("PANIC in %s: %v\n%s", where, r, debug.Stack())
+		for _, slot := range ret {
+			if p, ok := slot.(*tun.FlowVerdict); ok && p != nil {
+				*p = tun.FlowVerdict{Action: tun.ActionDrop}
+			}
+		}
+	}
+}
+
 // networkName maps an IANA protocol number onto the FlowMeta network tag.
 func networkName(proto uint8) string {
 	switch proto {
@@ -366,13 +394,16 @@ func networkName(proto uint8) string {
 }
 
 // engineLogger forwards sing/sing-tun log lines into the platform log
-// callback (Java side renders them in the log screen).
+// callback (Java side renders them in the log screen). Trace/Debug are
+// dropped on purpose: they fire on per-packet error paths and every line
+// crosses the Go→Java JNI bridge, which is pure battery cost. Warn and
+// above are rare and are what actually needs diagnosing.
 type engineLogger struct {
 	engine *Engine
 }
 
-func (l engineLogger) Trace(args ...any) { l.engine.logln(args...) }
-func (l engineLogger) Debug(args ...any) { l.engine.logln(args...) }
+func (l engineLogger) Trace(args ...any) {}
+func (l engineLogger) Debug(args ...any) {}
 func (l engineLogger) Info(args ...any)  { l.engine.logln(args...) }
 func (l engineLogger) Warn(args ...any)  { l.engine.logln(args...) }
 func (l engineLogger) Error(args ...any) { l.engine.logln(args...) }

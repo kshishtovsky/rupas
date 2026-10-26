@@ -122,6 +122,20 @@ html, body {
 .power-disc.error svg { stroke: var(--danger); }
 .power-caption { margin-top: var(--space-l); font-size: 15px; color: var(--ink-2); }
 .power-sub { margin-top: var(--space-xxs); font-size: 12px; color: var(--ink-soft); min-height: 16px; }
+.session { margin-top: var(--space-xs); font-size: 13px; color: var(--ink-soft); font-variant-numeric: tabular-nums; min-height: 18px; }
+
+/* ---------- Channel rows (Settings priorities) ---------- */
+.channel-row {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-s);
+  padding: var(--space-s) 0;
+  border-bottom: 1px solid var(--rule);
+}
+.channel-row:last-child { border-bottom: none; }
+.ch-name { font-size: 14px; color: var(--ink); margin-bottom: 4px; }
+.ch-info { min-width: 0; }
+.ch-btns { display: flex; gap: 2px; flex-shrink: 0; }
+.ch-btns .cap-btn:disabled { opacity: 0.3; cursor: default; }
+.ch-btns .cap-btn:disabled:hover { background: none; color: var(--ink-soft); }
 
 /* ---------- Cards ---------- */
 .cards { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-s); margin-top: var(--space-s); }

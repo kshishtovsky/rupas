@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"strings"
 
 	"github.com/sagernet/sing-box"
 	boxAdapterCertificate "github.com/sagernet/sing-box/adapter/certificate"
@@ -25,6 +26,7 @@ import (
 	boxAdapterService "github.com/sagernet/sing-box/adapter/service"
 	"github.com/sagernet/sing-box/dns"
 	dnsLocal "github.com/sagernet/sing-box/dns/transport/local"
+	boxLog "github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/protocol/direct"
 	"github.com/sagernet/sing-box/protocol/mixed"
@@ -70,17 +72,18 @@ func (r *Relay) Start(ctx context.Context, protect ProtectFunc, filesDir string)
 
 	var protectPath string
 	if protect != nil {
-		path, stop, perr := startProtector(protect, filesDir)
+		path, stop, perr := startProtector(protect, filesDir, r.logFn)
 		if perr != nil {
 			return fmt.Errorf("android: relay: protect server: %w", perr)
 		}
 		protectPath, r.stopProtector = path, stop
 	}
 
-	opts := relayOptions(r.settings, port, protectPath)
+	opts := relayOptions(r.settings, port, protectPath, r.logFn)
 	engine, err := box.New(box.Options{
-		Context: relayBoxContext(ctx),
-		Options: opts,
+		Context:           relayBoxContext(ctx),
+		Options:           opts,
+		PlatformLogWriter: relayLogWriter{fn: r.logFn, secrets: []string{r.settings.UUID}},
 	})
 	if err != nil {
 		r.stop()
@@ -175,7 +178,7 @@ const (
 // relayOptions builds the sing-box client configuration: one loopback
 // mixed inbound, one VLESS outbound (protected via protect_path), route
 // final → the outbound, local DNS for server-name resolution.
-func relayOptions(s *Settings, port uint16, protectPath string) option.Options {
+func relayOptions(s *Settings, port uint16, protectPath string, logFn func(string)) option.Options {
 	flow := ""
 	packetEncoding := "xudp"
 	var reality *option.OutboundRealityOptions
@@ -216,7 +219,7 @@ func relayOptions(s *Settings, port uint16, protectPath string) option.Options {
 		},
 	}
 	return option.Options{
-		Log: &option.LogOptions{Disabled: true},
+		Log: &option.LogOptions{Disabled: false, Level: "warn", DisableColor: true},
 		DNS: &option.DNSOptions{
 			RawDNSOptions: option.RawDNSOptions{
 				Servers: []option.DNSServerOptions{
@@ -244,7 +247,27 @@ func relayOptions(s *Settings, port uint16, protectPath string) option.Options {
 	}
 }
 
-// freeTCPPort reserves an ephemeral loopback TCP port and releases it
+// relayLogWriter forwards only warnings/errors to the Android callback.
+type relayLogWriter struct {
+	fn      func(string)
+	secrets []string
+}
+
+func (w relayLogWriter) WriteMessage(level boxLog.Level, message string) {
+	if w.fn == nil || level > boxLog.LevelWarn {
+		return
+	}
+	for _, secret := range w.secrets {
+		if secret != "" {
+			message = strings.ReplaceAll(message, secret, "<redacted>")
+		}
+	}
+	if len(message) > 1200 {
+		message = message[:1200] + "…"
+	}
+	w.fn("android: sing-box " + boxLog.FormatLevel(level) + ": " + message)
+}
+
 // (same pattern as internal/tunnel sbconfig.go; benign TOCTOU).
 func freeTCPPort() (uint16, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

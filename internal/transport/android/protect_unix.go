@@ -34,7 +34,10 @@ const protectorSocketPrefix = "rupas-protect-"
 
 // startProtector serves the protect protocol until the returned stop is
 // called. It never blocks the caller.
-func startProtector(protect ProtectFunc, dir string) (path string, stop func(), err error) {
+func startProtector(protect ProtectFunc, dir string, logFn func(string)) (path string, stop func(), err error) {
+	if logFn == nil {
+		logFn = func(string) {}
+	}
 	suffix := make([]byte, 6)
 	if _, err := rand.Read(suffix); err != nil {
 		return "", nil, fmt.Errorf("android: protector: random name: %w", err)
@@ -56,7 +59,7 @@ func startProtector(protect ProtectFunc, dir string) (path string, stop func(), 
 			if aErr != nil {
 				return
 			}
-			go serveProtect(conn.(*net.UnixConn), protect)
+			go serveProtect(conn.(*net.UnixConn), protect, logFn)
 		}
 	}()
 	return path, func() {
@@ -68,16 +71,20 @@ func startProtector(protect ProtectFunc, dir string) (path string, stop func(), 
 // serveProtect handles one protector client: read the dummy byte with the
 // SCM_RIGHTS ancillary data, protect every received fd, reply one byte
 // (0x01 = protected, 0x00 = refused).
-func serveProtect(c *net.UnixConn, protect ProtectFunc) {
+func serveProtect(c *net.UnixConn, protect ProtectFunc, logFn func(string)) {
 	defer c.Close()
 	buf := make([]byte, 16)
 	oob := make([]byte, 64) // room for several fds
 	n, oobn, _, _, err := c.ReadMsgUnix(buf, oob)
 	if err != nil || n == 0 {
+		logFn(fmt.Sprintf("android: protect: receive failed: n=%d oob=%d err=%v", n, oobn, err))
 		return
 	}
+	logFn(fmt.Sprintf("android: protect: fd message n=%d oob=%d", n, oobn))
 	ok := true
-	if oobn > 0 {
+	if oobn <= 0 {
+		ok = false
+	} else {
 		msgs, pErr := syscall.ParseSocketControlMessage(oob[:oobn])
 		if pErr != nil {
 			ok = false
@@ -92,7 +99,9 @@ func serveProtect(c *net.UnixConn, protect ProtectFunc) {
 				// The received fd is a dup inside our process; it
 				// refers to the same open socket description, so
 				// protecting the dup unhooks the peer's socket too.
-				if !protect(fd) {
+				protected := protect(fd)
+				logFn(fmt.Sprintf("android: protect: fd=%d result=%t", fd, protected))
+				if !protected {
 					ok = false
 				}
 				syscall.Close(fd) //nolint:errcheck // dup, not the peer's copy

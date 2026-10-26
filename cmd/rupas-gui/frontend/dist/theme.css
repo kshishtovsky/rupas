@@ -82,12 +82,15 @@ html, body {
 
 /* Home fills the viewport: disc centered in the free space, cards pinned
    above the nav (mirrors Android tab_home: weight=1 stage + bottom HUD) —
-   no dead space under the cards. */
-#page-home.active { display: flex; flex-direction: column; height: 100%; }
+   strictly no vertical scroll. */
+#page-home.active {
+  display: flex; flex-direction: column; height: 100%;
+  overflow: hidden; /* the scrollbar never appears on Home */
+}
 
 /* ---------- Power disc (tab_home.xml) ---------- */
 .power-stage {
-  flex: 1; min-height: 320px;
+  flex: 1; min-height: 200px;
   display: flex; flex-direction: column;
   align-items: center; justify-content: center;
 }
@@ -143,10 +146,10 @@ html, body {
   background: var(--paper-2);
   border: 1px solid var(--rule);
   border-radius: var(--radius-card);
-  padding: var(--space-m);
+  padding: var(--space-s) var(--space-m);
 }
 .card .k { font-size: 12px; color: var(--ink-soft); }
-.card .v { font-size: 18px; font-weight: 600; color: var(--ink); margin-top: var(--space-xxs); }
+.card .v { font-size: 16px; font-weight: 600; color: var(--ink); margin-top: var(--space-xxs); }
 .card .v small { font-size: 11px; font-weight: 400; color: var(--ink-soft); }
 .card.wide { grid-column: 1 / -1; }
 

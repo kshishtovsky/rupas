@@ -27,6 +27,9 @@ type Platform interface {
 	Protect(fd int) bool
 	// Log receives core log lines for the on-screen log.
 	Log(line string)
+	// FilesDir is the app-private directory (Context.getFilesDir()) for
+	// artifacts that must live on the filesystem (unix sockets). W3.1.
+	FilesDir() string
 }
 
 // coreVersion is the fixed stamp surfaced by Version().
@@ -81,7 +84,7 @@ func Start(tunFd int, plat Platform) error {
 	if plat == nil {
 		return errors.New("core: nil Platform")
 	}
-	eng := android.NewW3Engine(settings, plat.Protect, plat.Log)
+	eng := android.NewW3Engine(settings, plat.Protect, plat.Log, plat.FilesDir())
 	if err := eng.Start(tunFd); err != nil {
 		return err
 	}

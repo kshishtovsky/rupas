@@ -55,7 +55,7 @@ func (r *Relay) Available() bool { return r != nil && r.socksAddr != "" }
 
 // Start builds and launches the sing-box instance. protect is used to
 // unhook the outbound sockets from the VPN (may be nil on non-Android).
-func (r *Relay) Start(ctx context.Context, protect ProtectFunc) error {
+func (r *Relay) Start(ctx context.Context, protect ProtectFunc, filesDir string) error {
 	if r == nil {
 		return fmt.Errorf("android: relay: not configured")
 	}
@@ -70,7 +70,7 @@ func (r *Relay) Start(ctx context.Context, protect ProtectFunc) error {
 
 	var protectPath string
 	if protect != nil {
-		path, stop, perr := startProtector(protect)
+		path, stop, perr := startProtector(protect, filesDir)
 		if perr != nil {
 			return fmt.Errorf("android: relay: protect server: %w", perr)
 		}

@@ -27,6 +27,9 @@ type Engine struct {
 	settings *Settings
 	rules    *Rules
 	relay    *Relay
+	// filesDir: app-private dir (from Platform.FilesDir) where the relay
+	// creates its protect unix-socket file. Empty on the dev host.
+	filesDir string
 
 	mu      sync.Mutex
 	running bool
@@ -57,10 +60,11 @@ func NewEngine(verdict Verdict, protect ProtectFunc, logFn func(string)) *Engine
 // immediately (immutable), and settings drive the sing-box tunnel relay.
 // nil settings mean "tunnel unavailable": every TUNNEL-rule flow escalates
 // to DIRECT (counted + logged) instead of failing.
-func NewW3Engine(settings *Settings, protect ProtectFunc, logFn func(string)) *Engine {
+func NewW3Engine(settings *Settings, protect ProtectFunc, logFn func(string), filesDir string) *Engine {
 	e := NewEngine(nil, protect, logFn)
 	e.settings = settings
 	e.rules = CompileRules()
+	e.filesDir = filesDir
 	if settings != nil {
 		e.relay = NewRelay(settings, func(line string) { e.logf("%s", line) })
 	}

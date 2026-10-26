@@ -9,28 +9,41 @@ package android
 // server receives the (duplicated) fd, unhooks it from the VPN through the
 // Java VpnService.protect callback, and answers.
 //
-// An abstract-namespace socket is used (name starts with '@'): no
-// filesystem location is needed, which sidesteps app-dir permission
-// questions entirely.
+// The socket is a REAL file in the app-private cwd (filesDir): see the
+// NOTE at protectorSocketPrefix below.
 
 import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"syscall"
 )
 
-const protectorSocketPrefix = "@rupas-protect-"
+// NOTE: NOT an abstract-namespace socket ("@name"): sing's ProtectPath
+// client (common/control/protect_unix.go) passes the path literally to
+// syscall.Connect(SockaddrUnix) — an "@name" string there resolves to a
+// FILESYSTEM path "@name" (leading NUL only appears when the first byte is
+// NUL), so the client would get ENOENT and every protected dial would die
+// in the Control hook. A real file under the app's private dir is visible
+// to both sides; it lives in filesDir (codir of the Go runtime) — no
+// other app can touch it.
+const protectorSocketPrefix = "rupas-protect-"
 
 // startProtector serves the protect protocol until the returned stop is
 // called. It never blocks the caller.
-func startProtector(protect ProtectFunc) (path string, stop func(), err error) {
+func startProtector(protect ProtectFunc, dir string) (path string, stop func(), err error) {
 	suffix := make([]byte, 6)
 	if _, err := rand.Read(suffix); err != nil {
 		return "", nil, fmt.Errorf("android: protector: random name: %w", err)
 	}
-	path = protectorSocketPrefix + hex.EncodeToString(suffix)
+	// Absolute path in the app-private dir (filesDir from Java): the
+	// Android process cwd is "/", so a relative path would land there and
+	// fail (EPERM/EACCES). Same absolute string works for both sides.
+	path = filepath.Join(dir, protectorSocketPrefix+hex.EncodeToString(suffix))
+	_ = os.Remove(path) // stale socket from a killed previous process
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		return "", nil, fmt.Errorf("android: protector: listen %s: %w", path, err)

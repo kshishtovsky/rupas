@@ -41,7 +41,7 @@ func (e *Engine) run(ctx context.Context, fd int) error {
 	// failed relay start does not kill the transport: TUNNEL flows will
 	// escalate honestly (fallbackAllowed policy).
 	if e.relay != nil {
-		if rErr := e.relay.Start(ctx, e.protect); rErr != nil {
+		if rErr := e.relay.Start(ctx, e.protect, e.filesDir); rErr != nil {
 			e.logf("tunnel relay start failed (TUNNEL rules will escalate): %v", rErr)
 			_ = e.relay.Close()
 		}

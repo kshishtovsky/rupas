@@ -22,3 +22,4 @@ configs/rupas.yaml
 configs/rupas.yaml.bak
 configs/*.bak
 configs/diag.yaml
+out/

@@ -141,14 +141,18 @@ $("btnLogsCopy").addEventListener("click", async () => {
 
 // ---------- settings: links + channel priorities (Android W3 parity) ----------
 let channels = [];
+let linksInitialized = false; // populate from storage once; never clobber unsaved edits
 
 async function loadSettings() {
   try {
     const st = await call("LoadState");
-    if (document.activeElement !== $("setLinks")) $("setLinks").value = st.links || "";
-    $("setDpi").checked = st.dpi !== false;
+    if (!linksInitialized) {
+      $("setLinks").value = st.links || "";
+      $("setDpi").checked = st.dpi !== false;
+      linksInitialized = true;
+    }
     $("setAutostart").checked = !!st.autostart;
-    await parseLinks();
+    await parseLinks(); // re-render the channel list from the CURRENT textarea
   } catch (_) {}
 }
 

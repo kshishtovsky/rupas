@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"runtime/debug"
 	"sync"
+	"time"
 
 	"github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing/common/buf"
@@ -92,6 +93,13 @@ func (h *flowHandler) JudgeFlow(proto uint8, source, destination netip.AddrPort,
 		Network:     networkName(proto),
 		Source:      source,
 		Destination: destination,
+	}
+	// PreferIPv4: native IPv6 destinations are fast-dropped — the server
+	// cannot carry v6, and an instant fail lets apps fall back to IPv4
+	// (4-in-6 mapped addresses are IPv4 and pass through).
+	if a := destination.Addr(); h.engine.preferIPv4 && a.Is6() && !a.Is4In6() {
+		h.engine.counters.Drop()
+		return tun.FlowVerdict{Action: tun.ActionDrop}
 	}
 	if h.engine.decide(meta) == ActionBlock {
 		return tun.FlowVerdict{Action: tun.ActionDrop}
@@ -226,6 +234,13 @@ func (h *flowHandler) relayUDP(ctx context.Context, conn N.PacketConn, source M.
 	defer closeOnce()
 
 	dst := destination.AddrPort()
+	// PreferIPv4: hijack plain-UDP DNS (any resolver, v4 or v6): AAAA gets
+	// an empty NOERROR (apps fall back to A), everything else relays to the
+	// original resolver through the protected dialer.
+	if e.preferIPv4 && dst.Port() == 53 {
+		h.serveDNS53(ctx, conn, destination, closeOnce)
+		return
+	}
 	if e.decide(FlowMeta{Network: "udp", Source: source.AddrPort(), Destination: dst}) == ActionTunnel {
 		if h.relayUDPTunnel(ctx, conn, dst, closeOnce) {
 			if onClose != nil {
@@ -363,6 +378,73 @@ func (h *flowHandler) relayUDPTunnel(ctx context.Context, conn N.PacketConn, dst
 			return true
 		}
 		e.counters.AddRx(int64(n)) // app → internet
+	}
+}
+
+// serveDNS53 is the PreferIPv4 DNS session body: per-datagram AAAA
+// filtering (empty NOERROR → apps fall back to A records) with transparent
+// upstream relay for everything else. The upstream socket is the protected
+// dialer (direct, VPN bypass) and the original resolver address is kept.
+func (h *flowHandler) serveDNS53(ctx context.Context, conn N.PacketConn, dst M.Socksaddr, closeOnce func()) {
+	defer h.engine.panicGuard("serveDNS53")
+	e := h.engine
+	defer closeOnce()
+	var upstream net.Conn // lazily connected relay socket for passthrough
+	defer func() {
+		if upstream != nil {
+			upstream.Close() //nolint:errcheck
+		}
+	}()
+	writeBack := func(payload []byte) bool {
+		pkt := buf.NewPacket()
+		pkt.Write(payload) //nolint:errcheck
+		wErr := conn.WritePacket(pkt, M.SocksaddrFrom(dst.Addr, dst.Port))
+		pkt.Release()
+		return wErr == nil
+	}
+	for {
+		b := buf.NewPacket()
+		_, rErr := conn.ReadPacket(b)
+		if rErr != nil {
+			b.Release()
+			return
+		}
+		payload := make([]byte, len(b.Bytes()))
+		copy(payload, b.Bytes())
+		b.Release()
+
+		if resp := dns4Response(payload); resp != nil {
+			e.counters.AddRx(int64(len(payload)))
+			if !writeBack(resp) {
+				return
+			}
+			continue
+		}
+
+		// Passthrough: relay the datagram to the original resolver.
+		if upstream == nil {
+			var dErr error
+			upstream, dErr = e.dialer.DialContext(ctx, "udp", dst.String())
+			if dErr != nil {
+				e.counters.Drop()
+				e.logf("dns %s: relay dial refused: %v", dst, dErr)
+				return
+			}
+		}
+		if _, wErr := upstream.Write(payload); wErr != nil {
+			e.counters.Drop()
+			return
+		}
+		e.counters.AddRx(int64(len(payload)))
+		upstream.SetReadDeadline(time.Now().Add(3 * time.Second)) //nolint:errcheck
+		reply := make([]byte, 4096)
+		n, rErr := upstream.Read(reply)
+		if rErr != nil || n == 0 {
+			continue // dropped query: the stub retries
+		}
+		if !writeBack(reply[:n]) {
+			return
+		}
 	}
 }
 

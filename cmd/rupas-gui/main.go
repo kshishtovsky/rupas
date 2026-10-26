@@ -27,10 +27,18 @@ var trayIcon []byte
 
 func main() {
 	startDaemon := flag.Bool("startdaemon", false, "internal: elevated relaunch that spawns rupasd and exits")
+	wipeProfile := flag.Bool("wipeprofile", false, "internal: elevated relaunch that deletes the calibration profile and exits")
 	daemonPath := flag.String("daemon", "", "rupasd.exe path (with -startdaemon)")
 	configPath := flag.String("config", "", "rupas YAML config path")
 	logPath := flag.String("log", "", "daemon log path")
 	flag.Parse()
+
+	if *wipeProfile {
+		if err := guictrl.RunWipeProfileFlag(); err != nil {
+			log.Fatalf("rupas-gui -wipeprofile: %v", err)
+		}
+		return
+	}
 
 	if *startDaemon {
 		ctrl, err := guictrl.New(guictrl.Options{ConfigPath: *configPath, LogPath: *logPath})

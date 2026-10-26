@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hallmark · screen: journal · a paper well, one filter row, no terminal chrome -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/tab_logs_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:paddingStart="@dimen/space_l"
+    android:paddingTop="@dimen/space_s"
+    android:paddingEnd="@dimen/space_l"
+    android:paddingBottom="@dimen/space_xs"
+    android:background="@color/paper">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/logs_title"
+                android:textColor="@color/ink"
+                android:textSize="24sp"
+                android:fontFamily="sans-serif-medium"
+                android:letterSpacing="0" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="@string/logs_subtitle"
+                android:textColor="@color/ink_soft"
+                android:textSize="13sp"
+                android:fontFamily="sans-serif" />
+        </LinearLayout>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnClearLogs"
+            style="@style/Widget.Rupas.IconButton"
+            android:layout_width="@dimen/touch_target_min"
+            android:layout_height="@dimen/touch_target_min"
+            app:icon="@drawable/ic_delete"
+            android:contentDescription="@string/logs_clear" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnShareLogs"
+            style="@style/Widget.Rupas.IconButton"
+            android:layout_width="@dimen/touch_target_min"
+            android:layout_height="@dimen/touch_target_min"
+            android:layout_marginStart="@dimen/space_xs"
+            app:icon="@drawable/ic_share"
+            app:iconTint="@color/accent"
+            android:contentDescription="@string/logs_share" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="@dimen/space_s"
+        android:layout_marginBottom="@dimen/space_s">
+
+        <com.google.android.material.button.MaterialButtonToggleGroup
+            android:id="@+id/toggleLogLevel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            app:singleSelection="true"
+            app:selectionRequired="true"
+            app:checkedButton="@id/btnLogInfo">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnLogInfo"
+                style="@style/Widget.Rupas.Button.Segment"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:checked="true"
+                android:text="@string/logs_filter_info" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnLogDebug"
+                style="@style/Widget.Rupas.Button.Segment"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:layout_marginStart="@dimen/space_xs"
+                android:text="@string/logs_filter_debug" />
+        </com.google.android.material.button.MaterialButtonToggleGroup>
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <com.google.android.material.chip.Chip
+            android:id="@+id/chipAutoscroll"
+            style="@style/Widget.Rupas.Chip"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:checked="true"
+            android:text="@string/logs_autoscroll" />
+    </LinearLayout>
+
+    <androidx.core.widget.NestedScrollView
+        android:id="@+id/scrollLogs"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true"
+        android:clipToOutline="true"
+        android:background="@drawable/bg_panel"
+        android:padding="@dimen/space_m"
+        android:scrollbars="none">
+
+        <TextView
+            android:id="@+id/tvLogsContent"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:text="@string/logs_empty"
+            android:textColor="@color/log_text"
+            android:textSize="12sp"
+            android:lineSpacingExtra="4dp" />
+        <!-- textIsSelectable намеренно не ставится: выбираемый текст при каждой
+             append() дёргает cursor/selection-механику, которая сбрасывает
+             прокрутку NestedScrollView наверх. -->
+    </androidx.core.widget.NestedScrollView>
+</LinearLayout>

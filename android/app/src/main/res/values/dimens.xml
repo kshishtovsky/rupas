@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hallmark · theme: dose · soft app radii on a 4pt scale -->
+<resources>
+    <dimen name="space_xxs">4dp</dimen>
+    <dimen name="space_xs">8dp</dimen>
+    <dimen name="space_s">12dp</dimen>
+    <dimen name="space_m">16dp</dimen>
+    <dimen name="space_l">20dp</dimen>
+    <dimen name="space_xl">24dp</dimen>
+    <dimen name="space_xxl">32dp</dimen>
+    <dimen name="space_xxxl">40dp</dimen>
+
+    <dimen name="touch_target_min">48dp</dimen>
+    <dimen name="radius_chip">999dp</dimen>
+    <dimen name="radius_input">14dp</dimen>
+    <dimen name="radius_panel">20dp</dimen>
+    <dimen name="radius_card">24dp</dimen>
+    <dimen name="radius_pill">999dp</dimen>
+    <dimen name="radius_circle">999dp</dimen>
+
+    <dimen name="power_button_size">152dp</dimen>
+    <dimen name="power_button_tray">216dp</dimen>
+    <dimen name="power_button_size_land">120dp</dimen>
+    <dimen name="power_button_tray_land">168dp</dimen>
+    <dimen name="column_wide">584dp</dimen>
+    <dimen name="column_wide_shell">624dp</dimen>
+    <dimen name="control_height">52dp</dimen>
+</resources>

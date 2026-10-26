@@ -1,0 +1,22 @@
+pluginManagement {
+    repositories {
+        // Прямые google()/mavenCentral() на этой машине блокируются (connection reset
+        // при рукопожатии), поэтому первыми стоят зеркала; google()/central — fallback.
+        maven { url 'https://mirrors.cloud.tencent.com/nexus/repository/maven-public/' }
+        maven { url 'https://repo.huaweicloud.com/repository/maven/' }
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        maven { url 'https://mirrors.cloud.tencent.com/nexus/repository/maven-public/' }
+        maven { url 'https://repo.huaweicloud.com/repository/maven/' }
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = "rupas-android"
+include ':app'

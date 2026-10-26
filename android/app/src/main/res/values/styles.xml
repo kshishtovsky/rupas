@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hallmark · theme: dose · moulded plastic controls, sentence-case labels -->
+<resources>
+    <style name="Widget.Rupas.BottomNavigation" parent="Widget.Material3.BottomNavigationView">
+        <item name="android:background">@android:color/transparent</item>
+        <item name="elevation">0dp</item>
+        <item name="itemIconTint">@color/nav_item_tint</item>
+        <item name="itemTextColor">@color/nav_item_tint</item>
+        <item name="itemRippleColor">@color/accent_soft</item>
+        <item name="itemIconSize">22dp</item>
+        <item name="labelVisibilityMode">labeled</item>
+        <item name="itemActiveIndicatorStyle">@style/Widget.Rupas.BottomNavIndicator</item>
+        <item name="itemTextAppearanceActive">@style/TextAppearance.Rupas.NavLabel</item>
+        <item name="itemTextAppearanceInactive">@style/TextAppearance.Rupas.NavLabel</item>
+    </style>
+
+    <style name="TextAppearance.Rupas.NavLabel" parent="TextAppearance.Material3.LabelMedium">
+        <item name="android:textSize">12sp</item>
+        <item name="android:letterSpacing">0</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textAllCaps">false</item>
+    </style>
+
+    <style name="Widget.Rupas.BottomNavIndicator" parent="Widget.Material3.BottomNavigationView.ActiveIndicator">
+        <item name="android:color">@color/accent_soft</item>
+        <item name="android:width">56dp</item>
+        <item name="android:height">30dp</item>
+    </style>
+
+    <style name="Widget.Rupas.TextField" parent="Widget.Material3.TextInputLayout.OutlinedBox">
+        <item name="boxBackgroundMode">outline</item>
+        <item name="boxBackgroundColor">@color/paper_2</item>
+        <item name="boxStrokeColor">@color/field_stroke</item>
+        <item name="boxStrokeErrorColor">@color/danger</item>
+        <item name="boxStrokeWidth">1dp</item>
+        <item name="boxStrokeWidthFocused">1dp</item>
+        <item name="boxCornerRadiusTopStart">@dimen/radius_input</item>
+        <item name="boxCornerRadiusTopEnd">@dimen/radius_input</item>
+        <item name="boxCornerRadiusBottomStart">@dimen/radius_input</item>
+        <item name="boxCornerRadiusBottomEnd">@dimen/radius_input</item>
+        <item name="hintTextColor">@color/ink_soft</item>
+        <item name="android:textColorHint">@color/ink_soft</item>
+        <item name="endIconTint">@color/ink_soft</item>
+        <item name="errorTextColor">@color/danger</item>
+        <item name="errorIconTint">@color/danger</item>
+    </style>
+
+    <style name="Widget.Rupas.Button.Primary" parent="Widget.Material3.Button">
+        <item name="android:textColor">@color/accent_ink</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:letterSpacing">0</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+        <item name="backgroundTint">@color/accent</item>
+        <item name="cornerRadius">@dimen/radius_input</item>
+        <item name="rippleColor">@color/accent_soft</item>
+    </style>
+
+    <style name="Widget.Rupas.Button.Secondary" parent="Widget.Material3.Button.OutlinedButton">
+        <item name="android:textColor">@color/ink</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:letterSpacing">0</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+        <item name="strokeColor">@color/field</item>
+        <item name="strokeWidth">1dp</item>
+        <item name="cornerRadius">@dimen/radius_input</item>
+        <item name="rippleColor">@color/accent_soft</item>
+    </style>
+
+    <style name="Widget.Rupas.Button.Segment" parent="Widget.Material3.Button.OutlinedButton">
+        <item name="android:textSize">13sp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:letterSpacing">0</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+        <item name="android:paddingStart">@dimen/space_m</item>
+        <item name="android:paddingEnd">@dimen/space_m</item>
+        <item name="android:textColor">@color/segment_text</item>
+        <item name="backgroundTint">@color/segment_background</item>
+        <item name="strokeColor">@color/field</item>
+        <item name="strokeWidth">1dp</item>
+        <item name="cornerRadius">@dimen/radius_input</item>
+    </style>
+
+    <style name="Widget.Rupas.IconButton" parent="Widget.Material3.Button.IconButton">
+        <item name="iconSize">22dp</item>
+        <item name="iconTint">@color/ink_2</item>
+        <item name="backgroundTint">@color/paper_3</item>
+        <item name="rippleColor">@color/accent_soft</item>
+    </style>
+
+    <style name="Widget.Rupas.Chip" parent="Widget.Material3.Chip.Filter">
+        <item name="android:textSize">13sp</item>
+        <item name="android:letterSpacing">0</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textColor">@color/segment_text</item>
+        <item name="chipBackgroundColor">@color/segment_background</item>
+        <item name="chipStrokeColor">@color/field</item>
+        <item name="chipStrokeWidth">1dp</item>
+        <item name="chipCornerRadius">@dimen/radius_chip</item>
+        <item name="checkedIconTint">@color/accent</item>
+        <item name="ensureMinTouchTargetSize">true</item>
+    </style>
+
+    <style name="Widget.Rupas.Switch" parent="Widget.Material3.CompoundButton.MaterialSwitch">
+        <item name="android:textColor">@color/ink_2</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:letterSpacing">0</item>
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="thumbTint">@color/switch_thumb</item>
+        <item name="trackTint">@color/switch_track</item>
+        <item name="trackDecorationTint">@color/switch_track</item>
+    </style>
+
+    <style name="TextAppearance.Rupas.ScreenTitle" parent="TextAppearance.Material3.HeadlineSmall">
+        <item name="android:textSize">24sp</item>
+        <item name="android:textStyle">normal</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:letterSpacing">0</item>
+        <item name="android:textColor">@color/ink</item>
+    </style>
+
+    <style name="TextAppearance.Rupas.SectionTitle" parent="TextAppearance.Material3.TitleMedium">
+        <item name="android:textSize">15sp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:letterSpacing">0</item>
+        <item name="android:textColor">@color/ink_2</item>
+    </style>
+
+    <style name="TextAppearance.Rupas.Caption" parent="TextAppearance.Material3.BodySmall">
+        <item name="android:textSize">13sp</item>
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:letterSpacing">0</item>
+        <item name="android:textColor">@color/ink_soft</item>
+    </style>
+</resources>

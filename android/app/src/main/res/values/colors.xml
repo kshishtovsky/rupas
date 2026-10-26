@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hallmark · v2.0.0 · shape: app screen · genre: modern-minimal · theme: dose · dealt 3/3 (seed android-vpn-utility-app-54a6·8f3321e5·2026-10-26·r0)
+     ground: white · posture: committed · nav: floating tab bar on paper · footer: none (app shell)
+     pre-emit critique: P5 H4 E4 S4 R5 V4 · weakest: E, the app cannot run here; the resource build is the check
+     every colour in the app resolves to one of these names; no literal colour outside this block
+     floor: 0 FAIL · manual walk, sloplint has no tier for Android XML -->
+<resources>
+    <!-- Paper: warm, fibre-toned, never pure white -->
+    <color name="paper">#F7F3EC</color>
+    <color name="paper_2">#FDFBF6</color>
+    <color name="paper_3">#EFEAE0</color>
+    <color name="paper_4">#E6E0D4</color>
+
+    <!-- Ink: green-black, four strengths -->
+    <color name="ink">#26312C</color>
+    <color name="ink_2">#4F5B55</color>
+    <color name="ink_soft">#65706A</color>
+    <color name="ink_faint">#A2ABA4</color>
+
+    <!-- Rules and field edges -->
+    <color name="rule">#E3DDD2</color>
+    <color name="rule_strong">#CFC8BB</color>
+    <color name="field">#7F8B84</color>
+
+    <!-- One sage green does every signal -->
+    <color name="accent">#3B745E</color>
+    <color name="accent_deep">#2F5F4C</color>
+    <color name="accent_soft">#DFEDE2</color>
+    <color name="accent_tint">#EDF4EE</color>
+    <color name="accent_ink">#FAFCF9</color>
+    <color name="focus">#2F5F4C</color>
+
+    <!-- Plastic tints: surfaces only, never a state -->
+    <color name="tint_sand">#F4EDE1</color>
+    <color name="tint_sky">#E7EEF0</color>
+    <color name="plastic_hi">#F8FCF8</color>
+    <color name="plastic_lo">#E2EEE5</color>
+
+    <!-- Quiet states -->
+    <color name="warn">#7A6136</color>
+    <color name="warn_soft">#F6EEDC</color>
+    <color name="danger">#8A4A42</color>
+    <color name="danger_soft">#F7E9E6</color>
+
+    <!-- Journal -->
+    <color name="log_text">#3A4640</color>
+    <color name="log_meta">#5C6862</color>
+    <color name="log_accent">#3B745E</color>
+
+    <!-- Launcher -->
+    <color name="ic_launcher_background">#F7F4EF</color>
+</resources>

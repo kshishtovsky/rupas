@@ -119,16 +119,17 @@ func TestPresetConfigValidates(t *testing.T) {
 	if _, err := config.Load(p); err != nil {
 		t.Fatalf("validation: %v\n%s", err, data)
 	}
-	// RU services must be direct before the geoip rule.
+	// RU services must stay direct; the default rule must be tunnel.
 	for _, r := range cfg.Rules {
-		if r.GeoIP != "" {
-			t.Fatal("RU services must come before geoip: ru")
+		if r.SNI == "vk.com" && r.Action != config.ActionDirect {
+			t.Fatalf("vk.com action: %v", r.Action)
 		}
-		if r.SNI == "vk.com" {
-			if r.Action != config.ActionDirect {
-				t.Fatalf("vk.com action: %v", r.Action)
+		if r.SNI == "" && r.CIDR == "" && r.Ports == "" && r.GeoIP == "" {
+			if r.Action != config.ActionTunnel {
+				t.Fatalf("default rule action: %v (want tunnel)", r.Action)
 			}
-			break
+			return
 		}
 	}
+	t.Fatal("no default rule found")
 }

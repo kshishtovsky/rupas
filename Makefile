@@ -41,3 +41,4 @@ bench:
 
 lint:
 	go vet ./...
+	staticcheck ./internal/tunnel/ ./internal/inspector/ ./internal/rules/ ./internal/flowtable/ ./internal/desync/

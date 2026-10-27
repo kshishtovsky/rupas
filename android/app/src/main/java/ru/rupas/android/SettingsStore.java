@@ -126,6 +126,29 @@ public final class SettingsStore {
     private static final String K_BLOCK_TRACKERS = "blockTrackers";
     private static final String K_LINKS = "links";
     private static final String K_APP_RULES = "appRules";
+    // Тема — НЕ секрет, но живёт в том же хранилище: один MasterKey на процесс.
+    private static final String K_THEME = "themeMode";
+
+    /**
+     * Тема оформления: -1 = как в системе (AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM),
+     * 0 = светлая, 1 = тёмная. Значение — ровно константа AppCompatDelegate,
+     * чтобы MainActivity не переводила его туда-обратно.
+     */
+    public static int loadThemeMode(Context ctx) {
+        try {
+            return open(ctx.getApplicationContext()).getInt(K_THEME, -1);
+        } catch (Exception e) {
+            return -1; // хранилище недоступно — ведём себя как система
+        }
+    }
+
+    public static void saveThemeMode(Context ctx, int mode) {
+        try {
+            open(ctx.getApplicationContext()).edit().putInt(K_THEME, mode).apply();
+        } catch (Exception ignored) {
+            // тема — украшение: не суметь её запомнить не повод падать
+        }
+    }
 
     // EncryptedSharedPreferences + MasterKey открывают Android Keystore,
     // поэтому инстанс кешируется на процесс: раньше каждый load() заново

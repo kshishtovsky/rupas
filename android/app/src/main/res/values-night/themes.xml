@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hallmark · theme: dose · NIGHT. Values-night override of Theme.Rupas; same item list as
+     values/themes.xml so nothing silently keeps a light default at night.
+     Same discipline: surfaces are not elevation-tinted, depth is shadow + rule. -->
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.Rupas" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="android:windowBackground">@color/paper</item>
+        <item name="android:statusBarColor">@color/paper</item>
+        <item name="android:navigationBarColor">@color/paper</item>
+        <!-- Dark icon glyphs on a dark bar would vanish; light glyphs on paper stay quiet -->
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="27">false</item>
+        <item name="android:forceDarkAllowed" tools:targetApi="29">false</item>
+        <item name="android:fontFamily">sans-serif</item>
+
+        <item name="elevationOverlayEnabled">false</item>
+
+        <item name="colorPrimary">@color/accent</item>
+        <item name="colorOnPrimary">@color/accent_ink</item>
+        <item name="colorPrimaryContainer">@color/accent_soft</item>
+        <item name="colorOnPrimaryContainer">@color/ink</item>
+        <item name="colorSecondary">@color/accent</item>
+        <item name="colorOnSecondary">@color/accent_ink</item>
+        <item name="colorSecondaryContainer">@color/accent_soft</item>
+        <item name="colorOnSecondaryContainer">@color/ink</item>
+        <item name="colorTertiary">@color/accent</item>
+        <item name="colorOnTertiary">@color/accent_ink</item>
+
+        <item name="colorSurface">@color/paper_2</item>
+        <item name="colorOnSurface">@color/ink</item>
+        <item name="colorSurfaceVariant">@color/paper_3</item>
+        <item name="colorOnSurfaceVariant">@color/ink_2</item>
+        <item name="colorSurfaceContainer">@color/paper_2</item>
+        <item name="colorSurfaceContainerHigh">@color/paper_2</item>
+        <item name="colorSurfaceContainerLow">@color/paper</item>
+        <item name="colorOutline">@color/field</item>
+        <item name="colorOutlineVariant">@color/rule</item>
+
+        <item name="colorError">@color/danger</item>
+        <item name="colorOnError">@color/accent_ink</item>
+        <item name="colorErrorContainer">@color/danger_soft</item>
+        <item name="colorOnErrorContainer">@color/danger</item>
+
+        <item name="colorControlActivated">@color/accent</item>
+        <item name="colorControlNormal">@color/ink_2</item>
+        <item name="android:textColorPrimary">@color/ink</item>
+        <item name="android:textColorSecondary">@color/ink_2</item>
+        <item name="android:textColorHint">@color/ink_soft</item>
+
+        <item name="bottomNavigationStyle">@style/Widget.Rupas.BottomNavigation</item>
+        <item name="materialAlertDialogTheme">@style/ThemeOverlay.Rupas.Dialog</item>
+    </style>
+
+    <!-- Night dialog: same overlay name as day, so the theme mapping needs no change -->
+    <style name="ThemeOverlay.Rupas.Dialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
+        <item name="colorSurface">@color/paper_2</item>
+        <item name="colorOnSurface">@color/ink</item>
+        <item name="colorPrimary">@color/accent</item>
+        <item name="colorOnPrimary">@color/accent_ink</item>
+        <item name="android:textColorPrimary">@color/ink</item>
+        <item name="android:textColorHint">@color/ink_soft</item>
+    </style>
+</resources>

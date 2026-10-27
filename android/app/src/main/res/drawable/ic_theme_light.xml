@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Тема: светлая. Тонкий контур, заливка только у ядра — как иконки навигации. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M12,7.5a4.5,4.5 0 1,0 0,9a4.5,4.5 0 0,0 0,-9zM12,9.2a2.8,2.8 0 1,1 0,5.6a2.8,2.8 0 0,1 0,-5.6z" />
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M11.15,1.4h1.7v2.6h-1.7zM11.15,20h1.7v2.6h-1.7zM1.4,11.15h2.6v1.7h-2.6zM20,11.15h2.6v1.7h-2.6z" />
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M4.05,5.25l1.2,-1.2l1.84,1.84l-1.2,1.2zM16.91,18.11l1.2,-1.2l1.84,1.84l-1.2,1.2zM19.95,5.25l-1.84,1.84l-1.2,-1.2l1.84,-1.84zM7.09,18.11l-1.84,1.84l-1.2,-1.2l1.84,-1.84z" />
+</vector>

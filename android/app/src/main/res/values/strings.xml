@@ -15,6 +15,11 @@
     <string name="status_tunnel_off">Туннель не настроен — трафик напрямую</string>
     <string name="status_tunnel_failed">Туннель не поднялся: %1$s</string>
     <string name="toast_no_config">Конфиг не введён: трафик пойдёт напрямую. Откройте Настройки.</string>
+    <!-- Тема -->
+    <string name="theme_cd">Тема оформления</string>
+    <string name="theme_now_light">Светлая тема</string>
+    <string name="theme_now_dark">Тёмная тема</string>
+    <string name="theme_now_system">Тема как в системе</string>
     <string name="status_error">Нет сети</string>
     <string name="btn_connect">Включить</string>
     <string name="btn_disconnect">Выключить</string>

@@ -55,6 +55,10 @@ type Settings struct {
 	// core sees is the TUNNEL/BLOCK subset. Absent/empty means no per-app
 	// rules: the core then never calls Platform.ResolveUID.
 	AppRules []AppRule `json:"app_rules,omitempty"`
+	// Adblock: the built-in ads/trackers filter (v0.4.0). Absent means
+	// "no filter configured" — the engine blocks nothing; a present object
+	// defaults to ads=true, trackers=false.
+	Adblock *AdblockSettings `json:"adblock,omitempty"`
 }
 
 // AppRule is one per-application routing rule. UID, not package name, is the
@@ -131,6 +135,13 @@ func (s *Settings) Validate() error {
 		}
 		if _, err := parseAppAction(ar.Action); err != nil {
 			return fmt.Errorf("android: settings: app_rules[%d]: %w", i, err)
+		}
+	}
+	// Whitelist entries are validated here, at SetSettings time, so a broken
+	// domain never reaches the compiled matcher.
+	if s.Adblock != nil {
+		if err := s.Adblock.validate(); err != nil {
+			return err
 		}
 	}
 	switch {

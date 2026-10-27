@@ -258,10 +258,10 @@ func (h *flowHandler) relayUDP(ctx context.Context, conn N.PacketConn, source M.
 	defer closeOnce()
 
 	dst := destination.AddrPort()
-	// PreferIPv4: hijack plain-UDP DNS (any resolver, v4 or v6): AAAA gets
-	// an empty NOERROR (apps fall back to A), everything else relays to the
-	// original resolver through the protected dialer.
-	if e.preferIPv4 && dst.Port() == 53 {
+	// DNS is hijacked for adblock (any app, any resolver), and for the
+	// PreferIPv4 AAAA filtering. With the filter off and PreferIPv4 off the
+	// session is a plain relay above.
+	if dst.Port() == 53 && (e.adblock != nil || e.preferIPv4) {
 		h.serveDNS53(ctx, conn, destination, closeOnce)
 		return
 	}
@@ -419,10 +419,11 @@ func (h *flowHandler) relayUDPTunnel(ctx context.Context, conn N.PacketConn, dst
 	}
 }
 
-// serveDNS53 is the PreferIPv4 DNS session body: per-datagram AAAA
-// filtering (empty NOERROR → apps fall back to A records) with transparent
-// upstream relay for everything else. The upstream socket is the protected
-// dialer (direct, VPN bypass) and the original resolver address is kept.
+// serveDNS53 is the DNS session body: a blocked name is answered locally
+// (adblock: A→0.0.0.0, AAAA→::, other qtypes→NXDOMAIN) and, under PreferIPv4,
+// AAAA for anything else gets an empty NOERROR so apps fall back to A. Every
+// other datagram relays transparently to the original resolver through the
+// protected dialer.
 func (h *flowHandler) serveDNS53(ctx context.Context, conn N.PacketConn, dst M.Socksaddr, closeOnce func()) {
 	defer h.engine.panicGuard("serveDNS53")
 	e := h.engine
@@ -433,6 +434,9 @@ func (h *flowHandler) serveDNS53(ctx context.Context, conn N.PacketConn, dst M.S
 			upstream.Close() //nolint:errcheck
 		}
 	}()
+	// respBuf is reused across datagrams: a synthesized answer never allocates
+	// after the first grow.
+	respBuf := make([]byte, 0, 512)
 	writeBack := func(payload []byte) bool {
 		pkt := buf.NewPacket()
 		pkt.Write(payload) //nolint:errcheck
@@ -451,6 +455,19 @@ func (h *flowHandler) serveDNS53(ctx context.Context, conn N.PacketConn, dst M.S
 		copy(payload, b.Bytes())
 		b.Release()
 
+		if resp, list := dnsAnswer(e.adblock, e.preferIPv4, payload, respBuf); resp != nil {
+			respBuf = resp
+			if list != "" {
+				e.counters.AdblockDNS()
+				e.logf("adblock: %s (dns, %s)", dnsQName(payload), list)
+			}
+			e.counters.AddRx(int64(len(payload)))
+			if !writeBack(resp) {
+				return
+			}
+			continue
+		}
+		// Multi-question AAAA (rare): the PreferIPv4 filter still applies.
 		if resp := dns4Response(payload); resp != nil {
 			e.counters.AddRx(int64(len(payload)))
 			if !writeBack(resp) {

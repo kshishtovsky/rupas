@@ -160,6 +160,15 @@ type statusJSON struct {
 	// TUNNEL flow escalates to direct.
 	Tunnel       string `json:"tunnel"`
 	TunnelDetail string `json:"tunnel_detail,omitempty"`
+	// Adblock: "on" | "off" | "failed" plus the reason, the compiled list
+	// sizes and the per-seam win counters (v0.4.0).
+	Adblock         string `json:"adblock"`
+	AdblockDetail   string `json:"adblock_detail"`
+	AdblockDomains  int    `json:"adblock_domains"`
+	AdblockTrackers int    `json:"adblock_trackers"`
+	AdblockBlocked  uint64 `json:"adblock_blocked"`
+	AdblockDNS      uint64 `json:"adblock_dns"`
+	AdblockSNI      uint64 `json:"adblock_sni"`
 }
 
 // Status returns a JSON status string (running, tcp_flows, udp_sessions,
@@ -173,6 +182,7 @@ func Status() string {
 
 	st := statusJSON{}
 	st.Tunnel = "off"
+	st.Adblock = "off"
 	if eng != nil {
 		snap := eng.Snapshot()
 		st.Running = eng.Running()
@@ -187,6 +197,10 @@ func Status() string {
 		st.TunnelEscalated = snap.TunnelEscalated
 		st.Carriers = eng.CarrierStates()
 		st.Tunnel, st.TunnelDetail = eng.TunnelInfo()
+		st.Adblock, st.AdblockDetail, st.AdblockDomains, st.AdblockTrackers = eng.AdblockState()
+		st.AdblockDNS = snap.AdblockDNS
+		st.AdblockSNI = snap.AdblockSNI
+		st.AdblockBlocked = snap.AdblockDNS + snap.AdblockSNI
 	}
 	b, err := json.Marshal(st)
 	if err != nil {

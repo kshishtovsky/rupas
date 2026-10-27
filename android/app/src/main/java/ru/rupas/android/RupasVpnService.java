@@ -168,16 +168,24 @@ public class RupasVpnService extends VpnService {
     private void refreshTunnelNotification() {
         String state = "off";
         String detail = "";
+        String adblock = "";
+        int blocked = 0;
         try {
             JSONObject st = new JSONObject(Core.status());
             state = st.optString("tunnel", "off");
             detail = st.optString("tunnel_detail", "");
+            adblock = st.optString("adblock", "");
+            blocked = st.optInt("adblock_blocked", 0);
         } catch (Throwable ignored) {
         }
+        // Фильтр рекламы (0.4.0): короткий суффикс, без новых таймеров.
+        String adSuffix = "failed".equals(adblock) ? " · фильтр не поднялся"
+                : ("on".equals(adblock) ? " · реклама: " + blocked : "");
         if ("on".equals(state)) {
-            notification = buildNotification("Rupas: защищено", "Защита активна", "Туннель " + detail);
+            notification = buildNotification("Rupas: защищено", "Защита активна" + adSuffix,
+                    "Туннель " + detail);
         } else {
-            notification = buildNotification("Rupas: туннель не поднят", "Трафик идёт напрямую",
+            notification = buildNotification("Rupas: туннель не поднят", "Трафик идёт напрямую" + adSuffix,
                     detail.isEmpty() ? "Проверьте настройки" : detail);
         }
         NotificationManager nm = getSystemService(NotificationManager.class);

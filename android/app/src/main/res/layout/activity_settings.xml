@@ -172,6 +172,48 @@
             android:fontFamily="sans-serif"
             android:letterSpacing="0" />
 
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_l"
+            android:text="@string/adblock_section"
+            android:textColor="@color/ink"
+            android:textSize="13sp"
+            android:fontFamily="sans-serif-medium"
+            android:letterSpacing="0" />
+
+        <CheckBox
+            android:id="@+id/cbBlockAds"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_xs"
+            android:checked="true"
+            android:buttonTint="@color/accent"
+            android:text="@string/adblock_ads"
+            android:textColor="@color/ink_2"
+            android:textSize="13sp"
+            android:fontFamily="sans-serif"
+            android:letterSpacing="0" />
+
+        <CheckBox
+            android:id="@+id/cbBlockTrackers"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:buttonTint="@color/accent"
+            android:text="@string/adblock_trackers"
+            android:textColor="@color/ink_2"
+            android:textSize="13sp"
+            android:fontFamily="sans-serif"
+            android:letterSpacing="0" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/adblock_hint"
+            android:textColor="@color/ink_soft"
+            android:textSize="12sp"
+            android:fontFamily="sans-serif" />
+
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnImport"
             style="@style/Widget.Rupas.Button.Secondary"

@@ -309,5 +309,17 @@
             android:fontFamily="sans-serif"
             android:singleLine="true"
             android:ellipsize="end" />
+
+        <TextView
+            android:id="@+id/tvAdblock"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/home_adblock_off"
+            android:textColor="@color/ink_soft"
+            android:textSize="12sp"
+            android:fontFamily="sans-serif"
+            android:singleLine="true"
+            android:ellipsize="end" />
     </LinearLayout>
 </LinearLayout>

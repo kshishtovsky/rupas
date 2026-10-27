@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/rupas/rupas/internal/config"
 )
@@ -47,6 +48,39 @@ type Settings struct {
 	// preset (android.DefaultRules) — the pre-screen behaviour. Rules are
 	// read at the next Start, so a change requires a VPN restart.
 	Rules []config.Rule `json:"rules,omitempty"`
+	// AppRules: the per-app rules of the Routing screen's 4th stage
+	// (docs/PERAPP_ROUTING.md §6). Java resolves package→uid before Start;
+	// DIRECT entries never reach the core (they are applied with
+	// VpnService.addDisallowedApplication, outside the VPN), so what the
+	// core sees is the TUNNEL/BLOCK subset. Absent/empty means no per-app
+	// rules: the core then never calls Platform.ResolveUID.
+	AppRules []AppRule `json:"app_rules,omitempty"`
+}
+
+// AppRule is one per-application routing rule. UID, not package name, is the
+// wire identity: Java maps package→uid at establish() time, because a UID
+// changes when the app is reinstalled. Action ∈ {direct, tunnel, block}
+// (case-insensitive).
+type AppRule struct {
+	UID    int    `json:"uid"`
+	Action string `json:"action"`
+}
+
+// parseAppAction maps a Settings app-rule action onto the decision set.
+// DIRECT is a valid settings value — it is applied by the Java side
+// (addDisallowedApplication) and never compiled into the UID table, because
+// such an app creates no flow in the netstack at all.
+func parseAppAction(s string) (Action, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "direct":
+		return ActionDirect, nil
+	case "tunnel":
+		return ActionTunnel, nil
+	case "block":
+		return ActionBlock, nil
+	default:
+		return ActionDirect, fmt.Errorf("unknown action %q (want direct, tunnel or block)", s)
+	}
 }
 
 // PreferIPv4Enabled reports the effective PreferIPv4 mode; absent field →
@@ -85,6 +119,18 @@ func (s *Settings) Validate() error {
 		// refused at SetSettings instead of at the next Start.
 		if err := config.ValidateRules(s.Rules); err != nil {
 			return fmt.Errorf("android: settings: %w", err)
+		}
+	}
+	// Per-app rules are validated entry by entry with the index in the
+	// message: the screen edits a list, and "rule 3 is broken" is what the
+	// owner can act on. DIRECT entries are valid here — the Java side
+	// applies them outside the VPN (addDisallowedApplication).
+	for i, ar := range s.AppRules {
+		if ar.UID < 0 {
+			return fmt.Errorf("android: settings: app_rules[%d]: uid must be >= 0 (got %d)", i, ar.UID)
+		}
+		if _, err := parseAppAction(ar.Action); err != nil {
+			return fmt.Errorf("android: settings: app_rules[%d]: %w", i, err)
 		}
 	}
 	switch {

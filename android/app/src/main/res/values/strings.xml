@@ -222,4 +222,38 @@
         <item quantity="many">%1$s адресов</item>
         <item quantity="other">%1$s адреса</item>
     </plurals>
+
+    <!-- Per-app routing · дословно из docs/PERAPP_ROUTING.md §4 -->
+    <string name="routing_stage_apps">Приложения</string>
+    <string name="routing_apps_title">Приложения</string>
+    <string name="routing_apps_empty">Правил по приложениям нет. Весь трафик идёт по общей политике.</string>
+    <string name="routing_apps_empty_action">Выбрать приложения</string>
+    <string name="routing_apps_add">+ Выбрать приложения</string>
+    <string name="routing_apps_search_hint">Поиск по имени или пакету</string>
+    <string name="routing_apps_filter_all">Все</string>
+    <string name="routing_apps_filter_rule">С правилом</string>
+    <string name="routing_apps_filter_system">Системные</string>
+    <string name="routing_apps_counter">Выбрано %1$d · Изменения применятся после перезапуска VPN</string>
+    <string name="routing_apps_counter_zero">Выбрано 0 · Изменения применятся после перезапуска VPN</string>
+    <string name="routing_apps_api29_note">TUNNEL и BLOCK — нужен Android 10+</string>
+    <string name="routing_apps_need_android10">нужен Android 10+</string>
+    <string name="routing_apps_loading">Читаю список приложений…</string>
+    <string name="routing_apps_nothing">Ничего не найдено</string>
+    <string name="routing_apps_save_error">Не удалось сохранить правила приложений</string>
+    <string name="routing_apps_saved">Правила по приложениям сохранены</string>
+    <string name="app_action_inherit">Наследует</string>
+    <string name="app_action_inherit_hint">действует общая политика</string>
+    <string name="app_menu_remove">Убрать правило</string>
+    <string name="app_menu_open_settings">Открыть настройки приложения</string>
+    <string name="app_menu_change">Изменить действие</string>
+    <string name="app_a11y_row">%1$s, %2$s, %3$s</string>
+    <string name="app_picker_a11y_segment">%1$s: %2$s</string>
+    <string name="app_picker_a11y_segment_off">%1$s: %2$s, недоступно</string>
+
+    <plurals name="app_shared_uid">
+        <item quantity="one">общий UID с %1$d приложением</item>
+        <item quantity="few">общий UID с %1$d приложениями</item>
+        <item quantity="many">общий UID с %1$d приложениями</item>
+        <item quantity="other">общий UID с %1$d приложениями</item>
+    </plurals>
 </resources>

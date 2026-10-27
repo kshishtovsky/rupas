@@ -6,16 +6,20 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
+import android.net.ConnectivityManager;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
+import android.system.OsConstants;
 import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
 
-import java.util.Collections;
-import java.util.Set;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.util.Map;
 
 import core.Core;
 import core.Platform;
@@ -47,9 +51,9 @@ public class RupasVpnService extends VpnService {
     private static final String VPN_DNS = "8.8.8.8";
     private static final int VPN_MTU = 1500;
 
-    // TODO(W5): зашитый список исключений заменить на GUI-экран (выбор приложений).
-    // Сейчас, кроме собственного пакета, ничего не исключаем.
-    private static final Set<String> EXTRA_DISALLOWED_PACKAGES = Collections.emptySet();
+    // Per-app routing (docs/PERAPP_ROUTING.md §5): список DIRECT-приложений и
+    // UID-правила теперь приходят из настроек (SettingsStore.appRules), здесь
+    // констант нет. Пустой набор правил == поведение до per-app routing.
 
     private static volatile boolean running = false;
     private static volatile RupasVpnService instance = null;
@@ -167,6 +171,16 @@ public class RupasVpnService extends VpnService {
     }
 
     private boolean establishAndStartCore() {
+        // Per-app routing (§5): настройки читаются ДО Builder — DIRECT-приложения
+        // обязаны быть исключены до establish(), иначе их трафик уже войдёт в TUN.
+        SettingsStore.Settings st = null;
+        try {
+            st = new SettingsStore(this).load();
+        } catch (Exception e) {
+            // Отказ хранилища/битый JSON: стартуем как раньше, без per-app.
+            Log.e(TAG, "settings load failed", e);
+            LogBuffer.add("[vpn] настройки не прочитаны: " + e.getMessage());
+        }
         Builder b = new Builder()
                 .addAddress(VPN_ADDRESS, VPN_ADDRESS_PREFIX)
                 .addAddress(VPN_ADDRESS_V6, VPN_ADDRESS_V6_PREFIX)
@@ -176,15 +190,13 @@ public class RupasVpnService extends VpnService {
                 .setMtu(VPN_MTU)
                 .setSession("rupas");
         // Самопакет: иначе наш же трафик зациклится через TUN.
-        // TODO(W5): список исключений приложений — на GUI-экране.
         try {
             b.addDisallowedApplication(getPackageName());
-            for (String pkg : EXTRA_DISALLOWED_PACKAGES) {
-                b.addDisallowedApplication(pkg);
-            }
         } catch (Exception e) {
-            Log.w(TAG, "disallowed package rejected: " + e);
+            Log.w(TAG, "disallowed self rejected: " + e);
         }
+        // Per-app: DIRECT → вне VPN (ОС-слой), TUNNEL/BLOCK → uid в JSON для ядра.
+        applyAppRules(b, st);
         try {
             tun = b.establish();
         } catch (Exception e) {
@@ -199,8 +211,7 @@ public class RupasVpnService extends VpnService {
         // Go-сторона эскалирует все туннельные правила в direct. В логах —
         // только факт и хост; никаких uuid/ключей.
         try {
-            SettingsStore.Settings st = new SettingsStore(this).load();
-            if (st.isConfigured()) {
+            if (st != null && st.isConfigured()) {
                 CoreBridge.setSettings(st.toJson());
                 LogBuffer.add("[vpn] tunnel: on (server " + st.server + ":" + st.port + ")");
             } else {
@@ -232,6 +243,61 @@ public class RupasVpnService extends VpnService {
         return true;
     }
 
+    /**
+     * Раскладывает сохранённые per-app правила (§5) по двум слоям:
+     * direct → {@code addDisallowedApplication} (приложение вне VPN, API 26+);
+     * tunnel|block → package→uid через PackageManager, uid кладётся в JSON для ядра.
+     * Неизвестный пакет/битая запись не валит старт — только строка в лог.
+     */
+    private void applyAppRules(Builder b, SettingsStore.Settings st) {
+        if (st == null || st.appRules.isEmpty()) {
+            return; // нет правил == поведение до per-app routing
+        }
+        PackageManager pm = getPackageManager();
+        int direct = 0;
+        int uidRules = 0;
+        int skipped = 0;
+        for (Map.Entry<String, String> e : st.appRules.entrySet()) {
+            String pkg = e.getKey() == null ? "" : e.getKey().trim();
+            String action = SettingsStore.normalizeAction(e.getValue());
+            if (pkg.isEmpty() || action == null || pkg.equals(getPackageName())) {
+                skipped++;
+                continue;
+            }
+            if (SettingsStore.APP_DIRECT.equals(action)) {
+                try {
+                    b.addDisallowedApplication(pkg);
+                    direct++;
+                } catch (Exception ex) {
+                    skipped++;
+                    LogBuffer.add("[vpn] app direct " + pkg + ": пропущено ("
+                            + ex.getClass().getSimpleName() + ")");
+                }
+                continue;
+            }
+            // tunnel|block: ядру нужен uid, а UID-резолв существует только с API 29.
+            if (Build.VERSION.SDK_INT < 29) {
+                skipped++;
+                LogBuffer.add("[vpn] app " + action + " " + pkg + ": пропущено — нужен Android 10+");
+                continue;
+            }
+            try {
+                int uid = pm.getApplicationInfo(pkg, 0).uid;
+                if (uid <= 0) {
+                    skipped++;
+                    continue;
+                }
+                st.coreAppRules.put(uid, action);
+                uidRules++;
+            } catch (Exception ex) {
+                skipped++;
+                LogBuffer.add("[vpn] app " + action + " " + pkg + ": пакет не найден, пропущено");
+            }
+        }
+        LogBuffer.add("[vpn] app rules: direct " + direct + ", uid " + uidRules
+                + (skipped > 0 ? ", пропущено " + skipped : ""));
+    }
+
     private void stopCore() {
         if (!coreStartedByInstance) {
             return;
@@ -248,6 +314,10 @@ public class RupasVpnService extends VpnService {
             } catch (Exception ignored) {
             }
             tun = null;
+        }
+        if (platform != null && platform.uidFailCount > 0) {
+            LogBuffer.add("[vpn] resolveUID: отказов " + platform.uidFailCount
+                    + " — эти потоки шли по общим правилам");
         }
         platform = null;
         LogBuffer.add("[vpn] stopped");
@@ -367,6 +437,12 @@ public class RupasVpnService extends VpnService {
     /** Реализация core.Platform: protect() → VpnService.protect(), log() → кольцевой буфер.
      *  Сигнатура long: gobind отображает Go int → Java long (реальный AAR). */
     private class PlatformImpl implements Platform {
+
+        // Отказ резолва логируем один раз (иначе hot path зальёт LogBuffer),
+        // дальше только считаем — счётчик виден в итоговой строке stopCore().
+        private boolean uidFailLogged;
+        private int uidFailCount;
+
         @Override
         public boolean protect(long fd) {
             return RupasVpnService.this.protect((int) fd);
@@ -381,6 +457,44 @@ public class RupasVpnService extends VpnService {
         public String filesDir() {
             // Go-сторона создаёт здесь protect unix-socket файл релея.
             return getFilesDir().getAbsolutePath();
+        }
+
+        /**
+         * Per-app routing (§2): UID владельца flow для ядра. -1 == «неизвестен»
+         * (Go честно деградирует к общим правилам), резолв только на новый flow.
+         * Имя — ровно как в gobind-интерфейсе: Go `ResolveUID` → Java `resolveUID`
+         * (проверено javap по собранному AAR; `resolveUid` из §6 не переопределил бы метод).
+         */
+        @Override
+        public long resolveUID(String network, String srcIp, long srcPort, String dstIp, long dstPort) {
+            if (Build.VERSION.SDK_INT < 29) {
+                return -1; // getConnectionOwnerUid появился в Android 10
+            }
+            try {
+                int proto = "udp".equalsIgnoreCase(network)
+                        ? OsConstants.IPPROTO_UDP
+                        : OsConstants.IPPROTO_TCP;
+                ConnectivityManager cm = getSystemService(ConnectivityManager.class);
+                if (cm == null) {
+                    return -1;
+                }
+                InetSocketAddress src = new InetSocketAddress(
+                        InetAddress.getByName(srcIp), (int) srcPort);
+                InetSocketAddress dst = new InetSocketAddress(
+                        InetAddress.getByName(dstIp), (int) dstPort);
+                return cm.getConnectionOwnerUid(proto, src, dst);
+            } catch (Exception ex) {
+                // SecurityException / IllegalArgumentException / UnknownHost и прочее:
+                // фича не работает, но туннель обязан жить.
+                if (!uidFailLogged) {
+                    uidFailLogged = true;
+                    LogBuffer.add("[vpn] resolveUID недоступен: " + ex.getClass().getSimpleName()
+                            + ": " + ex.getMessage() + " — правила по приложениям не применятся");
+                } else {
+                    uidFailCount++;
+                }
+                return -1;
+            }
         }
     }
 }

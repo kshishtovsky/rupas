@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hallmark · dose · пустое состояние стадии «Приложения» (PERAPP_ROUTING §4):
+     «Правил по приложениям нет. Весь трафик идёт по общей политике.» + кнопка. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/appEmptyRoot"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="@dimen/space_s"
+    android:background="@drawable/bg_card"
+    android:orientation="vertical"
+    android:padding="@dimen/space_m">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fontFamily="sans-serif"
+        android:text="@string/routing_apps_empty"
+        android:textColor="@color/ink_2"
+        android:textSize="13sp" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnAppsEmpty"
+        style="@style/Widget.Rupas.Button.Secondary"
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/control_height"
+        android:layout_marginTop="@dimen/space_s"
+        android:text="@string/routing_apps_empty_action" />
+</LinearLayout>

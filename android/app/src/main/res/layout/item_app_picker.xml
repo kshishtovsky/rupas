@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hallmark · dose · строка экрана выбора (PERAPP_ROUTING §4): иконка, имя, пакет,
+     ниже — переключатель из 4 позиций: наследует / DIRECT / TUNNEL / BLOCK.
+     Ячейки 48dp: hit target (§8 ROUTING_UI), а не декоративный чип. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/pickRowRoot"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="@dimen/space_xs"
+    android:background="@drawable/bg_card"
+    android:orientation="vertical"
+    android:paddingStart="@dimen/space_s"
+    android:paddingTop="@dimen/space_s"
+    android:paddingEnd="@dimen/space_s"
+    android:paddingBottom="@dimen/space_xs">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <ImageView
+            android:id="@+id/ivPickIcon"
+            android:layout_width="@dimen/app_icon_picker"
+            android:layout_height="@dimen/app_icon_picker"
+            android:layout_marginEnd="@dimen/space_s"
+            android:contentDescription="@null"
+            android:scaleType="fitCenter" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/tvPickName"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:fontFamily="sans-serif"
+                android:maxLines="1"
+                android:textColor="@color/ink"
+                android:textSize="15sp" />
+
+            <TextView
+                android:id="@+id/tvPickPackage"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:ellipsize="end"
+                android:fontFamily="sans-serif"
+                android:maxLines="1"
+                android:textColor="@color/ink_soft"
+                android:textSize="11sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="@dimen/space_xxs"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/segInherit"
+            android:layout_width="0dp"
+            android:layout_height="@dimen/app_segment_height"
+            android:layout_marginEnd="@dimen/space_xxs"
+            android:layout_weight="1"
+            android:background="@drawable/bg_seg"
+            android:clickable="true"
+            android:focusable="true"
+            android:fontFamily="sans-serif-medium"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:maxLines="1"
+            android:text="@string/app_action_inherit"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/segDirect"
+            android:layout_width="0dp"
+            android:layout_height="@dimen/app_segment_height"
+            android:layout_marginEnd="@dimen/space_xxs"
+            android:layout_weight="1"
+            android:background="@drawable/bg_seg"
+            android:clickable="true"
+            android:focusable="true"
+            android:fontFamily="sans-serif-medium"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:maxLines="1"
+            android:text="@string/action_direct"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/segTunnel"
+            android:layout_width="0dp"
+            android:layout_height="@dimen/app_segment_height"
+            android:layout_marginEnd="@dimen/space_xxs"
+            android:layout_weight="1"
+            android:background="@drawable/bg_seg"
+            android:clickable="true"
+            android:focusable="true"
+            android:fontFamily="sans-serif-medium"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:maxLines="1"
+            android:text="@string/action_tunnel"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/segBlock"
+            android:layout_width="0dp"
+            android:layout_height="@dimen/app_segment_height"
+            android:layout_weight="1"
+            android:background="@drawable/bg_seg"
+            android:clickable="true"
+            android:focusable="true"
+            android:fontFamily="sans-serif-medium"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:maxLines="1"
+            android:text="@string/action_block"
+            android:textSize="12sp" />
+    </LinearLayout>
+</LinearLayout>

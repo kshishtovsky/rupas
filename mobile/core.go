@@ -37,6 +37,13 @@ type Platform interface {
 	// FilesDir is the app-private directory (Context.getFilesDir()) for
 	// artifacts that must live on the filesystem (unix sockets). W3.1.
 	FilesDir() string
+	// ResolveUID returns the UID of the app that owns a flow, or -1 when
+	// unknown (API < 29, netd race, SecurityException) — the core then
+	// falls back to the shared policy. network is "tcp"/"udp"; the
+	// addresses are the packet's source/destination. Called only when
+	// per-app rules are configured and only once per new flow
+	// (docs/PERAPP_ROUTING.md §2), so it can afford a platform round trip.
+	ResolveUID(network string, srcIP string, srcPort int, dstIP string, dstPort int) int
 }
 
 // coreVersion is the fixed stamp surfaced by Version().
@@ -105,6 +112,13 @@ func Start(tunFd int, plat Platform) error {
 	}
 	filesDir = plat.FilesDir()
 	eng := android.NewW3EngineWithRules(settings, plat.Protect, plat.Log, filesDir, ruleSet)
+	// Per-app routing (docs/PERAPP_ROUTING.md §2): the UID resolver is
+	// bound next to Protect/FilesDir. The engine calls it only when the
+	// settings carry per-app rules, so a core without them never reaches
+	// the platform.
+	eng.SetUIDResolver(func(network, srcIP string, srcPort int, dstIP string, dstPort int) int {
+		return plat.ResolveUID(network, srcIP, srcPort, dstIP, dstPort)
+	})
 	if err := eng.Start(tunFd); err != nil {
 		return err
 	}
@@ -136,8 +150,8 @@ type statusJSON struct {
 	Dropped     uint64 `json:"dropped"`
 	// TunnelDials/TunnelEscalated: W3 tunnel accounting; TunnelEscalated
 	// counts honestly-marked tunnel→direct degradations.
-	TunnelDials     uint64                `json:"tunnel_dials"`
-	TunnelEscalated uint64                `json:"tunnel_escalated"`
+	TunnelDials     uint64 `json:"tunnel_dials"`
+	TunnelEscalated uint64 `json:"tunnel_escalated"`
 	// Carriers: the live dial chain (name + active/cooldown/ready per
 	// carrier) so the app can show which config is actually in use.
 	Carriers []android.CarrierState `json:"carriers,omitempty"`

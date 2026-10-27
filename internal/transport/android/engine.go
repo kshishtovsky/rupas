@@ -46,6 +46,10 @@ type Engine struct {
 	// filesDir: app-private dir (from Platform.FilesDir) where the relay
 	// creates its protect unix-socket file. Empty on the dev host.
 	filesDir string
+	// uidResolve is the platform UID resolver (Platform.ResolveUID), nil on
+	// the dev host and in tests. Consulted once per new flow, and only when
+	// per-app rules are compiled (docs/PERAPP_ROUTING.md §2).
+	uidResolve UIDResolver
 
 	mu      sync.Mutex
 	running bool
@@ -86,19 +90,58 @@ func NewW3Engine(settings *Settings, protect ProtectFunc, logFn func(string), fi
 // app's Routing screen) wins over settings.Rules, and both being empty falls
 // back to DefaultRules. Rules and tunnel settings stay independent inputs, so
 // a core can run user rules with no endpoint configured.
+//
+// Per-app rules (settings.AppRules) compile into their own UID table and
+// outrank every rule stage (docs/PERAPP_ROUTING.md §3).
 func NewW3EngineWithRules(settings *Settings, protect ProtectFunc, logFn func(string), filesDir string, ruleSet []config.Rule) *Engine {
 	e := NewEngine(nil, protect, logFn)
 	e.settings = settings
 	if len(ruleSet) == 0 && settings != nil {
 		ruleSet = settings.Rules
 	}
-	e.rules = CompileRulesWith(ruleSet, filesDir, func(line string) { e.logf("%s", line) })
+	var appRules []AppRule
+	if settings != nil {
+		appRules = settings.AppRules
+	}
+	e.rules = CompileRulesWithApps(ruleSet, appRules, filesDir, func(line string) { e.logf("%s", line) })
 	e.filesDir = filesDir
 	if settings != nil {
 		e.relay = NewRelay(settings, func(line string) { e.logf("%s", line) })
 		e.preferIPv4 = settings.PreferIPv4Enabled()
 	}
 	return e
+}
+
+// UIDResolver resolves the owning app UID of a new flow; it is the Go face of
+// Platform.ResolveUID (Java's ConnectivityManager.getConnectionOwnerUid). A
+// non-positive return means "unknown".
+type UIDResolver func(network string, srcIP string, srcPort int, dstIP string, dstPort int) int
+
+// SetUIDResolver installs the platform UID resolver. Call it before Start:
+// per-app rules without a resolver degrade honestly — flows carry UID 0 and
+// follow the shared policy (the UI shows the warning).
+func (e *Engine) SetUIDResolver(r UIDResolver) { e.uidResolve = r }
+
+// resolveUID returns the app UID of a new flow, or 0 when it is unknown.
+//
+// It is deliberately free unless the feature is in use: with no per-app rules
+// compiled — or no resolver installed — it returns 0 without touching the
+// platform, so an unconfigured core pays one nil/bool compare per flow and
+// zero JNI calls. Called once per flow (JudgeFlow for UDP, the head of
+// relayTCP for TCP), never per packet.
+func (e *Engine) resolveUID(m FlowMeta) int {
+	if e.uidResolve == nil || e.rules == nil || !e.rules.hasAppRules() {
+		return 0
+	}
+	src, dst := m.Source, m.Destination
+	uid := e.uidResolve(m.Network, src.Addr().Unmap().String(), int(src.Port()),
+		dst.Addr().Unmap().String(), int(dst.Port()))
+	if uid <= 0 {
+		// Platform -1/0: the socket is not owned yet (netd race) or the
+		// caller is invisible. Honest degradation, no retry (§7.4).
+		return 0
+	}
+	return uid
 }
 
 // Settings returns the tunnel settings the engine was built with.
@@ -140,11 +183,15 @@ func (e *Engine) isEndpoint(m FlowMeta) bool {
 	return false
 }
 
-// decide maps a flow onto an action: W3 rules when compiled (they take
-// SNI/ECH from FlowMeta), otherwise the wave-2 verdict seam.
+// decide maps a flow onto an action: a per-app UID rule first (the most
+// specific stage, docs/PERAPP_ROUTING.md §3), then W3 rules when compiled
+// (they take SNI/ECH from FlowMeta), otherwise the wave-2 verdict seam.
 func (e *Engine) decide(m FlowMeta) Action {
 	if e.isEndpoint(m) {
 		return ActionDirect
+	}
+	if a, ok := e.appAction(m); ok {
+		return a
 	}
 	if e.rules != nil {
 		return e.rules.Decide(m)
@@ -153,15 +200,40 @@ func (e *Engine) decide(m FlowMeta) Action {
 }
 
 // decidePre is DecidePre for engines without compiled rules (wave-2): the
-// verdict is always final and never needs the ClientHello.
+// verdict is always final and never needs the ClientHello. Like decide it
+// applies the per-app rule first, and such a decision is always final: an app
+// rule outranks SNI, so no ClientHello is needed.
 func (e *Engine) decidePre(m FlowMeta) (Action, bool) {
 	if e.isEndpoint(m) {
 		return ActionDirect, true
+	}
+	if a, ok := e.appAction(m); ok {
+		return a, true
 	}
 	if e.rules != nil {
 		return e.rules.DecidePre(m)
 	}
 	return e.verdict(m), true
+}
+
+// appAction resolves the per-app rule for a flow. The cost when the feature is
+// unused is one UID compare plus one nil-map branch; when used it is a single
+// int-keyed map lookup — zero allocation either way. The check lives here
+// rather than in Rules.Decide, so the hot MatchProto path is untouched.
+func (e *Engine) appAction(m FlowMeta) (Action, bool) {
+	if e.rules == nil || m.UID <= 0 {
+		return ActionDirect, false
+	}
+	return e.rules.appAction(m.UID)
+}
+
+// logAppRule writes the one log line for a flow decided by a per-app rule
+// (docs/PERAPP_ROUTING.md §8.5): "app uid=10086 → TUNNEL". The flow entry
+// points call it once, so a flow logs once and packets never log at all.
+func (e *Engine) logAppRule(m FlowMeta) {
+	if a, ok := e.appAction(m); ok {
+		e.logf("app uid=%d → %s", m.UID, a)
+	}
 }
 
 // fallbackAllowed reports whether TUNNEL flows may escalate to DIRECT.

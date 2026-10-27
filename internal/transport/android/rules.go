@@ -65,6 +65,11 @@ type Rules struct {
 	// sorted for binary search. Entries keep the action and scope of the rule
 	// that pulled the country in.
 	geoDirect []geoEntry
+	// appByUID holds the per-app rules (docs/PERAPP_ROUTING.md §3): the
+	// most specific stage, consulted by Engine.decide/decidePre BEFORE the
+	// table. nil when no per-app rule was configured — the hot path then
+	// pays a single nil-map branch. Immutable after compile, so no lock.
+	appByUID map[int]Action
 	// defaultAction for flows nothing matched (W3 policy: TUNNEL).
 	defaultAction Action
 }
@@ -167,7 +172,7 @@ func DefaultRules() []config.Rule {
 // without geo tables (tests, offline builds). See CompileRulesEx for the full
 // table and CompileRulesWith for a caller-supplied rule set.
 func CompileRules() *Rules {
-	return compileRules("", nil, nil)
+	return compileRules("", nil, nil, nil)
 }
 
 // CompileRulesEx builds the policy table enriched with the country CIDR
@@ -177,21 +182,29 @@ func CompileRules() *Rules {
 // are best-effort: a failed geoip download degrades to the zone/domain rules,
 // it never blocks the transport start.
 func CompileRulesEx(filesDir string, logf func(string)) *Rules {
-	return compileRules(filesDir, logf, nil)
+	return compileRules(filesDir, logf, nil, nil)
 }
 
 // CompileRulesWith compiles a caller-supplied rule set (the Routing screen's
 // rules from Settings). An empty ruleSet falls back to DefaultRules, so a core
 // started without rules behaves exactly like the pre-screen builds.
 func CompileRulesWith(ruleSet []config.Rule, filesDir string, logf func(string)) *Rules {
-	return compileRules(filesDir, logf, ruleSet)
+	return compileRules(filesDir, logf, ruleSet, nil)
+}
+
+// CompileRulesWithApps is CompileRulesWith plus the per-app UID rules
+// (Settings.AppRules). The app rules land in their own table consulted ahead
+// of every other stage (docs/PERAPP_ROUTING.md §3); without them the compiled
+// table is indistinguishable from CompileRulesWith's.
+func CompileRulesWithApps(ruleSet []config.Rule, appRules []AppRule, filesDir string, logf func(string)) *Rules {
+	return compileRules(filesDir, logf, ruleSet, appRules)
 }
 
 // compileRules compiles a rule list into the immutable table. A rule that
 // cannot be understood on this platform is skipped rather than fatal: the core
 // must start even if one entry turns out to be unusable (the screen and
 // Settings validation reject the obviously broken before it gets here).
-func compileRules(filesDir string, logf func(string), ruleSet []config.Rule) *Rules {
+func compileRules(filesDir string, logf func(string), ruleSet []config.Rule, appRules []AppRule) *Rules {
 	if len(ruleSet) == 0 {
 		ruleSet = DefaultRules()
 	}
@@ -242,6 +255,7 @@ func compileRules(filesDir string, logf func(string), ruleSet []config.Rule) *Ru
 	// tie-break on identical prefixes.
 	sort.SliceStable(r.cidr, func(i, j int) bool { return r.cidr[i].prefix.Bits() > r.cidr[j].prefix.Bits() })
 	r.loadGeoTables(filesDir, logf, ruleSet)
+	r.compileAppRules(appRules)
 	if desync > 0 && logf != nil {
 		logf(fmt.Sprintf("rules: %d desync rule(s) routed via the tunnel (android has no desync engine)", desync))
 	}
@@ -373,6 +387,52 @@ func loadGeositeFile(path string) ([]string, error) {
 
 // Default returns the default action (W3: TUNNEL).
 func (r *Rules) Default() Action { return r.defaultAction }
+
+// compileAppRules builds the per-app UID table (docs/PERAPP_ROUTING.md §5).
+// Only TUNNEL and BLOCK are compiled: a DIRECT rule is applied by the Java
+// side via VpnService.addDisallowedApplication, so such an app has no flow in
+// the netstack at all and a table entry would be dead weight. UID 0 means
+// "unknown owner" — it is never a valid key. An unusable entry is skipped
+// (Settings.Validate rejects it before Start).
+func (r *Rules) compileAppRules(appRules []AppRule) {
+	if len(appRules) == 0 {
+		return
+	}
+	m := make(map[int]Action, len(appRules))
+	for _, ar := range appRules {
+		if ar.UID <= 0 {
+			continue
+		}
+		act, err := parseAppAction(ar.Action)
+		if err != nil || act == ActionDirect {
+			continue
+		}
+		if _, exists := m[ar.UID]; !exists { // first rule wins, as in every stage
+			m[ar.UID] = act
+		}
+	}
+	if len(m) > 0 {
+		r.appByUID = m
+	}
+}
+
+// appAction resolves the per-app rule for an app UID. The second return is
+// false when no rule covers the UID (including the no-app-rules case, where
+// the nil map answers instantly). Zero allocation: one int-keyed lookup.
+func (r *Rules) appAction(uid int) (Action, bool) {
+	if r == nil || r.appByUID == nil || uid <= 0 {
+		return ActionDirect, false
+	}
+	act, ok := r.appByUID[uid]
+	return act, ok
+}
+
+// hasAppRules reports whether any per-app rule is compiled. It is the gate
+// for the UID resolve: without per-app rules the core never calls into the
+// platform, so the hot path keeps its pre-feature cost (one nil compare).
+func (r *Rules) hasAppRules() bool {
+	return r != nil && len(r.appByUID) > 0
+}
 
 // decideCIDR walks the CIDR table longest-prefix-first (the first match after
 // the sort is the most specific one), then the sorted geo table.

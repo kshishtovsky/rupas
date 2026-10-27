@@ -25,4 +25,9 @@
     <dimen name="column_wide">584dp</dimen>
     <dimen name="column_wide_shell">624dp</dimen>
     <dimen name="control_height">52dp</dimen>
+
+    <!-- Per-app routing (PERAPP_ROUTING §4): иконка строки и переключатель действия -->
+    <dimen name="app_icon">32dp</dimen>
+    <dimen name="app_icon_picker">40dp</dimen>
+    <dimen name="app_segment_height">48dp</dimen>
 </resources>

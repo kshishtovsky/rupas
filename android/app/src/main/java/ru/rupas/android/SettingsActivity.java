@@ -11,6 +11,8 @@ import android.widget.Toast;
 
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 
 /**
  * W3: экран настроек эндпоинта. Секретные поля (uuid, publicKey) маскируются
@@ -36,6 +38,7 @@ public class SettingsActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_settings);
+        setupInsets();
 
         etUuid = findViewById(R.id.etUuid);
         etServer = findViewById(R.id.etServer);
@@ -67,6 +70,26 @@ public class SettingsActivity extends AppCompatActivity {
 
         btnImport.setOnClickListener(v -> showImportDialog());
         btnSave.setOnClickListener(v -> saveForm());
+    }
+
+    /**
+     * Edge-to-edge принудителен на Android 15+ (targetSdk 36): без верхнего инсета
+     * заголовок «Настройки» уезжает под статус-бар. Инсет отдаём корню-ScrollView
+     * (clipToPadding=false в макете), чтобы содержимое не резалось на прокрутке,
+     * а фон под полосами оставался @color/paper.
+     */
+    private void setupInsets() {
+        final View root = findViewById(R.id.settingsRoot);
+        final int padTop = root.getPaddingTop();
+        final int padBottom = root.getPaddingBottom();
+        ViewCompat.setOnApplyWindowInsetsListener(root, (v, insets) -> {
+            androidx.core.graphics.Insets bars =
+                    insets.getInsets(WindowInsetsCompat.Type.systemBars());
+            v.setPadding(v.getPaddingLeft(), padTop + Math.max(bars.top, 0),
+                    v.getPaddingRight(), padBottom + Math.max(bars.bottom, 0));
+            return insets;
+        });
+        ViewCompat.requestApplyInsets(root);
     }
 
     private void applySecretMask(EditText et, boolean visible) {

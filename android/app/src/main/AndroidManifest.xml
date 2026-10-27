@@ -41,6 +41,20 @@
                 android:value=".SettingsActivity" />
         </activity>
 
+        <!-- T3: экран выбора приложений (PERAPP_ROUTING §4). Вход только из 4-й
+             стадии «Приложения» на экране «Маршруты», наружу не отдаётся.
+             adjustResize — чтобы поиск не перекрывался клавиатурой. -->
+        <activity
+            android:name=".AppPickerActivity"
+            android:exported="false"
+            android:label="@string/routing_apps_title"
+            android:parentActivityName=".RoutingActivity"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data
+                android:name="android.support.PARENT_ACTIVITY"
+                android:value=".RoutingActivity" />
+        </activity>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

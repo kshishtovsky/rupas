@@ -217,9 +217,9 @@
     </plurals>
 
     <plurals name="addresses_count">
-        <item quantity="one">%d адрес</item>
-        <item quantity="few">%d адреса</item>
-        <item quantity="many">%d адресов</item>
-        <item quantity="other">%d адреса</item>
+        <item quantity="one">%1$s адрес</item>
+        <item quantity="few">%1$s адреса</item>
+        <item quantity="many">%1$s адресов</item>
+        <item quantity="other">%1$s адреса</item>
     </plurals>
 </resources>

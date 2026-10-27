@@ -16,6 +16,8 @@ import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.PopupMenu;
 import androidx.core.content.ContextCompat;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.recyclerview.widget.ItemTouchHelper;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -220,6 +222,19 @@ public class RoutingActivity extends AppCompatActivity implements RoutingAdapter
         adapter.attach(listRules);
         listRules.setAdapter(adapter);
         new ItemTouchHelper(dragCallback).attachToRecyclerView(listRules);
+        // The default row is pinned at the END of the list, so the system
+        // navigation bar would swallow it (clipToPadding=false on the view):
+        // pad the bottom by the navigation inset plus one step of the scale.
+        final int basePad = getResources().getDimensionPixelSize(R.dimen.space_xl);
+        listRules.setPadding(listRules.getPaddingLeft(), listRules.getPaddingTop(),
+                listRules.getPaddingRight(), basePad);
+        ViewCompat.setOnApplyWindowInsetsListener(listRules, (v, insets) -> {
+            int nav = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom;
+            v.setPadding(v.getPaddingLeft(), v.getPaddingTop(), v.getPaddingRight(),
+                    basePad + Math.max(nav, 0));
+            return insets;
+        });
+        ViewCompat.requestApplyInsets(listRules);
     }
 
     private void setupToolbar() {

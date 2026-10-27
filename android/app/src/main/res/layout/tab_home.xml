@@ -45,6 +45,20 @@
                 android:letterSpacing="0" />
         </LinearLayout>
 
+        <!-- 0.4.0: тема. Тап листает «светлая → тёмная → как в системе», иконка
+             показывает ТЕКУЩИЙ режим (тост называет следующий). -->
+        <ImageButton
+            android:id="@+id/btnTheme"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:layout_marginEnd="@dimen/space_xs"
+            android:background="@android:color/transparent"
+            android:contentDescription="@string/theme_cd"
+            android:padding="6dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_theme_system"
+            app:tint="@color/ink_soft" />
+
         <LinearLayout
             android:id="@+id/statusPill"
             android:layout_width="wrap_content"

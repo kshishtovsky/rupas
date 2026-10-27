@@ -12,12 +12,14 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
 import android.widget.EditText;
+import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AppCompatDelegate;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
@@ -152,10 +154,15 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // Тема — ДО super.onCreate: иначе активити построит окно в прошлом режиме
+        // и пересоздастся вторым проходом.
+        androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(
+                SettingsStore.loadThemeMode(this));
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
         bindViews();
+        setupThemeButton();
         setupNavigation();
         setupHomeTab();
         setupSettingsTab();
@@ -170,6 +177,49 @@ public class MainActivity extends AppCompatActivity {
         if (!RupasVpnService.isRunning()) {
             RupasVpnService.showOfflineNotification(this);
         }
+    }
+
+    private ImageButton btnTheme;
+
+    /**
+     * Тема: тап листает «светлая → тёмная → как в системе». Иконка показывает
+     * текущий режим, тост — что включилось (иначе третье состояние невидимо).
+     */
+    private void setupThemeButton() {
+        btnTheme = findViewById(R.id.btnTheme);
+        if (btnTheme == null) {
+            return; // разметка без кнопки (старая тема) — молча живём как раньше
+        }
+        btnTheme.setOnClickListener(v -> {
+            int cur = SettingsStore.loadThemeMode(this);
+            int next = cur == AppCompatDelegate.MODE_NIGHT_NO
+                    ? AppCompatDelegate.MODE_NIGHT_YES
+                    : cur == AppCompatDelegate.MODE_NIGHT_YES
+                        ? AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
+                        : AppCompatDelegate.MODE_NIGHT_NO;
+            SettingsStore.saveThemeMode(this, next);
+            Toast.makeText(this, themeLabel(next), Toast.LENGTH_SHORT).show();
+            // setDefaultNightMode пересоздаст активити сам (uiMode меняется),
+            // поэтому иконку здесь не трогаем — её выставит новый onCreate.
+            AppCompatDelegate.setDefaultNightMode(next);
+        });
+        renderThemeButton(SettingsStore.loadThemeMode(this));
+    }
+
+    private void renderThemeButton(int mode) {
+        btnTheme.setImageResource(mode == AppCompatDelegate.MODE_NIGHT_YES
+                ? R.drawable.ic_theme_dark
+                : mode == AppCompatDelegate.MODE_NIGHT_NO
+                    ? R.drawable.ic_theme_light
+                    : R.drawable.ic_theme_system);
+    }
+
+    private String themeLabel(int mode) {
+        return getString(mode == AppCompatDelegate.MODE_NIGHT_YES
+                ? R.string.theme_now_dark
+                : mode == AppCompatDelegate.MODE_NIGHT_NO
+                    ? R.string.theme_now_light
+                    : R.string.theme_now_system);
     }
 
     private void bindViews() {

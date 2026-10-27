@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hallmark · v2.0.0 · theme: dose · NIGHT counterpart of values/colors.xml
+     Same 29 names, same roles, same single sage signal; no literal colour anywhere else in the app.
+     ground: night paper (green-black, not black) · posture: committed · surfaces step by L* only
+     pre-emit critique — measured, sRGB WCAG 2.1:
+       ink / paper            10.36  (day 12.19)   body text, the relief valve against night glare
+       ink / paper_2           9.71  (day 13.03)   same text on a card
+       ink_soft / paper        5.40  (day  4.65)   captions, 57 call sites — the real workhorse
+       ink_faint / paper       3.66  (day  2.13)   rare meta only; deliberately ABOVE AA large
+       accent / paper          6.50  (day  4.94)   one signal, muted sage, never neon
+       accent / accent_soft    5.04  (day  4.51)   nav icon on its indicator tray
+       accent_ink / accent     6.58  (day  5.29)   label on a filled accent button
+       danger / danger_soft    4.67  (day  5.66)   quietest pair in the file, still AA
+       warn / warn_soft        4.91  (day  5.06)
+       log_meta / paper_3      4.90  (day  4.85)   journal meta on the sunken panel
+       field / paper_2         2.69  (day  3.43)   input edge: a boundary, not text
+       rule / paper_2          1.20  (day  1.31)   hairline: felt, not seen
+     weakest link: danger / danger_soft at 4.67 — it is the reason danger is #B8786D and not the
+     deeper #AC6E64 it wants to be; muting it further drops the pair to 4.00 and fails AA.
+     ink is #BFC4BD, never #FFFFFF: pure white on a dark ground reads as a light source at 3 a.m.
+     floor: 0 FAIL (25 measured pairs, script-checked; see the pair table in the task report) -->
+<resources>
+    <!-- Paper: night stock. Layers differ by L* (6.5 / 9.8 / 4.4 / 2.9), never by tint -->
+    <color name="paper">#121514</color>          <!-- screen ground: green-black, 3 L* above true black so OLED edges do not crawl -->
+    <color name="paper_2">#181C1A</color>        <!-- card / dialog: +3.3 L*, felt as a lift and nothing more -->
+    <color name="paper_3">#0D100F</color>        <!-- sunken panel (journal, wells): -2.1 L*, recessed, not darker for its own sake -->
+    <color name="paper_4">#090B0A</color>        <!-- deepest well: pressed / inset only, one step above black -->
+
+    <!-- Ink: four strengths, none of them white -->
+    <color name="ink">#BFC4BD</color>            <!-- primary text: grey-green at 78 L*, hits 10.36:1 and still does not glare -->
+    <color name="ink_2">#A2A9A2</color>          <!-- secondary: 7.16:1, a clear rank below ink without going dim -->
+    <color name="ink_soft">#868D87</color>       <!-- captions and nav labels: 5.06:1, the most-used text token -->
+    <color name="ink_faint">#6A716B</color>      <!-- faint: 3.66:1, disabled / dot marks only, still legible -->
+
+    <!-- Rules and field edges: boundaries, so they sit near the ground -->
+    <color name="rule">#262B28</color>           <!-- hairline at 1.20:1: a fold in the paper, not a drawn line -->
+    <color name="rule_strong">#384039</color>    <!-- 1.61:1, idle stroke of the big power key -->
+    <color name="field">#58615B</color>          <!-- 2.69:1 input edge: must read as an edge, must not compete with text -->
+
+    <!-- One sage green does every signal; lifted in lightness, not in saturation, to survive the dark -->
+    <color name="accent">#79A38C</color>         <!-- 63 L* muted sage: 6.50:1 on ground, 19% sat — visible, never neon -->
+    <color name="accent_deep">#9CC0AD</color>    <!-- "deep" is meaningless on dark, so it becomes the LIGHTER sage: selected text on tint -->
+    <color name="accent_soft">#1E2E27</color>    <!-- selected tray / primary container: a dark tinted surface at 17 L*, not a bright patch -->
+    <color name="accent_tint">#17241E</color>    <!-- faintest sage wash under selected rows: 8 L*, all but invisible -->
+    <color name="accent_ink">#0F1412</color>     <!-- label on an accent fill: near-ground dark, 6.58:1, keeps the button from glowing -->
+    <color name="focus">#8FBDA4</color>          <!-- focus edge: one shade above accent so a focused field outranks a settled one -->
+
+    <!-- Plastic tints: surfaces only, never a state -->
+    <color name="tint_sand">#211D17</color>      <!-- warm night sand: the one non-green surface, kept at 11 L* -->
+    <color name="tint_sky">#161E20</color>       <!-- cool night sky: 10 L*, reads next to paper_2 without edging into blue -->
+    <color name="plastic_hi">#1B201E</color>     <!-- power ring highlight: 1.09:1 to plastic_lo — a sheen, not a gradient wall -->
+    <color name="plastic_lo">#131716</color>     <!-- power ring shadow, barely under paper_2 -->
+
+    <!-- Quiet states: desaturated on purpose, a signal you read, not a light you see -->
+    <color name="warn">#B08A5A</color>           <!-- muted brass, 29% sat: 4.91:1 on warn_soft -->
+    <color name="warn_soft">#2A2317</color>      <!-- 14 L* warm shadow, holds warn at AA -->
+    <color name="danger">#B8786D</color>         <!-- muted clay, 25% sat: 4.67:1 on danger_soft. Lighter than it looks right, because AA said so -->
+    <color name="danger_soft">#291C19</color>    <!-- 12 L* oxblood shadow: reads as alarm, not as a red banner -->
+
+    <!-- Journal: monospace on the sunken panel, tuned to paper_3 -->
+    <color name="log_text">#A9AFA8</color>       <!-- 8.55:1 on paper_3, a hair under ink so logs never outrank the live screen -->
+    <color name="log_meta">#7B837C</color>       <!-- timestamps: 4.90:1, present but recedes -->
+    <color name="log_accent">#8CB4A0</color>     <!-- log emphasis: 8.33:1, sage at journal size -->
+
+    <!-- Launcher: SAME light value as day on purpose. The foreground is a light PNG on a warm
+         plate; a night-dark plate would turn the icon into a black blob in the drawer. -->
+    <color name="ic_launcher_background">#F7F4EF</color>
+</resources>

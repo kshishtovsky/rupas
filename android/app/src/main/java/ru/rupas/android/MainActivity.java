@@ -406,6 +406,14 @@ public class MainActivity extends AppCompatActivity {
             btnPower.setEnabled(true);
             return;
         }
+        // Один раз предупреждаем, если конфиг не введён: без эндпоинта VPN
+        // всё равно поднимется, но трафик пойдёт напрямую (правила direct).
+        try {
+            if (!new SettingsStore(this).load().isConfigured()) {
+                Toast.makeText(this, R.string.toast_no_config, Toast.LENGTH_LONG).show();
+            }
+        } catch (Throwable ignored) {
+        }
         Intent prepare = VpnService.prepare(this);
         if (prepare != null) {
             startActivityForResult(prepare, VPN_REQUEST_CODE);
@@ -511,6 +519,23 @@ public class MainActivity extends AppCompatActivity {
             long tcpFlows = st.optLong("tcp_flows", 0);
             long udpSessions = st.optLong("udp_sessions", 0);
             long escalated = st.optLong("tunnel_escalated", 0);
+
+            // Честный статус: «Защищено» — только если туннель реально
+            // поднялся. Иначе TUNNEL-потоки уходят в direct, и Telegram
+            // молча висит в соединении (см. 0.3.1: tunnel/tunnel_detail).
+            String tunnel = st.optString("tunnel", "");
+            if ("on".equals(tunnel)) {
+                statusDot.setBackgroundTintList(ColorStateList.valueOf(ContextCompat.getColor(this, R.color.accent)));
+                statusText.setText(R.string.status_connected);
+                statusText.setTextColor(ContextCompat.getColor(this, R.color.accent));
+            } else if (!tunnel.isEmpty()) {
+                String detail = st.optString("tunnel_detail", "");
+                statusDot.setBackgroundTintList(ColorStateList.valueOf(ContextCompat.getColor(this, R.color.warn)));
+                statusText.setText(detail.isEmpty()
+                        ? getString(R.string.status_tunnel_off)
+                        : getString(R.string.status_tunnel_failed, detail));
+                statusText.setTextColor(ContextCompat.getColor(this, R.color.warn));
+            }
 
             long now = System.currentTimeMillis();
             if (prevPollTimeMs > 0 && now > prevPollTimeMs && running) {

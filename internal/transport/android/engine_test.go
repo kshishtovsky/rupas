@@ -71,3 +71,21 @@ func TestStopIsBounded(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// The app surfaces TunnelInfo() as "protected"; it must therefore never claim
+// "on" for an engine whose chain holds only the "direct" escalation tail —
+// that is exactly the misconfigured-device state that blackholed Telegram.
+func TestTunnelInfoAndCarrierCount(t *testing.T) {
+	e := NewW3EngineWithRules(nil, nil, nil, "", nil)
+	if st, detail := e.TunnelInfo(); st != "off" || detail != "no endpoint settings" {
+		t.Fatalf("no settings must report off/no endpoint settings, got %q/%q", st, detail)
+	}
+	e.carriers = []tcpCarrier{{name: "endpoint-a"}, {name: "direct"}}
+	if n := e.tunnelCarrierCount(); n != 1 {
+		t.Fatalf("tunnelCarrierCount must skip the direct tail, got %d", n)
+	}
+	e.setTunnel("on", "1 carrier(s)")
+	if st, detail := e.TunnelInfo(); st != "on" || detail != "1 carrier(s)" {
+		t.Fatalf("setTunnel must be visible through TunnelInfo, got %q/%q", st, detail)
+	}
+}

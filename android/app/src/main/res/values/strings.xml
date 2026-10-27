@@ -68,6 +68,15 @@
     <string name="hint_fallback">Прямое соединение при сбое туннеля</string>
     <string name="hint_dpi_fake">Подмена ClientHello</string>
 
+    <!-- Фильтр рекламы (0.4.0) -->
+    <string name="adblock_section">Фильтр рекламы</string>
+    <string name="adblock_ads">Блокировать рекламу</string>
+    <string name="adblock_trackers">Блокировать трекеры</string>
+    <string name="adblock_hint">Блокируются рекламные и трекерные сети. Реклама внутри приложения YouTube и спонсорские сообщения Telegram сетью не отключаются.</string>
+    <string name="home_adblock">Заблокировано: %1$d</string>
+    <string name="home_adblock_off">Фильтр выключен</string>
+    <string name="home_adblock_failed">Фильтр не запустился: %1$s</string>
+
     <string name="btn_import_vless">Импорт vless://</string>
     <string name="btn_save_settings">Сохранить и применить</string>
     <string name="eye_closed">Показать</string>

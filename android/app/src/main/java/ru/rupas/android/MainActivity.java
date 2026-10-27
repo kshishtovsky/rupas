@@ -75,6 +75,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvEndpoint;
     private TextView tvHealth;
     private TextView tvCarrier;
+    private TextView tvAdblock;
 
     // Settings Tab Elements
     private TextInputEditText etServer;
@@ -85,6 +86,9 @@ public class MainActivity extends AppCompatActivity {
     private TextInputEditText etShortId;
     private MaterialSwitch switchFallback;
     private MaterialSwitch switchDpiFake;
+    /** Фильтр рекламы/трекеров (0.4.0): оба тумблера живут в карточке «Фильтр рекламы». */
+    private MaterialSwitch switchBlockAds;
+    private MaterialSwitch switchBlockTrackers;
     private MaterialButton btnImport;
     private MaterialButton btnSave;
     /** Share links from the latest import (dial chain); empty = legacy flat config. */
@@ -188,6 +192,7 @@ public class MainActivity extends AppCompatActivity {
         tvEndpoint = findViewById(R.id.tvEndpoint);
         tvHealth = findViewById(R.id.tvHealth);
         tvCarrier = findViewById(R.id.tvCarrier);
+        tvAdblock = findViewById(R.id.tvAdblock);
 
         // Settings
         etServer = findViewById(R.id.etServer);
@@ -198,6 +203,8 @@ public class MainActivity extends AppCompatActivity {
         etShortId = findViewById(R.id.etShortId);
         switchFallback = findViewById(R.id.switchFallback);
         switchDpiFake = findViewById(R.id.switchDpiFake);
+        switchBlockAds = findViewById(R.id.switchBlockAds);
+        switchBlockTrackers = findViewById(R.id.switchBlockTrackers);
         btnImport = findViewById(R.id.btnImport);
         btnSave = findViewById(R.id.btnSave);
         llCarriers = findViewById(R.id.llCarriers);
@@ -491,6 +498,8 @@ public class MainActivity extends AppCompatActivity {
             tvSpeedUp.setText(SPEED_ZERO);
             tvCarrier.setText(R.string.home_active_none);
             tvCarrier.setTextColor(ContextCompat.getColor(this, R.color.ink_soft));
+            tvAdblock.setText(R.string.home_adblock_off);
+            tvAdblock.setTextColor(ContextCompat.getColor(this, R.color.ink_soft));
         }
 
         updateEndpointInfo();
@@ -566,6 +575,20 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 tvHealth.setText(R.string.home_health_ok);
                 tvHealth.setTextColor(ContextCompat.getColor(this, R.color.accent));
+            }
+
+            // Фильтр рекламы (0.4.0): ядро отдаёт adblock = on|off|failed.
+            String adblock = st.optString("adblock", "");
+            if ("on".equals(adblock)) {
+                tvAdblock.setText(getString(R.string.home_adblock, st.optInt("adblock_blocked", 0)));
+                tvAdblock.setTextColor(ContextCompat.getColor(this, R.color.accent));
+            } else if ("failed".equals(adblock)) {
+                tvAdblock.setText(getString(R.string.home_adblock_failed,
+                        st.optString("adblock_detail", "")));
+                tvAdblock.setTextColor(ContextCompat.getColor(this, R.color.warn));
+            } else {
+                tvAdblock.setText(R.string.home_adblock_off);
+                tvAdblock.setTextColor(ContextCompat.getColor(this, R.color.ink_soft));
             }
 
             // Активный канал: кто доставил последний полезный трафик
@@ -724,6 +747,8 @@ public class MainActivity extends AppCompatActivity {
             etPublicKey.setText(s.publicKey);
             etShortId.setText(s.shortId);
             switchFallback.setChecked(s.fallback);
+            switchBlockAds.setChecked(s.blockAds);
+            switchBlockTrackers.setChecked(s.blockTrackers);
             pendingLinks = s.links == null ? "" : s.links;
             renderCarriers();
         } catch (Exception e) {
@@ -733,6 +758,8 @@ public class MainActivity extends AppCompatActivity {
 
     private void saveSettingsForm() {
         SettingsStore.Settings s = new SettingsStore.Settings();
+        s.blockAds = switchBlockAds.isChecked();
+        s.blockTrackers = switchBlockTrackers.isChecked();
         s.uuid = text(etUuid);
         s.server = text(etServer);
         s.sni = text(etSni);

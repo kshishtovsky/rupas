@@ -37,6 +37,10 @@ type Engine struct {
 	// preferIPv4: PreferIPv4 mode (default ON) — v6 flows fast-dropped,
 	// DNS AAAA answered empty (dns4.go). Disabled by settings prefer_ipv4=false.
 	preferIPv4 bool
+	// adblock: the compiled ads/trackers matcher (adblock.go), nil when the
+	// filter is off. adblockDetail carries the compile failure for Status().
+	adblock       *Adblock
+	adblockDetail string
 	// carriers: the TUNNEL dial chain (relay inbounds + own xhttp client),
 	// built after the relay starts (buildCarriers from engine_chain.go).
 	carriers []tcpCarrier
@@ -120,8 +124,43 @@ func NewW3EngineWithRules(settings *Settings, protect ProtectFunc, logFn func(st
 		if eps, err := settings.Endpoints(); err == nil {
 			e.endpoints = eps
 		}
+		e.initAdblock(settings.Adblock)
 	}
 	return e
+}
+
+// initAdblock compiles the filter once per engine and logs the single start
+// line: a silent "on" over a broken list is the failure this guards against.
+func (e *Engine) initAdblock(cfg *AdblockSettings) {
+	if cfg == nil {
+		return
+	}
+	a, err := compileAdblock(cfg)
+	switch {
+	case err != nil:
+		e.adblockDetail = err.Error()
+		e.logf("adblock failed: %v", err)
+	case a == nil:
+		e.logf("adblock off: ads=false trackers=false")
+	default:
+		e.adblock = a
+		e.logf("adblock on: ads=%d trackers=%d enabled=%s whitelist=%d",
+			a.AdsCount(), a.TrackersCount(), a.EnabledNames(), a.WhitelistCount())
+	}
+}
+
+// AdblockState reports the filter for Status(): "on" | "off" | "failed" plus
+// the failure reason and the compiled list sizes. "on" means at least one
+// list compiled — never a claim the core cannot back.
+func (e *Engine) AdblockState() (state, detail string, ads, trackers int) {
+	switch {
+	case e.adblockDetail != "":
+		return "failed", e.adblockDetail, 0, 0
+	case e.adblock == nil:
+		return "off", "", 0, 0
+	default:
+		return "on", "", e.adblock.AdsCount(), e.adblock.TrackersCount()
+	}
 }
 
 // UIDResolver resolves the owning app UID of a new flow; it is the Go face of
@@ -200,6 +239,15 @@ func (e *Engine) decide(m FlowMeta) Action {
 	}
 	if a, ok := e.appAction(m); ok {
 		return a
+	}
+	// Adblock outranks the routing table: a blocked name never gets an
+	// egress socket, whatever the rules would say about its address.
+	if a := e.adblock; a != nil && m.SNI != "" {
+		if list, blocked := a.Match(m.SNI); blocked {
+			e.counters.AdblockSNI()
+			e.logf("adblock: %s (sni, %s)", m.SNI, list)
+			return ActionBlock
+		}
 	}
 	if e.rules != nil {
 		return e.rules.Decide(m)

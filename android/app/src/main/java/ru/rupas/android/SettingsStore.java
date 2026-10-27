@@ -40,6 +40,9 @@ public final class SettingsStore {
         public String publicKey = "";
         public String shortId = "";
         public boolean fallback = true;
+        /** Фильтр рекламы (0.4.0): реклама по умолчанию блокируется, трекеры — нет. */
+        public boolean blockAds = true;
+        public boolean blockTrackers = false;
         /** Share links in dial order, newline-separated (universal config). */
         public String links = "";
         /**
@@ -74,6 +77,10 @@ public final class SettingsStore {
             o.put("public_key", publicKey);
             o.put("short_id", shortId);
             o.put("fallback", fallback);
+            JSONObject adblock = new JSONObject();
+            adblock.put("ads", blockAds);
+            adblock.put("trackers", blockTrackers);
+            o.put("adblock", adblock);
             if (links != null && !links.isEmpty()) {
                 JSONArray arr = new JSONArray();
                 for (String l : links.split("\n")) {
@@ -115,6 +122,8 @@ public final class SettingsStore {
     private static final String K_PUBLIC_KEY = "publicKey";
     private static final String K_SHORT_ID = "shortId";
     private static final String K_FALLBACK = "fallback";
+    private static final String K_BLOCK_ADS = "blockAds";
+    private static final String K_BLOCK_TRACKERS = "blockTrackers";
     private static final String K_LINKS = "links";
     private static final String K_APP_RULES = "appRules";
 
@@ -159,6 +168,8 @@ public final class SettingsStore {
         s.publicKey = prefs.getString(K_PUBLIC_KEY, "");
         s.shortId = prefs.getString(K_SHORT_ID, "");
         s.fallback = prefs.getBoolean(K_FALLBACK, true);
+        s.blockAds = prefs.getBoolean(K_BLOCK_ADS, true);
+        s.blockTrackers = prefs.getBoolean(K_BLOCK_TRACKERS, false);
         s.links = prefs.getString(K_LINKS, "");
         parseAppRules(prefs.getString(K_APP_RULES, ""), s.appRules);
         s.savedSnapshot = true;
@@ -179,6 +190,8 @@ public final class SettingsStore {
                 .putString(K_PUBLIC_KEY, s.publicKey == null ? "" : s.publicKey.trim())
                 .putString(K_SHORT_ID, s.shortId == null ? "" : s.shortId.trim())
                 .putBoolean(K_FALLBACK, s.fallback)
+                .putBoolean(K_BLOCK_ADS, s.blockAds)
+                .putBoolean(K_BLOCK_TRACKERS, s.blockTrackers)
                 .putString(K_LINKS, s.links == null ? "" : s.links.trim());
         if (s.savedSnapshot || (s.appRules != null && !s.appRules.isEmpty())) {
             e.putString(K_APP_RULES, appRulesToJson(s.appRules).toString());

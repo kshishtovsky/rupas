@@ -21,6 +21,8 @@ type Counters struct {
 	drops             atomic.Uint64
 	tunnelDials       atomic.Uint64
 	tunnelEscalations atomic.Uint64
+	adblockDNS        atomic.Uint64
+	adblockSNI        atomic.Uint64
 }
 
 // StatusSnapshot is a point-in-time copy for Status()/gobind.
@@ -39,6 +41,10 @@ type StatusSnapshot struct {
 	// DIRECT (or dropped when fallback is disabled).
 	TunnelDials     uint64 `json:"tunnel_dials"`
 	TunnelEscalated uint64 `json:"tunnel_escalated"`
+	// Adblock wins: DNS answers synthesized locally and TCP flows dropped
+	// on a blocked SNI (v0.4.0).
+	AdblockDNS uint64 `json:"adblock_dns"`
+	AdblockSNI uint64 `json:"adblock_sni"`
 }
 
 // AddRx/AddTx record relayed payload bytes.
@@ -84,6 +90,12 @@ func (c *Counters) TunnelDial() { c.tunnelDials.Add(1) }
 // relay and was escalated (direct or drop).
 func (c *Counters) TunnelEscalate() { c.tunnelEscalations.Add(1) }
 
+// AdblockDNS counts a DNS query answered locally for a blocked name.
+func (c *Counters) AdblockDNS() { c.adblockDNS.Add(1) }
+
+// AdblockSNI counts a TCP flow dropped because its SNI is blocked.
+func (c *Counters) AdblockSNI() { c.adblockSNI.Add(1) }
+
 // Snapshot returns a consistent-enough point-in-time copy (individual
 // fields are atomic reads; cross-field skew is acceptable for status UI).
 func (c *Counters) Snapshot() StatusSnapshot {
@@ -97,5 +109,7 @@ func (c *Counters) Snapshot() StatusSnapshot {
 		Dropped:         c.drops.Load(),
 		TunnelDials:     c.tunnelDials.Load(),
 		TunnelEscalated: c.tunnelEscalations.Load(),
+		AdblockDNS:      c.adblockDNS.Load(),
+		AdblockSNI:      c.adblockSNI.Load(),
 	}
 }

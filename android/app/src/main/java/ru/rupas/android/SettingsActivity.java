@@ -28,6 +28,8 @@ public class SettingsActivity extends AppCompatActivity {
     private EditText etPublicKey;
     private EditText etShortId;
     private CheckBox cbFallback;
+    private CheckBox cbBlockAds;
+    private CheckBox cbBlockTrackers;
 
     private boolean uuidVisible;
     private boolean publicKeyVisible;
@@ -47,6 +49,8 @@ public class SettingsActivity extends AppCompatActivity {
         etPublicKey = findViewById(R.id.etPublicKey);
         etShortId = findViewById(R.id.etShortId);
         cbFallback = findViewById(R.id.cbFallback);
+        cbBlockAds = findViewById(R.id.cbBlockAds);
+        cbBlockTrackers = findViewById(R.id.cbBlockTrackers);
 
         Button btnToggleUuid = findViewById(R.id.btnToggleUuid);
         Button btnTogglePbk = findViewById(R.id.btnTogglePbk);
@@ -113,6 +117,8 @@ public class SettingsActivity extends AppCompatActivity {
             etPublicKey.setText(s.publicKey);
             etShortId.setText(s.shortId);
             cbFallback.setChecked(s.fallback);
+            cbBlockAds.setChecked(s.blockAds);
+            cbBlockTrackers.setChecked(s.blockTrackers);
             pendingLinks = s.links == null ? "" : s.links;
         } catch (Exception e) {
             Toast.makeText(this, getString(R.string.settings_load_failed), Toast.LENGTH_LONG).show();
@@ -164,6 +170,8 @@ public class SettingsActivity extends AppCompatActivity {
         s.publicKey = text(etPublicKey);
         s.shortId = text(etShortId);
         s.fallback = cbFallback.isChecked();
+        s.blockAds = cbBlockAds.isChecked();
+        s.blockTrackers = cbBlockTrackers.isChecked();
         s.links = pendingLinks;
         String portStr = text(etPort);
         if (portStr.isEmpty()) {

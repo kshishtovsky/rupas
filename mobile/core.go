@@ -155,6 +155,11 @@ type statusJSON struct {
 	// Carriers: the live dial chain (name + active/cooldown/ready per
 	// carrier) so the app can show which config is actually in use.
 	Carriers []android.CarrierState `json:"carriers,omitempty"`
+	// Tunnel: honest tunnel state of the running transport ("off" | "on" |
+	// "failed") + reason. The app must not claim protection while every
+	// TUNNEL flow escalates to direct.
+	Tunnel       string `json:"tunnel"`
+	TunnelDetail string `json:"tunnel_detail,omitempty"`
 }
 
 // Status returns a JSON status string (running, tcp_flows, udp_sessions,
@@ -167,6 +172,7 @@ func Status() string {
 	mu.Unlock()
 
 	st := statusJSON{}
+	st.Tunnel = "off"
 	if eng != nil {
 		snap := eng.Snapshot()
 		st.Running = eng.Running()
@@ -180,6 +186,7 @@ func Status() string {
 		st.TunnelDials = snap.TunnelDials
 		st.TunnelEscalated = snap.TunnelEscalated
 		st.Carriers = eng.CarrierStates()
+		st.Tunnel, st.TunnelDetail = eng.TunnelInfo()
 	}
 	b, err := json.Marshal(st)
 	if err != nil {

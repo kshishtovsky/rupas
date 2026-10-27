@@ -42,10 +42,13 @@ func (e *Engine) run(ctx context.Context, fd int) error {
 	// W3: bring the tunnel relay up before any flow can be judged. A
 	// failed relay start does not kill the transport: TUNNEL flows will
 	// escalate honestly (fallbackAllowed policy).
-	if e.relay != nil {
+	if e.relay == nil {
+		e.setTunnel("off", "no endpoint settings")
+	} else {
 		if rErr := e.relay.Start(ctx, e.protect, e.filesDir); rErr != nil {
 			e.logf("tunnel relay start failed (TUNNEL rules will escalate): %v", rErr)
 			_ = e.relay.Close()
+			e.setTunnel("failed", "relay: "+rErr.Error())
 		}
 		defer e.relay.Close() //nolint:errcheck
 	}
@@ -53,6 +56,13 @@ func (e *Engine) run(ctx context.Context, fd int) error {
 	// Works even when the relay start failed: carriers may be empty and
 	// TUNNEL flows escalate honestly.
 	e.buildCarriers(ctx)
+	// Honest state for the app: "direct" is the escalation tail, so a chain
+	// without a real carrier means the tunnel never came up.
+	if n := e.tunnelCarrierCount(); n > 0 {
+		e.setTunnel("on", fmt.Sprintf("%d carrier(s)", n))
+	} else if st, _ := e.TunnelInfo(); st != "failed" {
+		e.setTunnel("failed", "no usable carrier")
+	}
 
 	stack, err := tun.NewStack("gvisor", tun.StackOptions{
 		Context:    ctx,
@@ -340,7 +350,8 @@ func (h *flowHandler) relayUDPTunnel(ctx context.Context, conn N.PacketConn, dst
 	e := h.engine
 	e.counters.TunnelDial()
 	if !e.relay.Available() {
-		e.logf("udp %s: tunnel unavailable (no endpoint settings)", dst)
+		st, detail := e.TunnelInfo()
+		e.logf("udp %s: tunnel unavailable (%s: %s)", dst, st, detail)
 		e.counters.TunnelEscalate()
 		if !e.fallbackAllowed() {
 			e.counters.Drop()

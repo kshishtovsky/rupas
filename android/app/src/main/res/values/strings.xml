@@ -12,6 +12,9 @@
     <string name="status_disconnected">Не подключено</string>
     <string name="status_connecting">Подключаемся</string>
     <string name="status_connected">Защищено</string>
+    <string name="status_tunnel_off">Туннель не настроен — трафик напрямую</string>
+    <string name="status_tunnel_failed">Туннель не поднялся: %1$s</string>
+    <string name="toast_no_config">Конфиг не введён: трафик пойдёт напрямую. Откройте Настройки.</string>
     <string name="status_error">Нет сети</string>
     <string name="btn_connect">Включить</string>
     <string name="btn_disconnect">Выключить</string>

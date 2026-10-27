@@ -31,6 +31,9 @@ type Engine struct {
 	settings *Settings
 	rules    *Rules
 	relay    *Relay
+	// endpoints: settings.Endpoints() parsed once at construction — the
+	// flow-entry path (isEndpoint) must not re-parse every share link.
+	endpoints []Endpoint
 	// preferIPv4: PreferIPv4 mode (default ON) — v6 flows fast-dropped,
 	// DNS AAAA answered empty (dns4.go). Disabled by settings prefer_ipv4=false.
 	preferIPv4 bool
@@ -50,6 +53,9 @@ type Engine struct {
 	// the dev host and in tests. Consulted once per new flow, and only when
 	// per-app rules are compiled (docs/PERAPP_ROUTING.md §2).
 	uidResolve UIDResolver
+	// tunnel is the honest tunnel state set once per transport run in tun.go
+	// (read from the UI thread, written from the transport goroutine).
+	tunnel atomic.Pointer[tunnelInfo]
 
 	mu      sync.Mutex
 	running bool
@@ -108,6 +114,12 @@ func NewW3EngineWithRules(settings *Settings, protect ProtectFunc, logFn func(st
 	if settings != nil {
 		e.relay = NewRelay(settings, func(line string) { e.logf("%s", line) })
 		e.preferIPv4 = settings.PreferIPv4Enabled()
+		// Parsed here, once: isEndpoint runs 2-3× per flow. A parse error
+		// leaves the slice empty (isEndpoint false) — ParseSettings has
+		// already validated the links, so this is belt-and-braces.
+		if eps, err := settings.Endpoints(); err == nil {
+			e.endpoints = eps
+		}
 	}
 	return e
 }
@@ -154,15 +166,11 @@ func (e *Engine) Rules() *Rules { return e.rules }
 // endpoints themselves (IP:port or camouflage SNI). Endpoint traffic must
 // NEVER be looped into the tunnel relay.
 func (e *Engine) isEndpoint(m FlowMeta) bool {
-	if e.settings == nil {
-		return false
-	}
-	eps, err := e.settings.Endpoints()
-	if err != nil || len(eps) == 0 {
+	if len(e.endpoints) == 0 {
 		return false
 	}
 	addrStr := m.Destination.Addr().String()
-	for n, ep := range eps {
+	for n, ep := range e.endpoints {
 		if ep.Port > 0 && m.Destination.Port() == ep.Port && addrStr == ep.Host {
 			return true
 		}
@@ -243,6 +251,45 @@ func (e *Engine) fallbackAllowed() bool {
 	return e.settings == nil || e.settings.Fallback
 }
 
+// tunnelInfo is the tunnel state the transport run ended up in. The app shows
+// it as-is: a core whose TUNNEL rules all escalate to direct must never be
+// presented as "protected" (that is how a misconfigured device silently
+// blackholes Telegram while YouTube keeps working).
+type tunnelInfo struct {
+	state  string // "off" | "on" | "failed"
+	detail string // human-readable reason; never carries uuid/keys
+}
+
+// setTunnel records the state and logs it once per run.
+func (e *Engine) setTunnel(state, detail string) {
+	e.tunnel.Store(&tunnelInfo{state: state, detail: detail})
+	e.logf("tunnel %s: %s", state, detail)
+}
+
+// TunnelInfo reports the run's tunnel state and its reason. Before Start (or
+// on an engine built without settings) it is "off".
+func (e *Engine) TunnelInfo() (string, string) {
+	if t := e.tunnel.Load(); t != nil {
+		return t.state, t.detail
+	}
+	if e.settings == nil {
+		return "off", "no endpoint settings"
+	}
+	return "off", "engine not started"
+}
+
+// tunnelCarrierCount counts the real tunnel carriers — "direct" is the
+// escalation tail, not a carrier.
+func (e *Engine) tunnelCarrierCount() int {
+	n := 0
+	for _, c := range e.carriers {
+		if c.name != "direct" {
+			n++
+		}
+	}
+	return n
+}
+
 // dialEgress opens the egress connection for one flow according to its
 // action: DIRECT via the protected dialer, TUNNEL through the relay with
 // honest escalation, BLOCK refused. escalated reports that the flow was
@@ -260,7 +307,8 @@ func (e *Engine) dialEgress(ctx context.Context, m FlowMeta) (conn net.Conn, esc
 			}
 			e.logf("tcp %s: tunnel dial failed: %v", m.Destination, dErr)
 		} else {
-			e.logf("tcp %s: tunnel unavailable (no endpoint settings)", m.Destination)
+			st, detail := e.TunnelInfo()
+			e.logf("tcp %s: tunnel unavailable (%s: %s)", m.Destination, st, detail)
 		}
 		e.counters.TunnelEscalate()
 		if !e.fallbackAllowed() {

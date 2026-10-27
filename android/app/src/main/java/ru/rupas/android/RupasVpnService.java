@@ -11,11 +11,15 @@ import android.content.pm.ServiceInfo;
 import android.net.ConnectivityManager;
 import android.net.VpnService;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.system.OsConstants;
 import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
+
+import org.json.JSONObject;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -60,6 +64,8 @@ public class RupasVpnService extends VpnService {
 
     private ParcelFileDescriptor tun;
     private PlatformImpl platform;
+    // Последнее собранное уведомление (честный статус туннеля после старта).
+    private Notification notification;
     // Ядро запускалось именно этим экземпляром (binding с BIND_AUTO_CREATE
     // создаёт сервис без onStartCommand — останавливать нечего).
     private boolean coreStartedByInstance;
@@ -147,11 +153,37 @@ public class RupasVpnService extends VpnService {
         running = true;
         // Статистика отображается на открытом экране; фоновое уведомление
         // статично, чтобы не будить процесс и SystemUI каждые 1,5 секунды.
-        NotificationManager nm = getSystemService(NotificationManager.class);
-        if (nm != null) {
-            nm.notify(NOTIFICATION_ID, buildNotification("Rupas: защищено", "Защита активна", "VPN подключён"));
-        }
+        // Состояние туннеля выставляется асинхронно (relay стартует в
+        // goroutine ядра): сразу после старта его ещё нет, поэтому честный
+        // статус подставляем одним отложенным апдейтом.
+        new Handler(Looper.getMainLooper()).postDelayed(this::refreshTunnelNotification, 3000);
         return START_STICKY;
+    }
+
+    /**
+     * Честный статус в уведомлении: «защищено» — только когда в Status()
+     * туннель реально поднят. Иначе приложение утверждало защиту, пока все
+     * TUNNEL-потоки эскалировали в direct (Telegram висел в соединении).
+     */
+    private void refreshTunnelNotification() {
+        String state = "off";
+        String detail = "";
+        try {
+            JSONObject st = new JSONObject(Core.status());
+            state = st.optString("tunnel", "off");
+            detail = st.optString("tunnel_detail", "");
+        } catch (Throwable ignored) {
+        }
+        if ("on".equals(state)) {
+            notification = buildNotification("Rupas: защищено", "Защита активна", "Туннель " + detail);
+        } else {
+            notification = buildNotification("Rupas: туннель не поднят", "Трафик идёт напрямую",
+                    detail.isEmpty() ? "Проверьте настройки" : detail);
+        }
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        if (nm != null && running) {
+            nm.notify(NOTIFICATION_ID, notification);
+        }
     }
 
     @Override

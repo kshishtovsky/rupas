@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -140,6 +141,12 @@ func main() {
 		tunnelNote = "on: " + strings.Join(parts, " → ")
 	}
 	logger.Printf("rupasd up: pipe=%s profile=%s tunnel=%s", *pipePath, cfg.Profile, tunnelNote)
+	// Which rule set is actually live, and what it does to unmatched traffic.
+	// Diagnostics only: the GUI onboarding path once left a 13-rule config with
+	// `default: direct` in place while the owner believed his 51-rule policy
+	// was running — every unmatched destination then egressed with the real IP.
+	logger.Printf("rupasd rules: config=%s rules=%d default=%s",
+		absConfigPath(*configPath), len(cfg.Rules), defaultAction(cfg).String())
 	application.EventLog().Append("daemon started (profile " + cfg.Profile + ", tunnel " + *tunnel + ")")
 
 	select {
@@ -170,4 +177,30 @@ func loadConfig(path string, logger *log.Logger) (*config.Config, error) {
 		}
 	}
 	return config.Load(path)
+}
+
+// absConfigPath resolves the config path for the startup diagnostic (a bare
+// relative name is useless in a log when the daemon's working directory is
+// not obvious — the live daemon once ran with -config pointing at a deleted
+// directory and nobody noticed).
+func absConfigPath(path string) string {
+	if path == "" {
+		return "(built-in default profile)"
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return path
+}
+
+// defaultAction reports what the rule set does to a destination no rule
+// matches: the last matcher-less rule wins, DIRECT when there is none.
+func defaultAction(cfg *config.Config) config.Action {
+	for i := len(cfg.Rules) - 1; i >= 0; i-- {
+		r := cfg.Rules[i]
+		if r.CIDR == "" && r.SNI == "" && r.Ports == "" && r.GeoIP == "" {
+			return r.Action
+		}
+	}
+	return config.ActionDirect
 }

@@ -132,10 +132,22 @@ func (g *dialGate) failure() {
 	g.mu.Unlock()
 }
 
+// Carrier dial limits. These are NOT storm control on their own: the gate
+// already backs off adaptively (failure() doubles the cooldown, success()
+// clears it), so a tight static rate only throttles the HEALTHY path — and
+// that is what it used to do. Telegram opens dozens of parallel TLS
+// connections for one media burst (each needs its own carrier dial: there is
+// no multiplexing), so at the old 1 dial/s + 2 concurrent the 20th flow
+// waited ~20s and most of them failed their connect timeout (measured:
+// 8 parallel to a TG DC → 6 failures, median 7s, while the same burst over
+// the non-terminated leg finished in 60ms).
+//
+// The values below leave headroom for a media burst while failure() still
+// clamps the rate to the backoff interval when the carrier refuses.
 const (
-	dialConc  = 2   // concurrent carrier dials
-	dialRate  = 1.0 // sustained dials/second
-	dialBurst = 2   // burst size
+	dialConc  = 32   // concurrent carrier dials (one per client flow)
+	dialRate  = 128.0 // sustained dials/second while healthy
+	dialBurst = 16   // burst size
 )
 
 // PacketSender injects one forged inbound IPv4/TCP packet. ifIdx/subIfIdx

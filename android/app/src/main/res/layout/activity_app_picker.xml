@@ -1,0 +1,200 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hallmark · v2.0.0 · screen: app picker · genre: modern-minimal · theme: dose
+     PERAPP_ROUTING §4: toolbar → (API note) → sticky search → filter chips → list
+     → bottom counter («Выбрано N · Изменения применятся после перезапуска VPN»).
+     No literal colour: every value is a token from res/values/colors.xml. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/pickerRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/paper"
+    android:orientation="vertical">
+
+    <!-- Toolbar: ‹ Приложения -->
+    <LinearLayout
+        android:id="@+id/pickerToolbar"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:background="@color/paper"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="@dimen/space_xxs"
+        android:paddingEnd="@dimen/space_xxs">
+
+        <ImageButton
+            android:id="@+id/btnPickerBack"
+            android:layout_width="@dimen/touch_target_min"
+            android:layout_height="@dimen/touch_target_min"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/routing_back"
+            android:padding="@dimen/space_s"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_arrow_back" />
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/space_xxs"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:fontFamily="sans-serif-medium"
+            android:letterSpacing="0"
+            android:maxLines="1"
+            android:text="@string/routing_apps_title"
+            android:textColor="@color/ink"
+            android:textSize="20sp" />
+    </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/rule" />
+
+    <!-- API < 29: TUNNEL/BLOCK недоступны (§4, §7.1) — сказано словами, не только серым -->
+    <TextView
+        android:id="@+id/tvPickerApiNote"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/warn_soft"
+        android:fontFamily="sans-serif"
+        android:paddingStart="@dimen/space_l"
+        android:paddingTop="@dimen/space_xs"
+        android:paddingEnd="@dimen/space_l"
+        android:paddingBottom="@dimen/space_xs"
+        android:text="@string/routing_apps_api29_note"
+        android:textColor="@color/warn"
+        android:textSize="12sp"
+        android:visibility="gone" />
+
+    <!-- Sticky search: вне списка, поэтому виден всегда -->
+    <EditText
+        android:id="@+id/etPickerSearch"
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/touch_target_min"
+        android:layout_marginStart="@dimen/space_l"
+        android:layout_marginTop="@dimen/space_s"
+        android:layout_marginEnd="@dimen/space_l"
+        android:background="@drawable/bg_input"
+        android:fontFamily="sans-serif"
+        android:hint="@string/routing_apps_search_hint"
+        android:imeOptions="actionSearch"
+        android:inputType="text"
+        android:maxLines="1"
+        android:paddingStart="@dimen/space_s"
+        android:paddingEnd="@dimen/space_s"
+        android:singleLine="true"
+        android:textColor="@color/ink"
+        android:textColorHint="@color/ink_soft"
+        android:textSize="15sp" />
+
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="@dimen/space_xs"
+        android:clipToPadding="false"
+        android:paddingStart="@dimen/space_l"
+        android:paddingEnd="@dimen/space_l"
+        android:scrollbars="none">
+
+        <com.google.android.material.chip.ChipGroup
+            android:id="@+id/chipFilters"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            app:chipSpacingHorizontal="@dimen/space_xs"
+            app:selectionRequired="true"
+            app:singleLine="true"
+            app:singleSelection="true">
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipAll"
+                style="@style/Widget.Rupas.Chip"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                android:text="@string/routing_apps_filter_all" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipWithRule"
+                style="@style/Widget.Rupas.Chip"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/routing_apps_filter_rule" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipSystem"
+                style="@style/Widget.Rupas.Chip"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/routing_apps_filter_system" />
+        </com.google.android.material.chip.ChipGroup>
+    </HorizontalScrollView>
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="@dimen/space_xs"
+        android:layout_weight="1">
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/listApps"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:paddingStart="@dimen/space_l"
+            android:paddingEnd="@dimen/space_l"
+            android:scrollbars="none" />
+
+        <TextView
+            android:id="@+id/tvPickerEmpty"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/space_l"
+            android:layout_marginTop="@dimen/space_m"
+            android:layout_marginEnd="@dimen/space_l"
+            android:fontFamily="sans-serif"
+            android:text="@string/routing_apps_nothing"
+            android:textColor="@color/ink_soft"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/tvPickerLoading"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/space_l"
+            android:layout_marginTop="@dimen/space_m"
+            android:layout_marginEnd="@dimen/space_l"
+            android:fontFamily="sans-serif"
+            android:text="@string/routing_apps_loading"
+            android:textColor="@color/ink_soft"
+            android:textSize="13sp" />
+    </FrameLayout>
+
+    <!-- Нижняя полоса: счётчик выбранного и честная цена применения -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/rule" />
+
+    <LinearLayout
+        android:id="@+id/pickerBottomBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/paper_2"
+        android:orientation="vertical"
+        android:paddingStart="@dimen/space_l"
+        android:paddingTop="@dimen/space_s"
+        android:paddingEnd="@dimen/space_l"
+        android:paddingBottom="@dimen/space_s">
+
+        <TextView
+            android:id="@+id/tvPickerCounter"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="sans-serif"
+            android:text="@string/routing_apps_counter_zero"
+            android:textColor="@color/ink_soft"
+            android:textSize="12sp" />
+    </LinearLayout>
+</LinearLayout>

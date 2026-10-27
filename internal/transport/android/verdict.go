@@ -48,6 +48,12 @@ type FlowMeta struct {
 	Network     string
 	Source      netip.AddrPort
 	Destination netip.AddrPort
+	// UID is the owning Android app UID of the flow (0 = unknown: no
+	// per-app rules are configured, the platform cannot answer, or the
+	// resolve returned -1). Filled once per new flow by the caller
+	// (Engine.resolveUID), never per packet; a per-app rule keyed on it
+	// outranks every rule table stage.
+	UID int
 	// SNI is the lower-cased server name from the first ClientHello
 	// (empty when absent / not TLS / UDP).
 	SNI string

@@ -1,6 +1,8 @@
 package ru.rupas.android;
 
 import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -36,9 +38,17 @@ import java.util.concurrent.Executors;
  * Экран «Маршруты» (docs/ROUTING_UI.md §4.2).
  *
  * Информационная архитектура = семантика движка: правила сгруппированы по стадиям
- * (IP → Домены → Порты), порядок меняется только внутри стадии, default закреплён
- * и не удаляется. Правка живёт в памяти до «Применить правила»: ядро читает правила
- * только при старте, поэтому применение = полный перезапуск ядра через VpnService.
+ * (IP → Домены → Порты → Приложения), порядок меняется только внутри стадии,
+ * default закреплён и не удаляется. Правка живёт в памяти до «Применить правила»:
+ * ядро читает правила только при старте, поэтому применение = полный перезапуск
+ * ядра через VpnService.
+ *
+ * 4-я стадия «Приложения» (docs/PERAPP_ROUTING.md §4) — отдельная подсистема:
+ * её правила хранятся в SettingsStore.appRules и читаются Java-стороной при
+ * establish(), поэтому они пишутся в хранилище сразу (экран выбора приложений
+ * вообще не возвращает результат — он сохраняет сам), а dirty считается
+ * сравнением снимка с сохранённым. «Применить правила» по-прежнему одно:
+ * сохранить → рестарт VPN (§5.7 ROUTING_UI: «VPN перезапустится (~2 с)»).
  */
 public class RoutingActivity extends AppCompatActivity implements RoutingAdapter.Listener {
 
@@ -59,6 +69,8 @@ public class RoutingActivity extends AppCompatActivity implements RoutingAdapter
     private static final String PREF_SUMMARY = "summary";
     private static final String STATE_RULES = "rules";
     private static final String STATE_PRISTINE = "pristine";
+    private static final String STATE_APPS = "apps";
+    private static final String STATE_PRISTINE_APPS = "pristine_apps";
 
     private static final long SAVED_STRIP_MS = 2000L;
     /** --dur-short §7: появление панели, полоска «Применено», раскрытие секции. */
@@ -102,6 +114,9 @@ public class RoutingActivity extends AppCompatActivity implements RoutingAdapter
     private final List<RoutingRule> pristineRules = new ArrayList<>();
     private RoutingRule pristineDefault = RoutingRule.Parsed.defaultRule();
     private String pristineJson = "";
+    /** Снимок правил по приложениям на момент чтения — для dirty и «Отменить». */
+    private final List<AppRule> pristineAppRules = new ArrayList<>();
+    private String pristineAppsJson = "[]";
 
     private boolean loading;
     private boolean saving;
@@ -116,6 +131,7 @@ public class RoutingActivity extends AppCompatActivity implements RoutingAdapter
         setContentView(R.layout.activity_routing);
 
         bindViews();
+        setupInsets();
         setupList();
         setupToolbar();
         setupCheck();
@@ -125,6 +141,17 @@ public class RoutingActivity extends AppCompatActivity implements RoutingAdapter
         if (!restoreState(savedInstanceState)) {
             loadRules();
         }
+    }
+
+    /**
+     * Экран выбора приложений сохраняет правила сам (§5: они нужны Java-стороне
+     * до старта ядра), поэтому при возврате перечитываем хранилище: расхождение
+     * со снимком = dirty, и панель «Применить правила» появляется честно.
+     */
+    @Override
+    protected void onResume() {
+        super.onResume();
+        syncAppRulesFromStore();
     }
 
     /**
@@ -142,6 +169,7 @@ public class RoutingActivity extends AppCompatActivity implements RoutingAdapter
         try {
             RoutingRule.Parsed parsed = RoutingRule.parseRules(current);
             adapter.setData(parsed.rules, parsed.def);
+            adapter.setAppRules(AppRule.parse(saved.getString(STATE_APPS)));
             String pristine = saved.getString(STATE_PRISTINE);
             if (pristine != null) {
                 RoutingRule.Parsed base = RoutingRule.parseRules(pristine);
@@ -151,6 +179,12 @@ public class RoutingActivity extends AppCompatActivity implements RoutingAdapter
                 }
                 pristineDefault = base.def;
                 pristineJson = pristine;
+                String pristineApps = saved.getString(STATE_PRISTINE_APPS);
+                pristineAppRules.clear();
+                pristineAppRules.addAll(AppRule.parse(pristineApps));
+                pristineAppsJson = pristineApps == null
+                        ? AppRule.toJson(pristineAppRules)
+                        : pristineApps;
                 render();
             } else {
                 snapshotFromAdapter();
@@ -167,6 +201,8 @@ public class RoutingActivity extends AppCompatActivity implements RoutingAdapter
         super.onSaveInstanceState(outState);
         outState.putString(STATE_RULES, currentJson());
         outState.putString(STATE_PRISTINE, pristineJson);
+        outState.putString(STATE_APPS, currentAppsJson());
+        outState.putString(STATE_PRISTINE_APPS, pristineAppsJson);
     }
 
     @Override
@@ -213,6 +249,33 @@ public class RoutingActivity extends AppCompatActivity implements RoutingAdapter
         dirtyPanel = findViewById(R.id.dirtyPanel);
         dirtyRule = findViewById(R.id.dirtyRule);
         savingOverlay = findViewById(R.id.savingOverlay);
+    }
+
+    /**
+     * Edge-to-edge принудителен на Android 15+ (targetSdk 36): android:statusBarColor
+     * игнорируется, и окно рисуется под системными полосами. Без этого тулбар
+     * «‹ Маршруты +» уезжает под статус-бар. Верхний inset отдаём корню (он же
+     * держит фон paper, поэтому полоса под статус-баром — бумага, а не белое),
+     * нижний — панели применения: список обрабатывает свой низ сам (без двойного
+     * отступа закреплённый default остаётся доступен).
+     */
+    private void setupInsets() {
+        final View root = findViewById(R.id.routingRoot);
+        final int padTop = root.getPaddingTop();
+        final int padBottom = root.getPaddingBottom();
+        final int panelBottom = dirtyPanel.getPaddingBottom();
+        ViewCompat.setOnApplyWindowInsetsListener(root, (v, insets) -> {
+            androidx.core.graphics.Insets bars =
+                    insets.getInsets(WindowInsetsCompat.Type.systemBars());
+            // Верх — всегда: тулбар должен начинаться ниже статус-бара.
+            v.setPadding(v.getPaddingLeft(), padTop + Math.max(bars.top, 0),
+                    v.getPaddingRight(), padBottom);
+            // Низ — только панели применения: когда она видна, список уже не последний.
+            dirtyPanel.setPadding(dirtyPanel.getPaddingLeft(), dirtyPanel.getPaddingTop(),
+                    dirtyPanel.getPaddingRight(), panelBottom + Math.max(bars.bottom, 0));
+            return insets;
+        });
+        ViewCompat.requestApplyInsets(root);
     }
 
     private void setupList() {
@@ -289,6 +352,9 @@ public class RoutingActivity extends AppCompatActivity implements RoutingAdapter
             } catch (Throwable t) {
                 error = message(t);
             }
+            // Keystore + PackageManager — только в фоне: главный поток занят списком.
+            final List<AppRule> storedApps = AppRule.load(this);
+            AppCatalog.sortByLabel(this, storedApps);
             final String fRaw = raw;
             final String fErr = error;
             ui.post(() -> {
@@ -301,6 +367,7 @@ public class RoutingActivity extends AppCompatActivity implements RoutingAdapter
                     try {
                         RoutingRule.Parsed parsed = RoutingRule.parseRules(fRaw);
                         adapter.setData(parsed.rules, parsed.def);
+                        adapter.setAppRules(storedApps);
                         snapshotFromAdapter();
                     } catch (Throwable t) {
                         errorTitle = getString(R.string.routing_load_error);
@@ -386,6 +453,11 @@ public class RoutingActivity extends AppCompatActivity implements RoutingAdapter
         return RoutingRule.rulesJson(adapter.rules(), adapter.defaultRule());
     }
 
+    /** Per-app правила — отдельное хранилище, поэтому и отдельный снимок. */
+    private String currentAppsJson() {
+        return AppRule.toJson(adapter.appRules());
+    }
+
     private boolean isDirty() {
         if (loading) {
             return false;
@@ -394,7 +466,8 @@ public class RoutingActivity extends AppCompatActivity implements RoutingAdapter
             // Правила не прочитаны — сравнивать не с чем.
             return false;
         }
-        return !currentJson().equals(pristineJson);
+        return !currentJson().equals(pristineJson)
+                || !currentAppsJson().equals(pristineAppsJson);
     }
 
     private void snapshotFromAdapter() {
@@ -404,6 +477,9 @@ public class RoutingActivity extends AppCompatActivity implements RoutingAdapter
         }
         pristineDefault = adapter.defaultRule().copy();
         pristineJson = currentJson();
+        pristineAppRules.clear();
+        pristineAppRules.addAll(AppRule.copyAll(adapter.appRules()));
+        pristineAppsJson = currentAppsJson();
     }
 
     private void revertToPristine() {
@@ -412,6 +488,10 @@ public class RoutingActivity extends AppCompatActivity implements RoutingAdapter
             copies.add(r.copy());
         }
         adapter.setData(copies, pristineDefault.copy());
+        adapter.setAppRules(AppRule.copyAll(pristineAppRules));
+        // Хранилище — источник истины для Java-стороны: «Отменить» возвращает и его,
+        // иначе после выхода из экрана правило осталось бы новым.
+        persistAppRules();
         render();
     }
 
@@ -427,7 +507,15 @@ public class RoutingActivity extends AppCompatActivity implements RoutingAdapter
         if (!pristineDefault.sameAs(adapter.defaultRule())) {
             diff++;
         }
-        return diff;
+        List<AppRule> curApps = adapter.appRules();
+        int appDiff = Math.abs(curApps.size() - pristineAppRules.size());
+        int appN = Math.min(curApps.size(), pristineAppRules.size());
+        for (int i = 0; i < appN; i++) {
+            if (!curApps.get(i).sameAs(pristineAppRules.get(i))) {
+                appDiff++;
+            }
+        }
+        return diff + appDiff;
     }
 
     // ------------------------------------------------------------------- render
@@ -500,6 +588,7 @@ public class RoutingActivity extends AppCompatActivity implements RoutingAdapter
             return;
         }
         final String json = currentJson();
+        final List<AppRule> apps = AppRule.copyAll(adapter.appRules());
         saving = true;
         applying = true;
         finishAfterApply = finishAfter;
@@ -508,6 +597,9 @@ public class RoutingActivity extends AppCompatActivity implements RoutingAdapter
             String error = null;
             boolean restarted = false;
             try {
+                // §5: Java читает per-app правила при establish(), поэтому они должны
+                // лежать в хранилище ДО рестарта — иначе VPN поднимется со старым списком.
+                AppRule.save(this, apps);
                 restarted = restartWithRules(json);
             } catch (Throwable t) {
                 error = message(t);
@@ -691,6 +783,167 @@ public class RoutingActivity extends AppCompatActivity implements RoutingAdapter
     @Override
     public void onDefaultClick() {
         openEditor(adapter.defaultRule(), -1, RoutingRule.STAGE_IP);
+    }
+
+    @Override
+    public void onAppsAdd() {
+        startActivity(new Intent(this, AppPickerActivity.class));
+    }
+
+    @Override
+    public void onAppClick(AppRule rule, int index) {
+        showAppActionDialog(rule, index);
+    }
+
+    @Override
+    public void onAppMenu(View anchor, AppRule rule, int index) {
+        PopupMenu menu = new PopupMenu(this, anchor);
+        menu.getMenu().add(0, 1, 0, R.string.app_menu_change);
+        menu.getMenu().add(0, 2, 1, R.string.app_menu_remove);
+        menu.getMenu().add(0, 3, 2, R.string.app_menu_open_settings);
+        menu.setOnMenuItemClickListener(item -> {
+            switch (item.getItemId()) {
+                case 1:
+                    showAppActionDialog(rule, index);
+                    return true;
+                case 2:
+                    removeAppRule(rule, index);
+                    return true;
+                case 3:
+                    openAppSystemSettings(rule.pkg);
+                    return true;
+                default:
+                    return false;
+            }
+        });
+        menu.show();
+    }
+
+    // ------------------------------------------------------- per-app editing
+
+    /**
+     * Переключатель действия из 4 позиций (§4): «наследует» — правила нет и
+     * действует общая политика; DIRECT выносит приложение из VPN через Builder;
+     * TUNNEL/BLOCK работают по UID и требуют Android 10+ (§1, §7.1).
+     */
+    private void showAppActionDialog(final AppRule rule, final int index) {
+        if (rule == null) {
+            return;
+        }
+        final boolean uidRouting = AppCatalog.supportsUidRouting();
+        final String needApi = " — " + getString(R.string.routing_apps_need_android10);
+        final String[] values = {"", AppRule.ACT_DIRECT, AppRule.ACT_TUNNEL, AppRule.ACT_BLOCK};
+        final CharSequence[] items = {
+                getString(R.string.app_action_inherit) + " — " + getString(R.string.app_action_inherit_hint),
+                getString(R.string.action_direct),
+                getString(R.string.action_tunnel) + (uidRouting ? "" : needApi),
+                getString(R.string.action_block) + (uidRouting ? "" : needApi)
+        };
+        int checked = 0;
+        for (int i = 1; i < values.length; i++) {
+            if (values[i].equals(rule.action)) {
+                checked = i;
+            }
+        }
+        final android.content.DialogInterface[] holder = new android.content.DialogInterface[1];
+        MaterialAlertDialogBuilder builder = new MaterialAlertDialogBuilder(this)
+                .setTitle(AppCatalog.label(this, rule.pkg))
+                .setSingleChoiceItems(items, checked, (dialog, which) -> {
+                    holder[0] = dialog;
+                    if (which < 0 || which >= values.length) {
+                        return;
+                    }
+                    String action = values[which];
+                    if (AppRule.needsApi29(action) && !uidRouting) {
+                        Toast.makeText(this, R.string.routing_apps_need_android10,
+                                Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    applyAppAction(rule, index, action);
+                    dialog.dismiss();
+                })
+                .setNegativeButton(R.string.btn_cancel, null);
+        builder.show();
+    }
+
+    private void applyAppAction(AppRule rule, int index, String action) {
+        if (action == null || action.isEmpty()) {
+            removeAppRule(rule, index);
+            return;
+        }
+        if (index >= 0 && index < adapter.appRules().size()) {
+            adapter.appRules().get(index).action = action;
+        } else {
+            rule.action = action;
+        }
+        adapter.rebuild();
+        persistAppRules();
+        render();
+    }
+
+    private void removeAppRule(AppRule rule, int index) {
+        if (index >= 0 && index < adapter.appRules().size()) {
+            adapter.appRules().remove(index);
+            adapter.rebuild();
+            persistAppRules();
+            render();
+        }
+    }
+
+    /** §4: «Открыть настройки приложения» — системный экран, не наш. */
+    private void openAppSystemSettings(String pkg) {
+        try {
+            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + pkg)));
+        } catch (Throwable t) {
+            Toast.makeText(this, R.string.routing_apps_nothing, Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /** Запись per-app правил в SettingsStore; ошибка не должна теряться молча. */
+    private void persistAppRules() {
+        final List<AppRule> snapshot = AppRule.copyAll(adapter.appRules());
+        io.execute(() -> {
+            try {
+                AppRule.save(this, snapshot);
+            } catch (Throwable t) {
+                final String m = message(t);
+                ui.post(() -> {
+                    if (isFinishing() || isDestroyed()) {
+                        return;
+                    }
+                    Toast.makeText(this, getString(R.string.routing_apps_save_error),
+                            Toast.LENGTH_LONG).show();
+                    LogBuffer.add("[routing] app_rules не сохранены: " + m);
+                });
+            }
+        });
+    }
+
+    /**
+     * Перечитывает сохранённые app_rules (их мог изменить экран выбора) и, если
+     * набор отличается от показанного, обновляет стадию. Снимок «как было» не
+     * трогаем: именно он и делает изменения dirty.
+     */
+    private void syncAppRulesFromStore() {
+        if (adapter == null || loading) {
+            return;
+        }
+        io.execute(() -> {
+            List<AppRule> stored = AppRule.load(this);
+            AppCatalog.sortByLabel(this, stored);
+            final String storedJson = AppRule.toJson(stored);
+            ui.post(() -> {
+                if (isFinishing() || isDestroyed() || loading) {
+                    return;
+                }
+                if (storedJson.equals(currentAppsJson())) {
+                    return;
+                }
+                adapter.setAppRules(stored);
+                render();
+            });
+        });
     }
 
     // --------------------------------------------------------------------- drag

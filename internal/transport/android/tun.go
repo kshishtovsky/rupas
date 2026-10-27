@@ -101,7 +101,16 @@ func (h *flowHandler) JudgeFlow(proto uint8, source, destination netip.AddrPort,
 		h.engine.counters.Drop()
 		return tun.FlowVerdict{Action: tun.ActionDrop}
 	}
-	if h.engine.decide(meta) == ActionBlock {
+	// UDP is decided entirely here, so the app UID is resolved here too.
+	// TCP is judged again in relayTCP (after the ClientHello peek), which
+	// resolves its own UID — resolving it here as well would double the
+	// per-flow JNI cost for no gain.
+	if meta.Network == "udp" {
+		meta.UID = h.engine.resolveUID(meta)
+	}
+	action := h.engine.decide(meta)
+	h.engine.logAppRule(meta)
+	if action == ActionBlock {
 		return tun.FlowVerdict{Action: tun.ActionDrop}
 	}
 	return tun.FlowVerdict{Action: tun.ActionAccept}
@@ -130,7 +139,12 @@ func (h *flowHandler) relayTCP(ctx context.Context, conn net.Conn, source M.Sock
 	dst := destination.AddrPort()
 	// Pre-decision without payload: conclusive for LAN / DNS:53 / ports.
 	meta := FlowMeta{Network: "tcp", Source: source.AddrPort(), Destination: dst}
+	// The app UID is resolved once per TCP flow, here — the flow entry
+	// point (docs/PERAPP_ROUTING.md §2). It is free unless per-app rules
+	// are configured.
+	meta.UID = e.resolveUID(meta)
 	if action, final := e.decidePre(meta); final {
+		e.logAppRule(meta)
 		if action == ActionBlock {
 			e.counters.Drop()
 			e.logf("tcp %s: blocked by rules", dst)
@@ -241,7 +255,20 @@ func (h *flowHandler) relayUDP(ctx context.Context, conn N.PacketConn, source M.
 		h.serveDNS53(ctx, conn, destination, closeOnce)
 		return
 	}
-	if e.decide(FlowMeta{Network: "udp", Source: source.AddrPort(), Destination: dst}) == ActionTunnel {
+	// The packet-connection callback gets no FlowMeta from JudgeFlow, so the
+	// session resolves its own UID again: once per session (never per
+	// packet) and free when no per-app rules are configured. Without it the
+	// tunnel-by-app decision made in JudgeFlow would be lost here, because
+	// this is the call that actually picks direct vs tunnel.
+	meta := FlowMeta{Network: "udp", Source: source.AddrPort(), Destination: dst}
+	meta.UID = e.resolveUID(meta)
+	action := e.decide(meta)
+	if action == ActionBlock {
+		e.counters.Drop()
+		e.logf("udp %s: blocked by rules", dst)
+		return
+	}
+	if action == ActionTunnel {
 		if h.relayUDPTunnel(ctx, conn, dst, closeOnce) {
 			if onClose != nil {
 				defer onClose(nil)

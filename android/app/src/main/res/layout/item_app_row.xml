@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hallmark · dose · 4-я стадия «Приложения» (PERAPP_ROUTING §4): строка приложения.
+     Иконка 32dp, имя, пакет второй строкой (ink_soft, 11sp), чип действия, ⋮.
+     Пустое место под иконку — bg_pill_badge, пока PackageManager не отдал Drawable. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/appRowRoot"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="@dimen/space_s"
+    android:background="@drawable/bg_card"
+    android:clickable="true"
+    android:focusable="true"
+    android:gravity="center_vertical"
+    android:minHeight="64dp"
+    android:orientation="horizontal"
+    android:paddingStart="@dimen/space_m"
+    android:paddingTop="@dimen/space_s"
+    android:paddingEnd="@dimen/space_xxs"
+    android:paddingBottom="@dimen/space_s">
+
+    <ImageView
+        android:id="@+id/ivAppIcon"
+        android:layout_width="@dimen/app_icon"
+        android:layout_height="@dimen/app_icon"
+        android:layout_marginEnd="@dimen/space_s"
+        android:contentDescription="@null"
+        android:scaleType="fitCenter" />
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/tvAppName"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:fontFamily="sans-serif"
+            android:maxLines="1"
+            android:textColor="@color/ink"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/tvAppPackage"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:ellipsize="end"
+            android:fontFamily="sans-serif"
+            android:maxLines="2"
+            android:textColor="@color/ink_soft"
+            android:textSize="11sp" />
+    </LinearLayout>
+
+    <include
+        layout="@layout/view_action_chip"
+        android:layout_width="wrap_content"
+        android:layout_height="26dp" />
+
+    <TextView
+        android:id="@+id/btnAppMenu"
+        android:layout_width="@dimen/touch_target_min"
+        android:layout_height="@dimen/touch_target_min"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:clickable="true"
+        android:contentDescription="@string/routing_more"
+        android:focusable="true"
+        android:gravity="center"
+        android:text="@string/sym_more"
+        android:textColor="@color/ink_soft"
+        android:textSize="18sp" />
+</LinearLayout>

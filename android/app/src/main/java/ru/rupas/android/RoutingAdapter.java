@@ -15,10 +15,12 @@ import java.util.List;
 
 /**
  * Список правил, сгруппированный по стадиям движка (§2):
- * заголовок стадии → правила → «+ Правило», в конце закреплённый default.
+ * заголовок стадии → правила → «+ Правило», затем четвёртая стадия «Приложения»
+ * (docs/PERAPP_ROUTING.md §4: заголовок со счётчиком → строки приложений →
+ * «+ Выбрать приложения» либо пустое состояние), в конце закреплённый default.
  *
- * Три обязательных типа строк: stage header, rule row, default row;
- * четвёртый — строка добавления внутри стадии (в макете §4.2 «[+ Правило]»).
+ * Типы строк: stage header, rule row, default row, строка добавления внутри стадии,
+ * app row, пустое состояние стадии приложений, вход в выбор приложений.
  */
 final class RoutingAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
@@ -26,6 +28,13 @@ final class RoutingAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder>
     static final int T_RULE = 1;
     static final int T_DEFAULT = 2;
     static final int T_ADD = 3;
+    static final int T_APP = 4;
+    static final int T_APP_EMPTY = 5;
+    static final int T_APP_ADD = 6;
+
+    /** Стадии экрана: 0..2 — правила движка, 3 — приложения (PERAPP_ROUTING §4). */
+    static final int STAGE_APPS = 3;
+    private static final int STAGE_COUNT = 4;
 
     interface Listener {
         void onRuleClick(RoutingRule rule, int index);
@@ -37,13 +46,22 @@ final class RoutingAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder>
         void onAddRule(int stage);
 
         void onDefaultClick();
+
+        /** «+ Выбрать приложения» / кнопка пустого состояния. */
+        void onAppsAdd();
+
+        void onAppClick(AppRule rule, int index);
+
+        void onAppMenu(View anchor, AppRule rule, int index);
     }
 
     private static final class Row {
         int type;
         int stage;
         RoutingRule rule;
+        AppRule app;
         int index;
+        int appIndex;
         int posInStage;
         int stageTotal;
         int count;
@@ -54,10 +72,12 @@ final class RoutingAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder>
     private final Listener listener;
     private final List<Row> rows = new ArrayList<>();
     private final List<RoutingRule> rules = new ArrayList<>();
-    private final boolean[] collapsed = new boolean[3];
+    private final List<AppRule> appRules = new ArrayList<>();
+    private final boolean[] collapsed = new boolean[STAGE_COUNT];
     private RoutingRule def = RoutingRule.Parsed.defaultRule();
     private boolean dragMode;
     private RecyclerView list;
+
 
     RoutingAdapter(Context ctx, Listener listener) {
         this.ctx = ctx;
@@ -71,6 +91,23 @@ final class RoutingAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder>
 
     List<RoutingRule> rules() {
         return rules;
+    }
+
+    /** Правила по приложениям (4-я стадия); изменяются на месте, как и rules(). */
+    List<AppRule> appRules() {
+        return appRules;
+    }
+
+    void setAppRules(List<AppRule> data) {
+        appRules.clear();
+        if (data != null) {
+            for (AppRule r : data) {
+                if (r != null && r.isValid() && !r.inherited()) {
+                    appRules.add(r);
+                }
+            }
+        }
+        rebuild();
     }
 
     RoutingRule defaultRule() {
@@ -161,10 +198,49 @@ final class RoutingAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder>
             add.stage = stage;
             rows.add(add);
         }
+        appendAppsStage();
         Row d = new Row();
         d.type = T_DEFAULT;
         rows.add(d);
         notifyDataSetChanged();
+    }
+
+    /**
+     * 4-я стадия «Приложения» (PERAPP_ROUTING §4): заголовок со счётчиком, строки
+     * выбранных приложений, затем либо пустое состояние с кнопкой, либо «+ Выбрать
+     * приложения». Пустое состояние уже содержит кнопку, поэтому вторую не рисуем.
+     */
+    private void appendAppsStage() {
+        Row head = new Row();
+        head.type = T_STAGE;
+        head.stage = STAGE_APPS;
+        head.count = appRules.size();
+        head.collapsed = collapsed[STAGE_APPS];
+        rows.add(head);
+        if (collapsed[STAGE_APPS]) {
+            return;
+        }
+        if (appRules.isEmpty()) {
+            Row empty = new Row();
+            empty.type = T_APP_EMPTY;
+            empty.stage = STAGE_APPS;
+            rows.add(empty);
+            return;
+        }
+        for (int i = 0; i < appRules.size(); i++) {
+            Row row = new Row();
+            row.type = T_APP;
+            row.stage = STAGE_APPS;
+            row.app = appRules.get(i);
+            row.appIndex = i;
+            row.posInStage = i + 1;
+            row.stageTotal = appRules.size();
+            rows.add(row);
+        }
+        Row add = new Row();
+        add.type = T_APP_ADD;
+        add.stage = STAGE_APPS;
+        rows.add(add);
     }
 
     // ------------------------------------------------------------------- drag
@@ -254,8 +330,14 @@ final class RoutingAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder>
             case T_DEFAULT:
                 return new DefaultHolder(inf.inflate(R.layout.item_default_row, parent, false));
             case T_ADD:
-            default:
                 return new AddHolder(inf.inflate(R.layout.item_add_rule, parent, false));
+            case T_APP:
+                return new AppHolder(inf.inflate(R.layout.item_app_row, parent, false));
+            case T_APP_EMPTY:
+                return new AppEmptyHolder(inf.inflate(R.layout.item_app_empty, parent, false));
+            case T_APP_ADD:
+            default:
+                return new AppAddHolder(inf.inflate(R.layout.item_app_add, parent, false));
         }
     }
 
@@ -270,6 +352,12 @@ final class RoutingAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder>
             bindDefault((DefaultHolder) holder);
         } else if (holder instanceof AddHolder) {
             bindAdd((AddHolder) holder, row);
+        } else if (holder instanceof AppHolder) {
+            bindApp((AppHolder) holder, row);
+        } else if (holder instanceof AppEmptyHolder) {
+            bindAppEmpty((AppEmptyHolder) holder);
+        } else if (holder instanceof AppAddHolder) {
+            bindAppAdd((AppAddHolder) holder);
         }
     }
 
@@ -316,6 +404,48 @@ final class RoutingAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder>
         h.itemView.setOnClickListener(v -> listener.onAddRule(stage));
     }
 
+    /**
+     * Строка приложения: иконка из PackageManager, имя, пакет второй строкой,
+     * чип действия (§5.3). Если пакет удалён, показываем сам пакет — правило
+     * не исчезает из списка молча.
+     */
+    private void bindApp(AppHolder h, Row row) {
+        final AppRule rule = row.app;
+        final AppCatalog.Entry entry = AppCatalog.get(ctx, rule.pkg);
+        if (entry != null) {
+            h.icon.setImageDrawable(entry.icon(ctx.getPackageManager()));
+            h.name.setText(entry.label);
+        } else {
+            h.icon.setImageDrawable(ctx.getPackageManager().getDefaultActivityIcon());
+            h.name.setText(rule.pkg);
+        }
+        String pkgLine = rule.pkg;
+        int shared = AppCatalog.sharedUidCount(ctx, rule.pkg, appRules);
+        if (shared > 0) {
+            // §5: у нескольких пакетов один UID — правило применится ко всем.
+            pkgLine = pkgLine + " · " + ctx.getResources()
+                    .getQuantityString(R.plurals.app_shared_uid, shared, shared);
+        }
+        h.pkg.setText(pkgLine);
+        RoutingStyle.applyChip(h.chip, rule.chipAction());
+
+        String actionLabel = ctx.getString(RoutingStyle.labelRes(rule.chipAction()));
+        h.itemView.setContentDescription(ctx.getString(R.string.app_a11y_row,
+                entry == null ? rule.pkg : entry.label, actionLabel, rule.pkg));
+        final int index = row.appIndex;
+        h.itemView.setOnClickListener(v -> listener.onAppClick(rule, index));
+        h.menu.setOnClickListener(v -> listener.onAppMenu(v, rule, index));
+    }
+
+    private void bindAppEmpty(AppEmptyHolder h) {
+        h.action.setOnClickListener(v -> listener.onAppsAdd());
+    }
+
+    private void bindAppAdd(AppAddHolder h) {
+        h.itemView.setContentDescription(ctx.getString(R.string.routing_apps_add));
+        h.itemView.setOnClickListener(v -> listener.onAppsAdd());
+    }
+
     static int stageNameRes(int stage) {
         switch (stage) {
             case RoutingRule.STAGE_IP:
@@ -324,6 +454,8 @@ final class RoutingAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder>
                 return R.string.routing_stage_domains;
             case RoutingRule.STAGE_PORTS:
                 return R.string.routing_stage_ports;
+            case STAGE_APPS:
+                return R.string.routing_stage_apps;
             default:
                 return R.string.routing_stage_default;
         }
@@ -374,6 +506,38 @@ final class RoutingAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder>
 
     static final class AddHolder extends RecyclerView.ViewHolder {
         AddHolder(View v) {
+            super(v);
+        }
+    }
+
+    static final class AppHolder extends RecyclerView.ViewHolder {
+        final ImageView icon;
+        final TextView name;
+        final TextView pkg;
+        final TextView menu;
+        final View chip;
+
+        AppHolder(View v) {
+            super(v);
+            icon = v.findViewById(R.id.ivAppIcon);
+            name = v.findViewById(R.id.tvAppName);
+            pkg = v.findViewById(R.id.tvAppPackage);
+            menu = v.findViewById(R.id.btnAppMenu);
+            chip = v.findViewById(R.id.chipAction);
+        }
+    }
+
+    static final class AppEmptyHolder extends RecyclerView.ViewHolder {
+        final View action;
+
+        AppEmptyHolder(View v) {
+            super(v);
+            action = v.findViewById(R.id.btnAppsEmpty);
+        }
+    }
+
+    static final class AppAddHolder extends RecyclerView.ViewHolder {
+        AppAddHolder(View v) {
             super(v);
         }
     }

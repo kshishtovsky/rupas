@@ -1,9 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Hallmark · screen: standalone endpoint form · same paper system as the tabs -->
+<!-- Hallmark · screen: standalone endpoint form · same paper system as the tabs
+     settingsRoot: единственная точка применения системных инсетов (см. SettingsActivity) -->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/settingsRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:clipToPadding="false"
     android:fillViewport="true"
     android:background="@color/paper">
 

@@ -237,6 +237,59 @@ $("btnRecalibrate").addEventListener("click", async () => {
   btn.textContent = "Рекалибровать";
 });
 
+// ---------- обновления (FR-5..7, docs/PRD_RELEASE_PIPELINE.md) ----------
+function renderVersion(info) {
+  const el = $("appVersion");
+  if (!el || !info) return;
+  el.textContent = info.available
+    ? `Установлена ${info.current}, доступна ${info.latest}`
+    : `Установлена ${info.current} — последняя`;
+}
+
+async function checkUpdate(force) {
+  try {
+    const info = await call("CheckUpdate", force);
+    renderVersion(info);
+    return info;
+  } catch (e) {
+    if (force) alert("Не удалось проверить обновления, попробуйте позже.");
+    return null;
+  }
+}
+
+$("btnCheckUpdate").addEventListener("click", async () => {
+  const btn = $("btnCheckUpdate");
+  btn.disabled = true;
+  const info = await checkUpdate(true);
+  btn.disabled = false;
+  if (!info) return;
+  if (!info.available) {
+    alert(`Установлена последняя версия (${info.current}).`);
+    return;
+  }
+  const notes = (info.notes || "").slice(0, 800);
+  if (!confirm(`Доступна версия ${info.latest}.\n\n${notes}\n\nСкачать и установить?`)) return;
+
+  btn.disabled = true;
+  btn.textContent = "Скачиваю…";
+  try {
+    const dir = await call("DownloadUpdate");
+    if (!confirm("Архив скачан и проверен по SHA256. Перезапустить Rupas и применить обновление?")) {
+      await call("OpenPath", dir); // пользователь поставит сам
+      return;
+    }
+    await call("ApplyUpdate", dir); // приложение перезапустит cmd-скрипт
+  } catch (e) {
+    alert("Обновление не удалось: " + (e?.message || e));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Проверить обновления";
+  }
+});
+
+// Тихая проверка при старте: троттлинг 12 ч живёт на стороне Go.
+checkUpdate(false);
+
 $("btnSaveSettings").addEventListener("click", async () => {
   $("saveHint").textContent = "Сохраняю…";
   try {

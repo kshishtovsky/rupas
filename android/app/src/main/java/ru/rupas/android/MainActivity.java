@@ -189,6 +189,9 @@ public class MainActivity extends AppCompatActivity {
         setupSettingsTab();
         setupLogsTab();
 
+        // Авто-проверка обновлений: в фоне, не чаще раза в 12 ч (троттлинг внутри).
+        UpdateChecker.checkAuto(this);
+
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 101);
@@ -375,6 +378,9 @@ public class MainActivity extends AppCompatActivity {
         // direct-хвост управляется переключателем — в карточках профилей его нет,
         // значение уходит в настройки обычным «Сохранить и применить».
         btnToggleServerFields.setOnClickListener(v -> toggleServerFields());
+        ((TextView) findViewById(R.id.tvVersion))
+                .setText(getString(R.string.update_version_current, BuildConfig.VERSION_NAME));
+        findViewById(R.id.btnCheckUpdates).setOnClickListener(v -> UpdateChecker.checkManual(this));
     }
 
     /** Сводка в карточке маршрутов: пишется экраном «Маршруты» после чтения/применения. */

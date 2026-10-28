@@ -4,4 +4,8 @@
     <cache-path
         name="logs"
         path="logs/" />
+    <!-- Скачанный APK обновления (UpdateChecker) отдаётся установщику через FileProvider -->
+    <cache-path
+        name="updates"
+        path="updates/" />
 </paths>

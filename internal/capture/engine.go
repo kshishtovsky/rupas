@@ -38,7 +38,9 @@ const (
 	defaultBatchSize  = 64 // §3.2: batch ≤ 64 packets
 	defaultPacketSize = 65575
 	defaultIdleTTL    = 5 * time.Minute
-	gcTick            = time.Second
+	// gcTick is coarse on purpose: TTLs are tens of seconds, and a 1 s tick
+	// was 86400 scheduler wakeups/day on the phone for an empty table.
+	gcTick = 5 * time.Second
 
 	// ipTTLDefault is the TTL of crafted packets sent verbatim to the
 	// client (resetClientFlow's forged RST); fakes lower their own TTL.

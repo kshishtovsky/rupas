@@ -574,7 +574,12 @@ type relayLogWriter struct {
 }
 
 func (w *relayLogWriter) WriteMessage(level boxLog.Level, message string) {
-	if w.fn == nil || level > boxLog.LevelDebug {
+	// sing-box passes every level to the platform writer, ignoring the
+	// config's Log.Level; INFO per connection would cost a Java string and a
+	// notify for each line (measured on device — a large share of the journal).
+	// Levels: Panic 0 … Warn 3 … Trace 6, so "below warn" is a bigger number.
+	// shortcut: INFO is dropped, add a verbose switch if diagnostics need it.
+	if w.fn == nil || level > boxLog.LevelWarn {
 		return
 	}
 	for _, secret := range w.secrets {

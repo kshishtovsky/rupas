@@ -1010,8 +1010,19 @@ public class MainActivity extends AppCompatActivity {
 
         MaterialSwitch sw = card.findViewById(R.id.switchProfile);
         sw.setContentDescription(label);
+        // Своё состояние CompoundButton НЕ сохраняет и НЕ восстанавливает.
+        // Все карточки используют один id (switchProfile), а состояние в
+        // иерархии хранится по id: при любом пересоздании activity (смена
+        // темы, поворот) система раздавала сохранённые состояния не тем
+        // карточкам, setChecked() дёргал слушатель, и persistProfiles()
+        // записывал чужие значения — профили включались/выключались сами.
+        sw.setSaveEnabled(false);
+        sw.setSaveFromParentEnabled(false);
         sw.setChecked(p.enabled);
         sw.setOnCheckedChangeListener((b, checked) -> {
+            if (p.enabled == checked) {
+                return; // связка/восстановление состояния, а не действие пользователя
+            }
             p.enabled = checked;
             // Перерисовка — после анимации переключателя: карточка живёт в llProfiles.
             llProfiles.post(this::renderProfiles);
@@ -1131,6 +1142,9 @@ public class MainActivity extends AppCompatActivity {
      * Пустой список профилей оставляет плоскую форму как есть.
      */
     private void applyProfiles(SettingsStore.Settings s) {
+        if (pendingProfiles.isEmpty() && !s.profiles.isEmpty()) {
+            return; // пустой UI не имеет права стирать загруженные профили
+        }
         s.profiles.clear();
         s.profiles.addAll(pendingProfiles);
         if (pendingProfiles.isEmpty()) return;
@@ -1157,6 +1171,13 @@ public class MainActivity extends AppCompatActivity {
         try {
             SettingsStore store = new SettingsStore(this);
             SettingsStore.Settings s = store.load();
+            if (pendingProfiles.isEmpty() && !s.profiles.isEmpty()) {
+                // UI ещё не загрузил профили (пересоздание, ошибка чтения):
+                // запись пустого списка стёрла бы все конфиги.
+                LogBuffer.add("[profiles] пропуск записи: список в UI пуст, в настройках "
+                        + s.profiles.size());
+                return;
+            }
             applyProfiles(s);
             store.save(s);
             if (RupasVpnService.restartIfRunning(this)) {

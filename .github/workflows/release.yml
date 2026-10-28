@@ -145,8 +145,9 @@ jobs:
       # падает на `sdkmanager tools` (пакета больше нет в cmdline-tools 16).
       - name: Install SDK bits
         run: |
-          echo "sdk=$ANDROID_SDK_ROOT"
-          yes | sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973" > /dev/null
+          sdkm=$(ls -d "$ANDROID_SDK_ROOT"/cmdline-tools/*/bin/sdkmanager | head -1)
+          echo "sdkmanager: $sdkm"
+          yes | "$sdkm" --install "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973" > /dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.0.12077973" >> "$GITHUB_ENV"
 
       - name: gomobile

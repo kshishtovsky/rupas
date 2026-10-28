@@ -189,9 +189,6 @@ public class MainActivity extends AppCompatActivity {
         setupSettingsTab();
         setupLogsTab();
 
-        // Авто-проверка обновлений: в фоне, не чаще раза в 12 ч (троттлинг внутри).
-        UpdateChecker.checkAuto(this);
-
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 101);
@@ -201,6 +198,10 @@ public class MainActivity extends AppCompatActivity {
         if (!RupasVpnService.isRunning()) {
             RupasVpnService.showOfflineNotification(this);
         }
+
+        // Авто-проверка обновлений: в фоне, не чаще раза в 12 ч (троттлинг внутри).
+        // После запроса разрешений — иначе диалог обновления уедет под системный.
+        UpdateChecker.checkAuto(this);
     }
 
     private ImageButton btnTheme;

@@ -7,6 +7,7 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AlertDialog;
@@ -74,6 +75,10 @@ public class SettingsActivity extends AppCompatActivity {
 
         btnImport.setOnClickListener(v -> showImportDialog());
         btnSave.setOnClickListener(v -> saveForm());
+
+        ((TextView) findViewById(R.id.tvVersion))
+                .setText(getString(R.string.update_version_current, BuildConfig.VERSION_NAME));
+        findViewById(R.id.btnCheckUpdates).setOnClickListener(v -> UpdateChecker.checkManual(this));
     }
 
     /**

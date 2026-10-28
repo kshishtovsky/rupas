@@ -424,6 +424,24 @@
                 android:layout_width="match_parent"
                 android:layout_height="@dimen/control_height"
                 android:text="@string/btn_save_settings" />
+
+            <!-- Обновления: версия задаётся из BuildConfig в MainActivity -->
+            <TextView
+                android:id="@+id/tvVersion"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_m"
+                android:fontFamily="sans-serif"
+                android:textColor="@color/ink_soft"
+                android:textSize="12sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnCheckUpdates"
+                style="@style/Widget.Rupas.Button.Secondary"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/control_height"
+                android:layout_marginTop="@dimen/space_xs"
+                android:text="@string/update_check_btn" />
         </LinearLayout>
     </androidx.core.widget.NestedScrollView>
 </LinearLayout>

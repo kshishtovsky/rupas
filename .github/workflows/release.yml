@@ -216,10 +216,15 @@ jobs:
         run: |
           ver='${{ needs.version.outputs.version }}'
           last=$(git describe --tags --abbrev=0 "v$ver^" 2>/dev/null || true)
+          # Тело релиза — только эта версия: иначе в диалоге обновления на
+          # телефоне показывается вся история проекта с начала времён.
+          {
+            git log --pretty='- %s (%h)' ${last:+$last..v$ver}
+          } > RELEASE_NOTES.md
           {
             echo "## v$ver"
             echo
-            git log --pretty='- %s (%h)' ${last:+$last..v$ver}
+            cat RELEASE_NOTES.md
             echo
             cat CHANGELOG.md 2>/dev/null || true
           } > CHANGELOG.new
@@ -230,7 +235,7 @@ jobs:
           tag_name: v${{ needs.version.outputs.version }}
           name: Rupas v${{ needs.version.outputs.version }}
           generate_release_notes: false
-          body_path: CHANGELOG.md
+          body_path: RELEASE_NOTES.md
           files: |
             Rupas-win64-*.zip
             Rupas-android-*.apk

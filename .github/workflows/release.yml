@@ -41,10 +41,12 @@ jobs:
           set -euo pipefail
           republish="${{ github.event.inputs.tag }}"
           if [[ "$GITHUB_REF_TYPE" == "tag" || -n "$republish" ]]; then
-            ref="${republish:-$GITHUB_REF}"
+            ver="${republish:-$GITHUB_REF}"
+            ver="${ver#refs/tags/}"
+            ver="${ver#v}"
             echo "released=true" >> "$GITHUB_OUTPUT"
-            echo "version=${ref#refs/tags/v}" >> "$GITHUB_OUTPUT"
-            echo "Переиздание ${ref}"
+            echo "version=$ver" >> "$GITHUB_OUTPUT"
+            echo "Переиздание v$ver"
             exit 0
           fi
 

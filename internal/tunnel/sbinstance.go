@@ -78,8 +78,6 @@ func (s *singbox) udpFBAddr() string {
 	return net.JoinHostPort(loopbackIP, strconv.Itoa(int(s.ports.UDPFB)))
 }
 
-
-
 // minimalBoxContext registers only the protocols Rupas needs, on fresh,
 // non-global registries (the include package would pull tun/quic-extras/
 // wireguard and more into the process).

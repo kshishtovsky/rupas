@@ -12,9 +12,9 @@ import (
 
 // fakeTermSender records forged inbound packets.
 type fakeTermSender struct {
-	mu     sync.Mutex
-	pkts   [][]byte
-	ifIdx  []uint32
+	mu    sync.Mutex
+	pkts  [][]byte
+	ifIdx []uint32
 }
 
 func (s *fakeTermSender) SendInboundTCP(pkt []byte, ifIdx, subIfIdx uint32) error {
@@ -36,15 +36,15 @@ func (s *fakeTermSender) sent() [][]byte {
 }
 
 type parsedTerm struct {
-	src, dst         [4]byte
-	sport, dport     uint16
-	seq, ack         uint32
-	flags            byte
-	win              uint16
-	mss              uint16
-	hasMSS           bool
-	payload          []byte
-	ipOK, tcpOK      bool
+	src, dst     [4]byte
+	sport, dport uint16
+	seq, ack     uint32
+	flags        byte
+	win          uint16
+	mss          uint16
+	hasMSS       bool
+	payload      []byte
+	ipOK, tcpOK  bool
 }
 
 func parseTerm(t *testing.T, pkt []byte) parsedTerm {

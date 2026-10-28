@@ -275,9 +275,9 @@ func TestSBPortsForPlan(t *testing.T) {
 	reality := &config.Endpoint{Kind: config.KindVLESSReality, Host: "a", Port: 4, UUID: "u", SNI: "s", RealityPBK: "k"}
 
 	cases := []struct {
-		name                string
-		cfg                 config.TunnelConfig
-		main, tcpfb, udpfb  bool
+		name               string
+		cfg                config.TunnelConfig
+		main, tcpfb, udpfb bool
 	}{
 		// Wave 6: a distinct hy2 endpoint doubles as the TCP fallback
 		// carrier when the configured fallback is xhttp (out of the

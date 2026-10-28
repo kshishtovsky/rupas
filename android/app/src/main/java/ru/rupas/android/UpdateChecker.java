@@ -106,6 +106,8 @@ final class UpdateChecker {
 
     private static void showUpdateDialog(Activity a, JSONObject release) {
         String apkUrl = apkUrl(release);
+        // tag_name приходит как "v0.7.1" — префикс в заголовке лишний.
+        String tag = release.optString("tag_name", "").replaceFirst("^v", "");
         String changelog = release.optString("body", "").trim();
         if (changelog.length() > CHANGELOG_LIMIT) {
             changelog = changelog.substring(0, CHANGELOG_LIMIT) + "…";
@@ -114,7 +116,7 @@ final class UpdateChecker {
             changelog = a.getString(R.string.update_no_changelog);
         }
         new AlertDialog.Builder(a)
-                .setTitle(a.getString(R.string.update_title, release.optString("tag_name", "")))
+                .setTitle(a.getString(R.string.update_title, tag))
                 .setMessage(changelog)
                 .setPositiveButton(R.string.update_now, (d, w) -> {
                     if (apkUrl != null) {

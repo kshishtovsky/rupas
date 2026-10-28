@@ -1,3 +1,10 @@
+## v0.7.5
+
+- chore(release): v0.7.5 (95bb379)
+- fix(android): профили не включаются сами при смене темы (87bca6e)
+- docs(changelog): v0.7.4 (1bdef02)
+- docs: убрать скриншоты из README (4aa5b27)
+
 ## v0.7.4
 
 - chore(release): v0.7.4 (106042d)

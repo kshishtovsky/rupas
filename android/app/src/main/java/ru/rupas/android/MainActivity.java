@@ -10,6 +10,7 @@ import android.net.VpnService;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.EditText;
 import android.widget.ImageButton;
@@ -40,8 +41,15 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import core.Core;
@@ -93,10 +101,23 @@ public class MainActivity extends AppCompatActivity {
     private MaterialSwitch switchBlockTrackers;
     private MaterialButton btnImport;
     private MaterialButton btnSave;
-    /** Share links from the latest import (dial chain); empty = legacy flat config. */
-    private String pendingLinks = "";
-    // Приоритеты: контейнер строк каналов (порядок = порядок в pendingLinks).
-    private LinearLayout llCarriers;
+    /**
+     * Профили VPN (0.5.0) в порядке приоритета: источник истины для links.
+     * Копия из настроек, живёт до «Сохранить и применить», как и остальная форма.
+     */
+    private final List<SettingsStore.Profile> pendingProfiles = new ArrayList<>();
+    /** Контейнер карточек профилей (порядок = порядок перебора в ядре). */
+    private LinearLayout llProfiles;
+    private TextView tvNoProfiles;
+    private TextView tvProfilesEmpty;
+    private MaterialButton btnToggleServerFields;
+    private LinearLayout llServerFields;
+    /** id профиля, который сейчас проверяется (null — проверок нет). */
+    private String runningTestId;
+    /** Результаты тестов по id профиля: только в памяти, в prefs не пишутся. */
+    private final Map<String, TestResult> testResults = new HashMap<>();
+    /** Один поток: ядро тестирует один профиль за раз. */
+    private final ExecutorService testExecutor = Executors.newSingleThreadExecutor();
     // T3: подзаголовок карточки «Маршрутизация» (сводка из последнего чтения правил).
     private TextView tvRoutingSummary;
 
@@ -258,7 +279,11 @@ public class MainActivity extends AppCompatActivity {
         switchBlockTrackers = findViewById(R.id.switchBlockTrackers);
         btnImport = findViewById(R.id.btnImport);
         btnSave = findViewById(R.id.btnSave);
-        llCarriers = findViewById(R.id.llCarriers);
+        llProfiles = findViewById(R.id.llProfiles);
+        tvNoProfiles = findViewById(R.id.tvNoProfiles);
+        tvProfilesEmpty = findViewById(R.id.tvProfilesEmpty);
+        btnToggleServerFields = findViewById(R.id.btnToggleServerFields);
+        llServerFields = findViewById(R.id.llServerFields);
         tvRoutingSummary = findViewById(R.id.tvRoutingSummary);
 
         // Logs
@@ -347,8 +372,9 @@ public class MainActivity extends AppCompatActivity {
             cardRouting.setOnClickListener(v ->
                     startActivity(new Intent(MainActivity.this, RoutingActivity.class)));
         }
-        // direct-хвост управляется переключателем — перерисовываем список.
-        switchFallback.setOnCheckedChangeListener((b, checked) -> renderCarriers());
+        // direct-хвост управляется переключателем — в карточках профилей его нет,
+        // значение уходит в настройки обычным «Сохранить и применить».
+        btnToggleServerFields.setOnClickListener(v -> toggleServerFields());
     }
 
     /** Сводка в карточке маршрутов: пишется экраном «Маршруты» после чтения/применения. */
@@ -443,6 +469,13 @@ public class MainActivity extends AppCompatActivity {
         handler.removeCallbacks(logRender);
         logRenderPending.set(false);
         LogBuffer.setListener(null);
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        // Один поток проверки профилей: после выхода активити он не нужен.
+        testExecutor.shutdownNow();
     }
 
     private void scheduleTelemetry() {
@@ -668,11 +701,18 @@ public class MainActivity extends AppCompatActivity {
     private void updateEndpointInfo() {
         try {
             SettingsStore.Settings s = new SettingsStore(this).load();
-            if (s != null && s.isConfigured()) {
+            if (s != null && !s.isConfigured() && s.firstEnabled() == null
+                    && !s.profiles.isEmpty()) {
+                // Ноль включённых профилей: внятное предупреждение вместо «напрямую».
+                tvEndpoint.setText(R.string.profiles_none_enabled);
+                tvEndpoint.setTextColor(ContextCompat.getColor(this, R.color.warn));
+            } else if (s != null && s.isConfigured()) {
                 String kind = (s.publicKey != null && !s.publicKey.isEmpty()) ? "Reality" : "VLESS";
                 tvEndpoint.setText(getString(R.string.home_gateway, s.server, s.port, kind));
+                tvEndpoint.setTextColor(ContextCompat.getColor(this, R.color.ink_soft));
             } else {
                 tvEndpoint.setText(R.string.home_gateway_none);
+                tvEndpoint.setTextColor(ContextCompat.getColor(this, R.color.ink_soft));
             }
         } catch (Throwable t) {
             tvEndpoint.setText(R.string.home_gateway_none);
@@ -800,15 +840,26 @@ public class MainActivity extends AppCompatActivity {
             switchFallback.setChecked(s.fallback);
             switchBlockAds.setChecked(s.blockAds);
             switchBlockTrackers.setChecked(s.blockTrackers);
-            pendingLinks = s.links == null ? "" : s.links;
-            renderCarriers();
+            pendingProfiles.clear();
+            pendingProfiles.addAll(s.profiles);
+            renderProfiles();
+            updateEndpointInfo();
         } catch (Exception e) {
             Toast.makeText(this, R.string.settings_load_failed, Toast.LENGTH_SHORT).show();
         }
     }
 
     private void saveSettingsForm() {
-        SettingsStore.Settings s = new SettingsStore.Settings();
+        SettingsStore store;
+        SettingsStore.Settings s;
+        try {
+            store = new SettingsStore(this);
+            // Снимок из prefs: чужие поля (профили, app_rules) не теряются.
+            s = store.load();
+        } catch (Exception e) {
+            Toast.makeText(this, R.string.settings_load_failed, Toast.LENGTH_SHORT).show();
+            return;
+        }
         s.blockAds = switchBlockAds.isChecked();
         s.blockTrackers = switchBlockTrackers.isChecked();
         s.uuid = text(etUuid);
@@ -817,7 +868,6 @@ public class MainActivity extends AppCompatActivity {
         s.publicKey = text(etPublicKey);
         s.shortId = text(etShortId);
         s.fallback = switchFallback.isChecked();
-        s.links = pendingLinks;
 
         String portStr = text(etPort);
         if (portStr.isEmpty()) {
@@ -832,10 +882,11 @@ public class MainActivity extends AppCompatActivity {
                 return;
             }
         }
+        applyProfiles(s); // профили перекрывают плоские поля, когда они есть
 
         if (s.isConfigured() || (s.uuid.isEmpty() && s.server.isEmpty())) {
             try {
-                new SettingsStore(this).save(s);
+                store.save(s);
             } catch (Exception e) {
                 Toast.makeText(this, R.string.settings_save_failed, Toast.LENGTH_LONG).show();
                 return;
@@ -875,151 +926,315 @@ public class MainActivity extends AppCompatActivity {
                 .show();
     }
 
+    /**
+     * Импорт добавляет профили в конец списка: существующие не затираются,
+     * точные дубли ссылок пропускаются.
+     */
     private void applyImport(String raw) {
         java.util.List<String> links;
-        ParseLink.Flat r;
         try {
             links = ParseLink.splitInput(raw);
-            r = ParseLink.flattenLegacy(links.get(0));
         } catch (IllegalArgumentException e) {
             Toast.makeText(this, getString(R.string.import_failed, e.getMessage()), Toast.LENGTH_LONG).show();
             return;
         }
-        pendingLinks = String.join("\n", links);
-        etUuid.setText(r.uuid);
-        etServer.setText(r.server);
-        etPort.setText(String.valueOf(r.port));
-        etSni.setText(r.sni);
-        etPublicKey.setText(r.publicKey);
-        etShortId.setText(r.shortId);
-        switchFallback.setChecked(true);
-        renderCarriers();
-
-        if (r.warning != null) {
-            Toast.makeText(this, getString(R.string.import_warning, r.warning), Toast.LENGTH_LONG).show();
-        } else {
-            Toast.makeText(this, R.string.import_done, Toast.LENGTH_SHORT).show();
+        int added = 0;
+        for (String link : links) {
+            if (findByLink(link) != null) continue;
+            pendingProfiles.add(new SettingsStore.Profile(
+                    UUID.randomUUID().toString(), link, ParseLink.label(link), true));
+            added++;
         }
+        renderProfiles();
+        if (added > 0) {
+            persistProfiles();
+            Toast.makeText(this, getString(R.string.profiles_added, added), Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(this, R.string.profiles_duplicates, Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private SettingsStore.Profile findByLink(String link) {
+        String needle = link == null ? "" : link.trim();
+        for (SettingsStore.Profile p : pendingProfiles) {
+            if (p.link != null && p.link.trim().equals(needle)) return p;
+        }
+        return null;
     }
 
     private static String text(EditText et) {
         return et.getText() == null ? "" : et.getText().toString().trim();
     }
 
-    // --- Carrier priorities UI (settings tab) ---
+    // --- Профили VPN (0.5.0): карточки, порядок, тест ---
 
     /**
-     * Рисует список каналов из pendingLinks в порядке приоритета (порядок =
-     * порядок ссылок, движок перебирает их по очереди) и direct-хвост,
-     * управляемый switchFallback. Кнопки ↑/↓ переставляют ссылки; порядок
-     * попадает в настройки обычным «Сохранить и применить».
+     * Карточки профилей в порядке приоритета (порядок = порядок перебора в ядре).
+     * tvNoProfiles — заметное предупреждение: ноль включённых = VPN не подключится.
      */
-    private void renderCarriers() {
-        if (llCarriers == null) return;
-        llCarriers.removeAllViews();
-        java.util.List<String> links = new java.util.ArrayList<>();
-        if (pendingLinks != null && !pendingLinks.trim().isEmpty()) {
-            for (String l : pendingLinks.split("\n")) {
-                String t = l.trim();
-                if (!t.isEmpty()) links.add(t);
+    private void renderProfiles() {
+        if (llProfiles == null) return;
+        llProfiles.removeAllViews();
+        LayoutInflater inflater = LayoutInflater.from(this);
+        int enabled = 0;
+        for (SettingsStore.Profile p : pendingProfiles) {
+            if (p.enabled) enabled++;
+        }
+        tvProfilesEmpty.setVisibility(pendingProfiles.isEmpty() ? View.VISIBLE : View.GONE);
+        tvNoProfiles.setVisibility(!pendingProfiles.isEmpty() && enabled == 0
+                ? View.VISIBLE : View.GONE);
+        for (int i = 0; i < pendingProfiles.size(); i++) {
+            llProfiles.addView(profileCard(inflater, pendingProfiles.get(i), i));
+        }
+    }
+
+    private View profileCard(LayoutInflater inflater, final SettingsStore.Profile p, int index) {
+        View card = inflater.inflate(R.layout.item_profile, llProfiles, false);
+
+        TextView tvLabel = card.findViewById(R.id.tvProfileLabel);
+        String label = p.label == null || p.label.trim().isEmpty()
+                ? ParseLink.label(p.link)
+                : p.label.trim();
+        tvLabel.setText(label);
+        tvLabel.setTextColor(ContextCompat.getColor(this, p.enabled ? R.color.ink : R.color.ink_soft));
+        ((TextView) card.findViewById(R.id.tvProfileMeta)).setText(ParseLink.subtitle(p.link));
+
+        MaterialSwitch sw = card.findViewById(R.id.switchProfile);
+        sw.setContentDescription(label);
+        sw.setChecked(p.enabled);
+        sw.setOnCheckedChangeListener((b, checked) -> {
+            p.enabled = checked;
+            // Перерисовка — после анимации переключателя: карточка живёт в llProfiles.
+            llProfiles.post(this::renderProfiles);
+            persistProfiles();
+        });
+
+        // Строка результата: «Проверяю…», результат из памяти или «недоступна».
+        TextView tvTest = card.findViewById(R.id.tvProfileTest);
+        if (p.id != null && p.id.equals(runningTestId)) {
+            tvTest.setVisibility(View.VISIBLE);
+            tvTest.setText(R.string.profile_test_running);
+            tvTest.setTextColor(ContextCompat.getColor(this, R.color.ink_soft));
+        } else if (testResults.get(p.id) != null) {
+            TestResult r = testResults.get(p.id);
+            int c = ContextCompat.getColor(this, r.ok ? R.color.accent : R.color.warn);
+            tvTest.setVisibility(View.VISIBLE);
+            tvTest.setText(r.text);
+            tvTest.setTextColor(c);
+            card.findViewById(R.id.profileStateDot).setBackgroundTintList(ColorStateList.valueOf(c));
+        } else if (!testAvailable()) {
+            // Старый AAR без TestProfile: кнопка disabled, причина написана.
+            tvTest.setVisibility(View.VISIBLE);
+            tvTest.setText(R.string.profile_test_unavailable);
+            tvTest.setTextColor(ContextCompat.getColor(this, R.color.ink_faint));
+        }
+
+        TextView btnTest = card.findViewById(R.id.btnProfileTest);
+        boolean canTest = testAvailable() && runningTestId == null;
+        btnTest.setEnabled(canTest);
+        btnTest.setAlpha(canTest ? 1f : 0.4f);
+        btnTest.setOnClickListener(v -> startProfileTest(p));
+
+        card.findViewById(R.id.btnProfileEdit)
+                .setOnClickListener(v -> showEditProfileDialog(p));
+        card.findViewById(R.id.btnProfileDelete)
+                .setOnClickListener(v -> confirmDeleteProfile(p));
+
+        TextView up = card.findViewById(R.id.btnProfileUp);
+        up.setEnabled(index > 0);
+        up.setAlpha(index > 0 ? 1f : 0.35f);
+        up.setOnClickListener(v -> moveProfile(p, -1));
+
+        TextView down = card.findViewById(R.id.btnProfileDown);
+        boolean canDown = index + 1 < pendingProfiles.size();
+        down.setEnabled(canDown);
+        down.setAlpha(canDown ? 1f : 0.35f);
+        down.setOnClickListener(v -> moveProfile(p, 1));
+        return card;
+    }
+
+    /** Перестановка: порядок профилей = приоритет перебора (первая включённая — primary). */
+    private void moveProfile(SettingsStore.Profile p, int delta) {
+        int from = pendingProfiles.indexOf(p);
+        int to = from + delta;
+        if (from < 0 || to < 0 || to >= pendingProfiles.size()) return;
+        pendingProfiles.remove(from);
+        pendingProfiles.add(to, p);
+        renderProfiles();
+        persistProfiles();
+    }
+
+    private void showEditProfileDialog(final SettingsStore.Profile p) {
+        final EditText input = new EditText(this);
+        input.setHint(R.string.import_hint);
+        input.setText(p.link);
+        input.setSelection(input.getText().length());
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.profile_edit_title)
+                .setView(input)
+                .setPositiveButton(R.string.editor_save, (d, w) -> {
+                    String link;
+                    try {
+                        link = ParseLink.splitInput(input.getText().toString()).get(0);
+                    } catch (IllegalArgumentException e) {
+                        Toast.makeText(this, getString(R.string.import_failed, e.getMessage()),
+                                Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    p.link = link;
+                    p.label = ParseLink.label(link);
+                    testResults.remove(p.id); // старый результат — про другую ссылку
+                    renderProfiles();
+                    persistProfiles();
+                })
+                .setNegativeButton(R.string.btn_cancel, null)
+                .show();
+    }
+
+    private void confirmDeleteProfile(final SettingsStore.Profile p) {
+        String label = p.label == null || p.label.trim().isEmpty()
+                ? ParseLink.label(p.link)
+                : p.label.trim();
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.profile_delete_title)
+                .setMessage(getString(R.string.profile_delete_message, label))
+                .setPositiveButton(R.string.profile_delete_ok, (d, w) -> {
+                    pendingProfiles.remove(p);
+                    testResults.remove(p.id);
+                    renderProfiles();
+                    persistProfiles();
+                })
+                .setNegativeButton(R.string.btn_cancel, null)
+                .show();
+    }
+
+    private void toggleServerFields() {
+        boolean show = llServerFields.getVisibility() != View.VISIBLE;
+        llServerFields.setVisibility(show ? View.VISIBLE : View.GONE);
+        btnToggleServerFields.setText(show
+                ? R.string.profile_hide_fields
+                : R.string.profile_show_fields);
+    }
+
+    /**
+     * Профили — источник истины: links и плоские поля (их читает старое ядро и
+     * строка шлюза) считаются из первого включённого; ноль включённых — пустые.
+     * Пустой список профилей оставляет плоскую форму как есть.
+     */
+    private void applyProfiles(SettingsStore.Settings s) {
+        s.profiles.clear();
+        s.profiles.addAll(pendingProfiles);
+        if (pendingProfiles.isEmpty()) return;
+        s.links = SettingsStore.joinEnabled(s.profiles);
+        SettingsStore.Profile first = s.firstEnabled();
+        ParseLink.Flat f = null;
+        if (first != null) {
+            try {
+                f = ParseLink.flattenLegacy(first.link);
+            } catch (IllegalArgumentException ignored) {
+                // битую ссылку отбраковал импорт; плоские поля остаются пустыми
             }
         }
-        if (links.isEmpty()) {
-            TextView empty = new TextView(this);
-            empty.setText(R.string.settings_priorities_empty);
-            empty.setTextColor(ContextCompat.getColor(this, R.color.ink_soft));
-            empty.setTextSize(13);
-            llCarriers.addView(empty);
-            return;
-        }
-        for (int i = 0; i < links.size(); i++) {
-            llCarriers.addView(carrierRow(links, i));
-        }
-        if (switchFallback.isChecked()) {
-            TextView direct = new TextView(this);
-            direct.setText(getString(R.string.settings_priorities_direct));
-            direct.setTextColor(ContextCompat.getColor(this, R.color.ink_soft));
-            direct.setTextSize(13);
-            direct.setPadding(0, dp(8), 0, 0);
-            llCarriers.addView(direct);
-        }
-        pendingLinks = String.join("\n", links);
+        s.uuid = f == null ? "" : f.uuid;
+        s.server = f == null ? "" : f.server;
+        s.port = f == null ? 0 : f.port;
+        s.sni = f == null ? "" : f.sni;
+        s.publicKey = f == null ? "" : f.publicKey;
+        s.shortId = f == null ? "" : f.shortId;
     }
 
-    private View carrierRow(java.util.List<String> links, int i) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(6), 0, dp(6));
+    /** Пишет профили и пересобранную цепочку; ядро перезапускается, если VPN поднят. */
+    private void persistProfiles() {
+        try {
+            SettingsStore store = new SettingsStore(this);
+            SettingsStore.Settings s = store.load();
+            applyProfiles(s);
+            store.save(s);
+            if (RupasVpnService.restartIfRunning(this)) {
+                LogBuffer.add("[profiles] цепочка изменена — перезапускаю ядро");
+            }
+            updateEndpointInfo();
+        } catch (Exception e) {
+            Toast.makeText(this, R.string.settings_save_failed, Toast.LENGTH_LONG).show();
+        }
+    }
 
-        TextView label = new TextView(this);
-        label.setText((i + 1) + ". " + ParseLink.describe(links.get(i)));
-        label.setTextColor(ContextCompat.getColor(this, R.color.ink));
-        label.setTextSize(13);
-        label.setSingleLine(true);
-        label.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        label.setLayoutParams(new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        row.addView(label);
+    /** core.Core.TestProfile(link, filesDir) есть только в новом AAR. */
+    private static final java.lang.reflect.Method TEST_PROFILE = lookupTestProfile();
 
-        int size = dp(44);
-        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(size, size);
-        bp.setMargins(dp(8), 0, 0, 0);
+    private static java.lang.reflect.Method lookupTestProfile() {
+        try {
+            return Core.class.getMethod("testProfile", String.class, String.class);
+        } catch (Throwable t) {
+            return null; // старый AAR: тест недоступен, наружу ничего не бросаем
+        }
+    }
 
-        TextView up = carrierButton("▲", R.string.btn_move_up);
-        up.setLayoutParams(bp);
-        up.setEnabled(i > 0);
-        final int pos = i;
-        up.setOnClickListener(v -> {
-            swap(links, pos, pos - 1);
-            // Фиксируем перестановку ДО перерисовки: renderCarriers читает
-            // pendingLinks, иначе swap молча откатывается (bug 2026-10-27).
-            pendingLinks = String.join("\n", links);
-            renderCarriers();
+    private boolean testAvailable() {
+        return TEST_PROFILE != null;
+    }
+
+    /** Вызов как в CoreBridge: рефлексия, текст ошибки движка — как есть. */
+    private String callTestProfile(String link) throws Exception {
+        try {
+            return (String) TEST_PROFILE.invoke(null, link, getFilesDir().getAbsolutePath());
+        } catch (java.lang.reflect.InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            throw (cause instanceof Exception) ? (Exception) cause : e;
+        }
+    }
+
+    private void startProfileTest(final SettingsStore.Profile p) {
+        if (!testAvailable() || runningTestId != null) return;
+        runningTestId = p.id;
+        renderProfiles();
+        testExecutor.execute(() -> {
+            TestResult r;
+            try {
+                r = parseTestResult(callTestProfile(p.link));
+            } catch (Throwable t) {
+                String why = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
+                r = new TestResult(false, getString(R.string.profile_test_fail, why));
+            }
+            final TestResult result = r;
+            runOnUiThread(() -> {
+                runningTestId = null;
+                testResults.put(p.id, result);
+                if (!isFinishing() && !isDestroyed()) renderProfiles();
+            });
         });
-        row.addView(up);
-
-        TextView down = carrierButton("▼", R.string.btn_move_down);
-        down.setLayoutParams(bp);
-        down.setEnabled(i + 1 < links.size());
-        down.setOnClickListener(v -> {
-            swap(links, pos, pos + 1);
-            pendingLinks = String.join("\n", links);
-            renderCarriers();
-        });
-        row.addView(down);
-        return row;
     }
 
-    /**
-     * Круглая кнопка перестановки. Специально не MaterialButton: у
-     * программно созданной MaterialButton с фиксированным размером глиф
-     * не отрисовывается (кватирк темы, live finding 2026-10-27) — TextView
-     * с овальным GradientDrawable рисует текст гарантированно.
-     */
-    private TextView carrierButton(String arrow, int cdRes) {
-        TextView b = new TextView(this);
-        b.setText(arrow);
-        b.setContentDescription(getString(cdRes));
-        b.setTextSize(14);
-        b.setGravity(android.view.Gravity.CENTER);
-        b.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
-        android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
-        bg.setShape(android.graphics.drawable.GradientDrawable.OVAL);
-        bg.setColor(ContextCompat.getColor(this, R.color.accent_soft));
-        b.setBackground(bg);
-        b.setTextColor(ContextCompat.getColor(this, R.color.accent));
-        return b;
+    /** {"ok":bool,"ms":int,"stage":"start|dial|payload|busy","err":"…"} → строка карточки. */
+    private TestResult parseTestResult(String raw) {
+        JSONObject o;
+        try {
+            o = new JSONObject(raw == null ? "" : raw);
+        } catch (org.json.JSONException e) {
+            return new TestResult(false, getString(R.string.profile_test_fail, String.valueOf(raw)));
+        }
+        if (o.optBoolean("ok", false)) {
+            return new TestResult(true, getString(R.string.profile_test_ok, o.optInt("ms", 0)));
+        }
+        String err = o.optString("err", "").trim();
+        if (err.isEmpty()) {
+            String stage = o.optString("stage", "").trim();
+            err = stage.isEmpty()
+                    ? getString(R.string.profile_test_unavailable)
+                    : getString(R.string.profile_test_stage, stage);
+        }
+        return new TestResult(false, getString(R.string.profile_test_fail, err));
     }
 
-    private static void swap(java.util.List<String> l, int a, int b) {
-        if (a < 0 || b < 0 || a >= l.size() || b >= l.size()) return;
-        String t = l.set(a, l.get(b));
-        l.set(b, t);
-    }
+    /** Результат проверки профиля: ok + готовая строка для карточки. */
+    private static final class TestResult {
+        final boolean ok;
+        final String text;
 
-    private int dp(int v) {
-        return Math.round(getResources().getDisplayMetrics().density * v);
+        TestResult(boolean ok, String text) {
+            this.ok = ok;
+            this.text = text;
+        }
     }
 
     private static String plural(long n, String one, String few, String many) {

@@ -117,29 +117,104 @@ public final class ParseLink {
      * (hy2 разворачивается в hysteria2).
      */
     public static String describe(String link) {
-        String scheme = "";
-        int se = link.indexOf("://");
-        if (se > 0) {
-            scheme = link.substring(0, se);
-        }
-        if (scheme.equals("hy2")) {
-            scheme = "hysteria2";
-        }
-        String label = "";
-        int h = link.indexOf('#');
-        if (h >= 0) {
-            label = link.substring(h + 1).trim();
-        }
+        String scheme = scheme(link);
+        String label = fragment(link);
         if (label.isEmpty()) {
-            Matcher m = SCHEME_HOST_PORT.matcher(link);
-            if (m.matches()) {
-                label = m.group(3) + ":" + m.group(4);
-            }
+            label = hostPort(link);
         }
         if (scheme.isEmpty()) {
             return label.isEmpty() ? link : label;
         }
         return label.isEmpty() ? scheme : scheme + " · " + label;
+    }
+
+    /** Метка профиля: ярлык из '#' (декодированный), иначе хост:порт, иначе схема. */
+    public static String label(String link) {
+        if (link == null || link.trim().isEmpty()) {
+            return "";
+        }
+        String label = fragment(link);
+        if (label.isEmpty()) {
+            label = hostPort(link);
+        }
+        if (label.isEmpty()) {
+            label = scheme(link);
+        }
+        return label;
+    }
+
+    /**
+     * Вторая строка карточки профиля: тип · хост:порт · SNI.
+     * Тип — reality для vless с security=reality/pbk, иначе схема (hy2 → hysteria2).
+     */
+    public static String subtitle(String link) {
+        if (link == null || link.trim().isEmpty()) {
+            return "";
+        }
+        String type = scheme(link);
+        if ("vless".equals(type)
+                && (link.contains("security=reality") || link.contains("pbk="))) {
+            type = "reality";
+        }
+        String host = hostPort(link);
+        String sni = param(link, "sni");
+        StringBuilder sb = new StringBuilder(type);
+        if (!host.isEmpty()) {
+            if (sb.length() > 0) sb.append(" · ");
+            sb.append(host);
+        }
+        if (!sni.isEmpty()) {
+            if (sb.length() > 0) sb.append(" · ");
+            sb.append(sni);
+        }
+        return sb.toString();
+    }
+
+    /** Схема ссылки, hy2 развёрнута в hysteria2; "" если ссылка битая. */
+    private static String scheme(String link) {
+        int se = link == null ? -1 : link.indexOf("://");
+        if (se <= 0) {
+            return "";
+        }
+        String s = link.substring(0, se);
+        return s.equals("hy2") ? "hysteria2" : s;
+    }
+
+    /** Ярлык после '#' (декодированный), "" если фрагмента нет. */
+    private static String fragment(String link) {
+        int h = link == null ? -1 : link.indexOf('#');
+        if (h < 0 || h + 1 >= link.length()) {
+            return "";
+        }
+        return urlDecode(link.substring(h + 1).trim());
+    }
+
+    /** "хост:порт" из authority, "" если ссылка не разбирается. */
+    private static String hostPort(String link) {
+        Matcher m = link == null ? null : SCHEME_HOST_PORT.matcher(link.trim());
+        if (m == null || !m.matches()) {
+            return "";
+        }
+        return m.group(3).replace("[", "").replace("]", "") + ":" + m.group(4);
+    }
+
+    /** Значение query-параметра (до '#'); "" если его нет. */
+    private static String param(String link, String key) {
+        int q = link == null ? -1 : link.indexOf('?');
+        if (q < 0) {
+            return "";
+        }
+        int end = link.indexOf('#');
+        String query = end > q ? link.substring(q + 1, end) : link.substring(q + 1);
+        for (String kv : query.split("&")) {
+            if (kv.startsWith(key + "=")) {
+                String v = kv.substring(key.length() + 1);
+                if (!v.isEmpty()) {
+                    return urlDecode(v);
+                }
+            }
+        }
+        return "";
     }
 
     private static String abbreviate(String s) {

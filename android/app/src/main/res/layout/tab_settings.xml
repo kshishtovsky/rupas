@@ -100,6 +100,86 @@
                     android:src="@drawable/ic_chevron_right" />
             </LinearLayout>
 
+            <!-- Профили VPN (0.5.0): карточки с вкл/выкл, тестом и порядком перебора -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="@dimen/space_s"
+                android:background="@drawable/bg_card"
+                android:orientation="vertical"
+                android:padding="@dimen/space_m">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0"
+                    android:text="@string/profiles_title"
+                    android:textColor="@color/ink_2"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:fontFamily="sans-serif"
+                    android:text="@string/profiles_hint"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/tvNoProfiles"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_xs"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="@string/profiles_none_enabled"
+                    android:textColor="@color/warn"
+                    android:textSize="13sp"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/tvProfilesEmpty"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_xs"
+                    android:fontFamily="sans-serif"
+                    android:text="@string/profiles_empty"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="13sp" />
+
+                <LinearLayout
+                    android:id="@+id/llProfiles"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_s"
+                    android:orientation="vertical" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnImport"
+                    style="@style/Widget.Rupas.Button.Secondary"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/control_height"
+                    android:layout_marginTop="@dimen/space_xs"
+                    android:text="@string/profile_add" />
+            </LinearLayout>
+
+            <!-- Плоская форма эндпоинта — вторичный путь, спрятана по умолчанию -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnToggleServerFields"
+                style="@style/Widget.Rupas.Button.Secondary"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/control_height"
+                android:layout_marginBottom="@dimen/space_xs"
+                android:text="@string/profile_show_fields" />
+
+            <LinearLayout
+                android:id="@+id/llServerFields"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -249,6 +329,7 @@
                         android:textColor="@color/ink" />
                 </com.google.android.material.textfield.TextInputLayout>
             </LinearLayout>
+            </LinearLayout>
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -336,48 +417,6 @@
                     android:fontFamily="sans-serif"
                     android:layout_marginTop="@dimen/space_xs" />
             </LinearLayout>
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="@drawable/bg_card"
-                android:orientation="vertical"
-                android:padding="@dimen/space_m"
-                android:layout_marginBottom="@dimen/space_m">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/settings_section_priorities"
-                    android:textColor="@color/ink_2"
-                    android:textSize="15sp"
-                    android:fontFamily="sans-serif-medium"
-                    android:letterSpacing="0"
-                    android:layout_marginBottom="@dimen/space_xs" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/settings_priorities_hint"
-                    android:textColor="@color/ink_soft"
-                    android:textSize="12sp"
-                    android:fontFamily="sans-serif"
-                    android:layout_marginBottom="@dimen/space_xs" />
-
-                <LinearLayout
-                    android:id="@+id/llCarriers"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical" />
-            </LinearLayout>
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnImport"
-                style="@style/Widget.Rupas.Button.Secondary"
-                android:layout_width="match_parent"
-                android:layout_height="@dimen/control_height"
-                android:layout_marginBottom="@dimen/space_xs"
-                android:text="@string/btn_import_vless" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnSave"

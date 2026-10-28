@@ -40,18 +40,33 @@ dev ──PR──► master ──► CI: тип коммитов → bump VERS
 
 ## Ручной запуск и переиздание
 
-- Пересобрать артефакты для текущего `VERSION`: Actions → Release → Run
-  workflow (job `version` ничего не выпустит без новых `feat`/`fix`, сборки
-  останутся пропущенными).
-- Выпустить релиз принудительно: сначала `bash scripts/bump.sh patch` (меняет
-  `VERSION`), затем пуш в `master` с коммитом `fix: ...` — либо вручную поставить
-  тег:
+- Пересобрать артефакты для уже существующего тега (после починки CI,
+  добавления ассета, ручной пересборки): Actions → Release → Run workflow →
+  input `tag` = `v0.7.0`. Job `version` не бампает, а берёт версию из тега;
+  сборки и `publish` прогоняются заново.
+- Пуш самого тега тоже собирает артефакты (`on.push.tags: v*`), но работает
+  только для тегов, созданных уже с этой версией workflow.
+- Выпустить новую версию принудительно: `bash scripts/bump.sh patch` (меняет
+  `VERSION`), затем пуш в `master` с коммитом `fix: ...`.
 
 ```bash
-git tag v0.6.1 && git push origin v0.6.1
+# переиздание без нового бампа
+gh workflow run release.yml -f tag=v0.7.0
 ```
 
 Тег без коммита `VERSION` разойдётся с приложениями: сначала правь `VERSION`.
+
+## Грабли CI (проверено на практике)
+
+- `android-actions/setup-android@v3` падает: он вызывает `sdkmanager tools`,
+  а такого пакета в cmdline-tools 16 больше нет. SDK на ubuntu-раннере уже
+  стоит — вызывай `sdkmanager` по полному пути из `$ANDROID_SDK_ROOT`.
+- `sdkmanager` нет в PATH без setup-android — путь
+  `$ANDROID_SDK_ROOT/cmdline-tools/*/bin/sdkmanager`.
+- AGP 8 не генерирует `BuildConfig` без `buildFeatures { buildConfig true }`;
+  `BuildConfig.VERSION_NAME` в коде иначе не компилируется.
+- Версия в `outputs.version` не должна содержать `v`: tag `v0.7.0` → `0.7.0`,
+  иначе downstream-джобы делают checkout `vv0.7.0` и падают.
 
 ## Откат
 

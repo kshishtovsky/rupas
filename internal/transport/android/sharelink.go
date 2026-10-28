@@ -10,6 +10,7 @@ package android
 // client (internal/tunnel xhttp.go) instead of the relay.
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -55,7 +56,37 @@ type Endpoint struct {
 	Service   string // grpc service name
 	Mode      string // xhttp mode (packet-up supported)
 
+	// Mux turns on sing-mux multiplexing for VLESS (all flows share a small
+	// pool of long-lived TLS connections). Off by default: xray servers do
+	// not demux sing-mux, and un-multiplexed behaviour is the wave-6 default.
+	Mux string // "on" | ""
+	// MuxConns is the pool size (1..8). One TLS connection is capped by its
+	// own TCP window (measured: 227 of 540 Mbit/s at RTT 55 ms); four reach
+	// the path bandwidth (422 Mbit/s) while the connection count stays
+	// browser-like.
+	MuxConns int
+
 	Name string // fragment (#tag), logging only
+}
+
+// MaxMuxConns caps the mux pool (same bound as config.MaxMuxConns).
+const MaxMuxConns = 8
+
+// MuxOn reports whether the endpoint multiplexes its flows.
+func (e Endpoint) MuxOn() bool { return strings.EqualFold(strings.TrimSpace(e.Mux), "on") }
+
+// MuxPool is the effective pool size: 1..MaxMuxConns, 1 when mux is off.
+func (e Endpoint) MuxPool() int {
+	if !e.MuxOn() {
+		return 1
+	}
+	if e.MuxConns < 1 {
+		return 1
+	}
+	if e.MuxConns > MaxMuxConns {
+		return MaxMuxConns
+	}
+	return e.MuxConns
 }
 
 // NeedsXHTTP reports whether the endpoint must be carried by Rupas' own
@@ -152,6 +183,24 @@ func parseVLESSLink(raw string) (Endpoint, error) {
 		}
 	default:
 		return Endpoint{}, fmt.Errorf("sharelink: vless: unsupported transport %q", e.Transport)
+	}
+	// Mux knobs: Xray panels ship them as ?mux=on&mux_conns=N (some use
+	// muxConcurrency/muxMaxConnections for xmux; we only read the pool size).
+	e.Mux = strings.TrimSpace(q.Get("mux"))
+	if e.Mux != "" && !strings.EqualFold(e.Mux, "on") && !strings.EqualFold(e.Mux, "off") {
+		return Endpoint{}, fmt.Errorf("sharelink: vless: mux %q: want on|off", e.Mux)
+	}
+	if raw := q.Get("mux_conns"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > MaxMuxConns {
+			return Endpoint{}, fmt.Errorf("sharelink: vless: mux_conns %q: want 1..%d", raw, MaxMuxConns)
+		}
+		e.MuxConns = n
+	}
+	if e.Transport == transportXHTTP && e.MuxOn() {
+		// Our own XHTTP client carries one request stream per flow; it has no
+		// mux layer, so silently ignoring mux would be a lie.
+		return Endpoint{}, errors.New("sharelink: vless: mux is not supported on xhttp")
 	}
 	return e, nil
 }

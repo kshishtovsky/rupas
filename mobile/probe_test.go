@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/kshishtovsky/rupas/internal/transport/android"
 )
 
 // decodeProbe asserts the frozen key set and returns the parsed result.
@@ -94,5 +96,38 @@ func TestRedactTruncates(t *testing.T) {
 	}
 	if !utf8.ValidString(wide) {
 		t.Fatalf("truncation split a rune: %q", wide)
+	}
+}
+
+// XHTTP-профиль обязан проверяться ТЕМ ЖЕ клиентом, что несёт трафик.
+// Регресс: probe всегда шёл через relay.DialTCPIndex, а у xhttp нет
+// sing-box inbound (relay.Available()==false) — профиль показывал
+// «Не работает: tunnel unavailable» при полностью живом туннеле.
+func TestProbeUsesOwnClientForXHTTP(t *testing.T) {
+	link := "vless://11111111-2222-3333-4444-555555555555@vps.example.net:443" +
+		"?security=tls&sni=vps.example.net&type=xhttp&path=/x&mode=packet-up"
+	ep, err := android.ParseShareLink(link)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !ep.NeedsXHTTP() {
+		t.Fatal("эндпоинт должен требовать свой XHTTP-клиент")
+	}
+	// Диалер строится без сети: ошибка конфигурации вернулась бы здесь.
+	if _, err := android.XHTTPDialer(ep, func(string) {}); err != nil {
+		t.Fatalf("XHTTPDialer: %v", err)
+	}
+}
+
+// Не-xhttp эндпоинт идёт через sing-box и не должен звать XHTTPDialer.
+func TestProbeUsesRelayForBoxKinds(t *testing.T) {
+	link := "vless://11111111-2222-3333-4444-555555555555@vps.example.net:443" +
+		"?security=reality&sni=vps.example.net&pbk=AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKKKLL&sid=999e2fd9&type=tcp"
+	ep, err := android.ParseShareLink(link)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if ep.NeedsXHTTP() {
+		t.Fatal("tcp/reality не должен считаться xhttp")
 	}
 }

@@ -436,21 +436,29 @@ func endpointOutbound(e Endpoint, server, tag, protectPath string) option.Outbou
 	default: // vless
 		flow := e.Flow
 		packetEncoding := "xudp"
-		return option.Outbound{
-			Type: "vless",
-			Tag:  tag,
-			Options: &option.VLESSOutboundOptions{
-				DialerOptions:  dialer,
-				ServerOptions:  option.ServerOptions{Server: server, ServerPort: e.Port},
-				UUID:           e.UUID,
-				Flow:           flow,
-				PacketEncoding: &packetEncoding,
-				OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{
-					TLS: tlsOut,
-				},
-				Transport: buildTransport(e),
+		vless := &option.VLESSOutboundOptions{
+			DialerOptions:  dialer,
+			ServerOptions:  option.ServerOptions{Server: server, ServerPort: e.Port},
+			UUID:           e.UUID,
+			Flow:           flow,
+			PacketEncoding: &packetEncoding,
+			OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{
+				TLS: tlsOut,
 			},
+			Transport: buildTransport(e),
 		}
+		if e.MuxOn() {
+			// One TLS connection is capped by its own TCP window: measured
+			// 227 of 540 Mbit/s at RTT 55 ms, four reach the path bandwidth
+			// (422 Mbit/s). MaxConnections keeps the count bounded so the
+			// endpoint does not look like a connect storm to behavioural DPI.
+			vless.Multiplex = &option.OutboundMultiplexOptions{
+				Enabled:        true,
+				Protocol:       "h2mux",
+				MaxConnections: e.MuxPool(),
+			}
+		}
+		return option.Outbound{Type: "vless", Tag: tag, Options: vless}
 	}
 }
 

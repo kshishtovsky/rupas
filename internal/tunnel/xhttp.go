@@ -335,6 +335,9 @@ type xhttpConn struct {
 	wg        sync.WaitGroup
 	writeErr  error
 	writeErrM sync.Mutex
+	postFailN atomic.Int64  // failed packet-up POSTs (data loss events)
+	closedCh  chan struct{} // test hook: closed when the stream is torn down
+	closeOnce sync.Once     // Close is idempotent: a POST failure races the relay's own Close
 	body      io.ReadCloser // download stream (VLESS response header skipped lazily)
 	respGone  bool          // VLESS response header consumed
 	pending   []byte        // VLESS request header, prepended to POST seq 0
@@ -475,12 +478,16 @@ func (c *xhttpConn) Read(b []byte) (int, error) {
 }
 
 func (c *xhttpConn) Close() error {
-	c.cancel()
-	c.tconn.Close() //nolint:errcheck // best-effort teardown
-	c.wg.Wait()
-	if c.body != nil {
-		c.body.Close() //nolint:errcheck
-	}
+	c.closeOnce.Do(func() {
+		c.cancel()
+		if c.tconn != nil {
+			c.tconn.Close() //nolint:errcheck // best-effort teardown
+		}
+		c.wg.Wait()
+		if c.body != nil {
+			c.body.Close() //nolint:errcheck
+		}
+	})
 	return nil
 }
 
@@ -493,8 +500,29 @@ func (c *xhttpConn) SetWriteDeadline(t time.Time) error { return c.tconn.SetWrit
 
 func (c *xhttpConn) setWriteErr(err error) {
 	c.writeErrM.Lock()
-	if c.writeErr == nil {
+	first := c.writeErr == nil
+	if first {
 		c.writeErr = err
 	}
 	c.writeErrM.Unlock()
+	if !first {
+		return
+	}
+	// A failed packet-up POST means bytes the client already got an ACK for
+	// will never reach the server. Waiting for the next Write to notice is a
+	// silent hang: an idle upload (Telegram waiting for its own ack) simply
+	// never writes again. Tear the stream down NOW so the TCP terminator
+	// RSTs the client and the application-level retry happens.
+	c.postFailN.Add(1)
+	go c.cancelAndClose()
+}
+
+// cancelAndClose aborts the stream once: cancel makes every in-flight
+// request and blocked Read return, Close waits for the POST goroutines.
+func (c *xhttpConn) cancelAndClose() {
+	if c.closedCh != nil {
+		close(c.closedCh)
+	}
+	c.cancel()
+	_ = c.Close()
 }

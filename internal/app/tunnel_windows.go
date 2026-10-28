@@ -71,6 +71,9 @@ func tunnelEndpointConfigured(cfg *config.Config) bool {
 // through the primary vless_tcp connection triggers a ~5-min TSPU quarantine
 // of the whole primary endpoint — live finding 2026-10-25).
 func tunnelFallbackFirstPrefixes(cfg *config.Config) []netip.Prefix {
+	if cfg.DisableFallbackFirst {
+		return nil // A/B knob: TUNNEL CIDRs ride the primary endpoint
+	}
 	var out []netip.Prefix
 	for _, cidr := range tunnelCIDRs(cfg.Rules) {
 		if p, err := netip.ParsePrefix(cidr); err == nil {

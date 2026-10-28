@@ -217,6 +217,13 @@ func (e *Engine) buildCarriers(ctx context.Context) {
 	}
 }
 
+// XHTTPDialer exposes the own XHTTP client as a dial function for callers
+// outside the engine (the profile probe). Same code path as the carrier, so
+// a probe can never disagree with the tunnel about an xhttp endpoint.
+func XHTTPDialer(ep Endpoint, logf func(string)) (func(ctx context.Context, dst netip.AddrPort) (net.Conn, error), error) {
+	return newXHTTPCarrier(ep, logf)
+}
+
 // newXHTTPCarrier maps a parsed endpoint onto the platform-neutral
 // internal/tunnel XHTTP client (packet-up, uTLS).
 func newXHTTPCarrier(ep Endpoint, logf func(string)) (func(ctx context.Context, dst netip.AddrPort) (net.Conn, error), error) {

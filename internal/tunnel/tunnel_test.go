@@ -460,7 +460,7 @@ func TestBoxOptionsMapping(t *testing.T) {
 	fb := &config.Endpoint{
 		Kind: config.KindVLESSReality,
 		Host: "vps.example.net", Port: 443,
-		UUID: "11111111-2222-3333-4444-555555555555",
+		UUID:       "11111111-2222-3333-4444-555555555555",
 		RealityPBK: "PUBKEYBASE64URL", RealitySID: "0123abcd",
 		SNI: "www.cloudflare.com", Fingerprint: "chrome_pq", UDPMode: "xudp",
 	}
@@ -475,7 +475,10 @@ func TestBoxOptionsMapping(t *testing.T) {
 	if main.ListenPort != 23456 {
 		t.Errorf("main mixed listen_port = %d, want 23456", main.ListenPort)
 	}
-	for i, want := range []struct{ tag string; port uint16 }{
+	for i, want := range []struct {
+		tag  string
+		port uint16
+	}{
 		{mixedFBTag, 23457}, {mixedUFBTag, 23458},
 	} {
 		got := opts.Inbounds[i+1]
@@ -583,7 +586,7 @@ func TestBoxOptionsMapping(t *testing.T) {
 func TestBoxOptionsSingleEndpoint(t *testing.T) {
 	ep := &config.Endpoint{
 		Kind: config.KindVLESSReality, Host: "vps.example.net", Port: 443,
-		UUID: "11111111-2222-3333-4444-555555555555",
+		UUID:       "11111111-2222-3333-4444-555555555555",
 		RealityPBK: "PUBKEYBASE64URL", SNI: "www.cloudflare.com",
 		Fingerprint: "chrome_pq", UDPMode: "xudp",
 	}
@@ -656,7 +659,7 @@ func TestValidatePlan(t *testing.T) {
 	base := func(kind string) *config.Endpoint {
 		return &config.Endpoint{
 			Kind: kind, Host: "a", Port: 1, SNI: "s",
-			UUID: "00000000-0000-0000-0000-000000000000",
+			UUID:     "00000000-0000-0000-0000-000000000000",
 			Password: "p", RealityPBK: "k", Path: "/x",
 		}
 	}

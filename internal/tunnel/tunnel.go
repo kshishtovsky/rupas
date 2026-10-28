@@ -246,9 +246,11 @@ type tunnel struct {
 
 	// pathDown tracks per-carrier failure cooldowns (dialOrder fast
 	// failover; wave 6).
-	pathMu     sync.Mutex
-	pathDown   map[string]time.Time
-	pathTokens map[string]*tokenBucket
+	pathMu      sync.Mutex
+	pathDown    map[string]time.Time
+	pathTokens  map[string]*tokenBucket
+	pacedSkipN  atomic.Uint64 // dials diverted by path pacing (burst throttle)
+	pacedWarnAt atomic.Int64
 }
 
 var _ Tunnel = (*tunnel)(nil)
@@ -621,6 +623,18 @@ func (t *tunnel) dialTCPFlow(src string, dst netip.AddrPort) net.Conn {
 			// (wave 6: >3 rapid vless connections quarantine the
 			// endpoint). Single-path plans never pace — nothing to
 			// overflow to.
+			//
+			// This used to be silent, which made a paced-out flow
+			// indistinguishable from a healthy one: it simply appeared on
+			// the other carrier (or failed). The counter and the
+			// rate-limited WARN are the only trace of "your burst was
+			// throttled to 0.5 dial/s".
+			t.pacedSkipN.Add(1)
+			if t.logger != nil && rateLimit(&t.pacedWarnAt, 2*time.Second) {
+				t.logger.Warn("tcp: dial paced out, riding the next carrier",
+					slog.String("path", path.name), slog.String("dst", dst.String()),
+					slog.Uint64("paced_total", t.pacedSkipN.Load()))
+			}
 			continue
 		}
 		conn, err := path.c.dial(ctx, dst)

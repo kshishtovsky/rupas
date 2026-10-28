@@ -1,6 +1,7 @@
 package android
 
 import (
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -197,5 +198,70 @@ func TestGeositeFile(t *testing.T) {
 	m := FlowMeta{Destination: netip.MustParseAddrPort("1.2.3.4:443"), Network: "tcp", SNI: "www.example.net"}
 	if a := r.Decide(m); a != ActionDirect {
 		t.Fatalf("geosite suffix match failed: %v", a)
+	}
+}
+
+// Mux: пул соединений в share-link (?mux=on&mux_conns=N).
+func TestShareLinkVLESSMux(t *testing.T) {
+	base := "vless://11111111-2222-3333-4444-555555555555@vps.example.net:443" +
+		"?security=reality&sni=vps.example.net&pbk=AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKKKLL&sid=999e2fd9&fp=chrome%s"
+
+	cases := []struct {
+		name    string
+		query   string
+		wantMux bool
+		wantN   int
+		fail    bool
+	}{
+		{"без mux", "", false, 1, false},
+		{"mux on по умолчанию 1", "&mux=on", true, 1, false},
+		{"mux on 4", "&mux=on&mux_conns=4", true, 4, false},
+		{"mux on 7", "&mux=on&mux_conns=7", true, 7, false},
+		{"mux off с числом", "&mux=off&mux_conns=4", false, 1, false},
+		{"mux мусор", "&mux=maybe", false, 0, true},
+		{"mux_conns выше границы", "&mux=on&mux_conns=9", false, 0, true},
+		{"mux_conns ноль", "&mux=on&mux_conns=0", false, 0, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ep, err := ParseShareLink(fmt.Sprintf(base, c.query))
+			if c.fail {
+				if err == nil {
+					t.Fatal("ждали ошибку")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if got := ep.MuxOn(); got != c.wantMux {
+				t.Fatalf("MuxOn = %v, ждали %v", got, c.wantMux)
+			}
+			if got := ep.MuxPool(); got != c.wantN {
+				t.Fatalf("MuxPool = %d, ждали %d", got, c.wantN)
+			}
+		})
+	}
+}
+
+// mux на xhttp отбивается: наш XHTTP-клиент не умеет мультиплексировать поток(и)
+// в одно соединение, и молча его игнорировать — врать пользователю.
+func TestShareLinkMuxRejectedOnXHTTP(t *testing.T) {
+	_, err := ParseShareLink("vless://11111111-2222-3333-4444-555555555555@vps.example.net:443" +
+		"?security=tls&sni=vps.example.net&type=xhttp&path=/x&mode=packet-up&mux=on")
+	if err == nil {
+		t.Fatal("ждали ошибку: mux на xhttp не поддержан")
+	}
+}
+
+// Пул ограничен сверху даже если в структуре выставили больше.
+func TestEndpointMuxPoolClamp(t *testing.T) {
+	ep := Endpoint{Mux: "on", MuxConns: 99}
+	if got := ep.MuxPool(); got != MaxMuxConns {
+		t.Fatalf("MuxPool = %d, ждали %d", got, MaxMuxConns)
+	}
+	ep = Endpoint{Mux: "on", MuxConns: 0}
+	if got := ep.MuxPool(); got != 1 {
+		t.Fatalf("MuxPool = %d, ждали 1", got)
 	}
 }

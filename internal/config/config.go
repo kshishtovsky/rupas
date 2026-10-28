@@ -180,6 +180,13 @@ type Endpoint struct {
 	// MuxPadding enables sing-mux padding (anti-length-analysis; needs
 	// server support — xray ≥ 1.8.6 / sing-box). Default off.
 	MuxPadding bool `yaml:"mux_padding,omitempty"`
+	// MuxConns is the size of the mux connector pool: how many parallel TLS
+	// connections carry multiplexed streams. One connection is capped by its
+	// own TCP window (measured: 227 of 540 Mbit/s on a 55 ms RTT path), four
+	// give the path's bandwidth (422 Mbit/s) while keeping the connection
+	// count bounded, so the endpoint does not look like a connect storm.
+	// Range 1..8, default 1 (wave 6 behaviour). Ignored unless Mux == "on".
+	MuxConns int `yaml:"mux_conns,omitempty"`
 }
 
 // IsZero reports whether no meaningful field of the endpoint is set.
@@ -279,8 +286,19 @@ func (e *Endpoint) Validate() error {
 	if e.Kind != KindHysteria2 && e.UDPMode == "" {
 		e.UDPMode = "xudp"
 	}
+	if e.MuxConns == 0 {
+		e.MuxConns = 1
+	}
+	if e.MuxConns < 1 || e.MuxConns > MaxMuxConns {
+		return fmt.Errorf("tunnel endpoint: mux_conns %d: want 1..%d", e.MuxConns, MaxMuxConns)
+	}
 	return nil
 }
+
+// MaxMuxConns caps the mux pool. Above ~8 concurrent TLS connections to one
+// (IP, SNI) pair the stream stops looking like a browser (6 per origin) and
+// behavioural DPI starts quarantining the endpoint.
+const MaxMuxConns = 8
 
 // ParsePaddingRange parses "N" or "N-M" into (lo, hi, err).
 func ParsePaddingRange(s string) (int, int, error) {
@@ -415,6 +433,13 @@ type Config struct {
 	Tunnels    *TunnelConfig  `yaml:"tunnels"` // wave-5 multi-transport plan
 	Exclusions Exclusions     `yaml:"exclusions"`
 	GeoIP      *GeoIP         `yaml:"geoip,omitempty"`
+	// DisableFallbackFirst turns off the wave-6 rule "TUNNEL-verdict CIDRs
+	// dial the fallback carrier first". That rule sends Telegram through the
+	// hysteria2 (QUIC) fallback, where every stream shares one association —
+	// a large media upload then starves the small flows behind it. Switching
+	// it off routes those flows over the primary VLESS endpoint instead, so
+	// the two paths can be A/B compared on a real connection.
+	DisableFallbackFirst bool `yaml:"disable_fallback_first,omitempty"`
 }
 
 var desyncStrategies = []string{"fake", "fake_split", "multisplit", "disorder", "disorder2"}

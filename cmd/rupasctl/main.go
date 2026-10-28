@@ -14,8 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rupas/rupas/internal/core"
-	"github.com/rupas/rupas/internal/rpc"
+	"github.com/kshishtovsky/rupas/internal/core"
+	"github.com/kshishtovsky/rupas/internal/rpc"
+	"github.com/kshishtovsky/rupas/internal/version"
 )
 
 const usage = `usage: rupasctl [-pipe \\.\pipe\rupasctl] [-config configs/rupas.yaml] <command>
@@ -35,7 +36,13 @@ func main() {
 	pipe := flag.String("pipe", rpc.DefaultPipe, "control named pipe path")
 	configPath := flag.String("config", "configs/rupas.yaml", "path to rupas YAML config")
 	timeout := flag.Duration("timeout", 3*time.Second, "connect timeout")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("rupasctl %s\n", version.Version)
+		return
+	}
 
 	cmd := ""
 	if flag.NArg() > 0 {
@@ -76,6 +83,7 @@ func run(pipePath string, timeout time.Duration, cmd string) error {
 		return fmt.Errorf("cannot reach daemon at %s (is rupasd running?): %w", pipePath, err)
 	}
 	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 
 	req, _ := json.Marshal(rpc.Request{Cmd: cmd})
 	if _, err := conn.Write(append(req, '\n')); err != nil {

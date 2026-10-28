@@ -465,9 +465,12 @@ func buildTLS(e Endpoint) *option.OutboundTLSOptions {
 	}
 	alpn := e.ALPN
 	if len(alpn) == 0 {
-		if e.Security == secReality {
+		if e.Kind == KindHysteria2 || e.Security == secReality {
 			// REALITY+Vision: no ALPN at all — h2 negotiation breaks the
 			// Vision stream, and xray reality profiles ship without ALPN.
+			// hysteria2: sing-quic substitutes h3 ONLY for an empty list
+			// (its hysteria2 inbound refuses anything else), so leave it
+			// empty and let the QUIC stack pick http/3.
 			alpn = nil
 		} else {
 			// Live finding 2026-10-26: without ALPN the xray vless_tcp

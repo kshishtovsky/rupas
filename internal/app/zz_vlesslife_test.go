@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/tunnel"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/tunnel"
 )
 
 // TestLiveVLESSLifetime: fresh CONNECTs through the plan every 5s for ~70s

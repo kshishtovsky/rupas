@@ -3,7 +3,7 @@ package rules
 import (
 	"testing"
 
-	"github.com/rupas/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/config"
 )
 
 // benchmarkTable is the default RU-ISP profile plus a v6 prefix so all

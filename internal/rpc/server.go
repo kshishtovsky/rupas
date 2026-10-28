@@ -18,11 +18,12 @@ import (
 	"runtime/pprof"
 	"strings"
 	"sync"
+	"time"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/core"
-	"github.com/rupas/rupas/internal/geoip"
-	"github.com/rupas/rupas/internal/rules"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/core"
+	"github.com/kshishtovsky/rupas/internal/geoip"
+	"github.com/kshishtovsky/rupas/internal/rules"
 )
 
 // DefaultPipe is the canonical control pipe path (§9).
@@ -35,6 +36,10 @@ const maxLineBytes = 64 * 1024
 // logTailLines is how many lifecycle events the "logs" command streams
 // (§11: "последние 100 событий").
 const logTailLines = 100
+
+// lineReadTimeout bounds one request line: a client that connects and stalls
+// must not pin a goroutine (and two 64KB pipe buffers) forever.
+const lineReadTimeout = 30 * time.Second
 
 // Request is one JSON-line command: {"cmd":"status|on|off|probe|reload|logs|rules|rules-set <json>|route-test <query>"}.
 // Commands that take an argument carry it inline after a single space, so the
@@ -165,17 +170,26 @@ func (s *Server) Close() error {
 
 func (s *Server) handleConn(conn io.ReadWriteCloser) {
 	defer conn.Close()
-	rd := bufio.NewReaderSize(conn, 4096)
+	// Bounded buffer: one oversized line is rejected instead of being
+	// buffered without limit; +1 lets a full maxLineBytes line through.
+	rd := bufio.NewReaderSize(conn, maxLineBytes+1)
 	wr := bufio.NewWriter(conn)
 	for {
-		line, err := rd.ReadBytes('\n')
-		if len(bytes.TrimSpace(line)) > 0 {
-			if s.handleLine(bytes.TrimSpace(line), wr) {
+		if d, ok := conn.(interface{ SetReadDeadline(time.Time) error }); ok {
+			_ = d.SetReadDeadline(time.Now().Add(lineReadTimeout))
+		}
+		line, err := rd.ReadSlice('\n')
+		if err == bufio.ErrBufferFull {
+			_ = s.write(wr, Response{OK: false, Error: "request too large"})
+			return // drop the client: the line exceeded the protocol cap
+		}
+		if line = bytes.TrimSpace(line); len(line) > 0 {
+			if s.handleLine(line, wr) {
 				return // stream finished or write failed: end of session
 			}
 		}
 		if err != nil {
-			return // EOF or broken pipe
+			return // EOF, broken pipe or read deadline
 		}
 	}
 }

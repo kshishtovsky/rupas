@@ -40,8 +40,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/internal/capture"
-	"github.com/rupas/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/capture"
+	"github.com/kshishtovsky/rupas/internal/config"
 	box "github.com/sagernet/sing-box"
 	boxAdapterCertificate "github.com/sagernet/sing-box/adapter/certificate"
 	boxAdapterEndpoint "github.com/sagernet/sing-box/adapter/endpoint"

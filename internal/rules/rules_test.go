@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/rupas/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/config"
 )
 
 // v4 builds a v4-mapped 16-byte address.

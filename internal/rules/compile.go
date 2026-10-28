@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/geoip"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/geoip"
 )
 
 // Compile builds an immutable decision Table from a validated config.

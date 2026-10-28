@@ -5,7 +5,7 @@ package capture
 import (
 	"sync/atomic"
 
-	"github.com/rupas/rupas/internal/core"
+	"github.com/kshishtovsky/rupas/internal/core"
 )
 
 // counters is the atomic twin of core.Counters for the hot path: every

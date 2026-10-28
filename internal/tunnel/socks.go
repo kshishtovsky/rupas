@@ -240,11 +240,10 @@ func socks5ReadReplyAddr(conn net.Conn) (netip.AddrPort, error) {
 		if _, err := io.ReadFull(conn, name); err != nil {
 			return netip.AddrPort{}, fmt.Errorf("%w: read bnd name: %w", errSocks5, err)
 		}
-		parsed, err := netip.ParseAddr(string(name))
-		if err != nil {
-			return netip.AddrPort{}, fmt.Errorf("%w: bnd name %q: %v", errSocks5, name, err)
-		}
-		addr = parsed
+		// A domain-form BND.ADDR is legal (RFC 1928) but useless to us: the
+		// relay address must be dialable here. Leave it invalid so the
+		// caller reports "invalid relay addr" instead of dying mid-stream.
+		addr = netip.Addr{}
 	default:
 		return netip.AddrPort{}, fmt.Errorf("%w: bad atyp %d", errSocks5, head[3])
 	}
@@ -286,11 +285,10 @@ func parseUDPFrame(b []byte) (netip.AddrPort, int, error) {
 		if len(b) < 5+n+2 {
 			return netip.AddrPort{}, 0, fmt.Errorf("%w: short name frame", errSocks5)
 		}
-		parsed, err := netip.ParseAddr(string(b[5 : 5+n]))
-		if err != nil {
-			return netip.AddrPort{}, 0, fmt.Errorf("%w: frame name: %v", errSocks5, err)
-		}
-		addr = parsed
+		// A domain-form source is legal but not dialable; both callers of
+		// receive() discard the address, so leave it invalid and keep the
+		// payload offset rather than killing the session.
+		addr = netip.Addr{}
 		off = 5 + n
 	default:
 		return netip.AddrPort{}, 0, fmt.Errorf("%w: bad frame atyp %d", errSocks5, b[3])

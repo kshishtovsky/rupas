@@ -19,7 +19,7 @@ package capture
 import (
 	"encoding/binary"
 
-	"github.com/rupas/rupas/internal/flowtable"
+	"github.com/kshishtovsky/rupas/internal/flowtable"
 )
 
 const (

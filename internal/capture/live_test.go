@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/rules"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/rules"
 )
 
 // TestLiveOpenRecvClose exercises the real driver through the engine:

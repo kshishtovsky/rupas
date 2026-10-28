@@ -187,6 +187,18 @@ func parseHysteria2Link(raw string) (Endpoint, error) {
 	if sni := q.Get("sni"); sni != "" {
 		e.SNI = sni
 	}
+	if alpn := q.Get("alpn"); alpn != "" {
+		for _, a := range strings.Split(alpn, ",") {
+			if a = strings.TrimSpace(a); a != "" {
+				e.ALPN = append(e.ALPN, a)
+			}
+		}
+	}
+	// obfs changes the wire framing; dropping it silently yields a carrier
+	// that connects and then speaks the wrong protocol — refuse instead.
+	if obfs := q.Get("obfs"); obfs != "" {
+		return Endpoint{}, fmt.Errorf("sharelink: hysteria2: obfs %q is not supported", obfs)
+	}
 	return e, nil
 }
 

@@ -3,7 +3,8 @@
 
 GO_TAGS_DESKTOP := with_utls with_quic
 GO_TAGS_MOBILE  := with_utls with_quic with_gvisor
-LDFLAGS         := -s -w
+VERSION         := $(shell cat VERSION)
+LDFLAGS         := -s -w -X github.com/kshishtovsky/rupas/internal/version.Version=$(VERSION)
 AAR_OUT         := android/app/libs/rupas-core.aar
 
 .PHONY: build gui aar apk dist test bench lint android-smoke

@@ -11,7 +11,7 @@ package desync
 import (
 	"fmt"
 
-	"github.com/rupas/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/config"
 )
 
 // Op — закрытое множество операций desync. Ядро capture исполняет их над

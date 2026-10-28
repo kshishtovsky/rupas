@@ -30,11 +30,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rupas/rupas/internal/capture"
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/desync"
-	"github.com/rupas/rupas/internal/rules"
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/internal/capture"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/desync"
+	"github.com/kshishtovsky/rupas/internal/rules"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 var (
@@ -231,20 +231,25 @@ func describe(pkt []byte, a *windivert.Address, since time.Duration) string {
 	dst := net.IP(pkt[16:20]).String()
 	ttlv := pkt[8]
 	ipid := binary.BigEndian.Uint16(pkt[4:6])
-	flags := binary.BigEndian.Uint16(pkt[ipLen : ipLen+2])
+	flags := pkt[ipLen+13] // control bits; ipLen+12 is data offset + NS
 	sport := binary.BigEndian.Uint16(pkt[ipLen : ipLen+2])
 	dport := binary.BigEndian.Uint16(pkt[ipLen+2 : ipLen+4])
 	seq := binary.BigEndian.Uint32(pkt[ipLen+4 : ipLen+8])
 	ack := binary.BigEndian.Uint32(pkt[ipLen+8 : ipLen+12])
 	win := binary.BigEndian.Uint16(pkt[ipLen+14 : ipLen+16])
 	dataOff := int(pkt[ipLen+12]>>4) * 4
+	if dataOff < 20 || ipLen+dataOff > len(pkt) {
+		// Legal-but-unusual or garbage doff (nibble up to 15 = 60 bytes):
+		// never slice past the captured packet.
+		return fmt.Sprintf("[%8.1fms] bad tcp doff %d len=%d", float64(since.Microseconds())/1000, dataOff, len(pkt))
+	}
 	pay := pkt[ipLen+dataOff:]
 	fl := []byte{}
 	for _, f := range []struct {
 		b byte
 		s string
 	}{{0x01, "FIN"}, {0x02, "SYN"}, {0x04, "RST"}, {0x08, "PSH"}, {0x10, "ACK"}} {
-		if flags&uint16(f.b) != 0 {
+		if flags&f.b != 0 {
 			fl = append(fl, f.s...)
 			fl = append(fl, '|')
 		}

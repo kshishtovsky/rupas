@@ -19,8 +19,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/geoip"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/geoip"
 )
 
 // Stage numbers of the fixed resolution order (SYSTEM_DESIGN §4.2):

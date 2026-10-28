@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/prober"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/prober"
 )
 
 // thresholdInjector reports success only at/above the threshold TTL
@@ -65,8 +65,14 @@ func TestProbeRunnerSavesProfileAfterCalibration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("profile not saved on disk: %v", err)
 	}
-	if prof.TTLStar != 13 || prof.TTLMargin != 2 || prof.Strategy != prober.StrategyFake {
+	if prof.TTLStar != 13 || prof.Strategy != prober.StrategyFake {
 		t.Fatalf("saved profile = %+v", prof)
+	}
+	// star+margin is exactly what the engine programs. The clamp keeps it at
+	// the ladder ceiling, so a margin of 0 is legitimate here (and required:
+	// a stale default margin would overshoot the verified window).
+	if total := prof.TTLStar + prof.TTLMargin; total < 13 {
+		t.Fatalf("programmed ttl %d does not pass the threshold 13: %+v", total, prof)
 	}
 	if prof.CalIP != "192.0.2.10" || prof.CalSNI != "www.youtube.com" {
 		t.Fatalf("calibration target = %s/%s", prof.CalIP, prof.CalSNI)
@@ -80,8 +86,8 @@ func TestProbeRunnerSavesProfileAfterCalibration(t *testing.T) {
 	if fs == nil {
 		t.Fatal("QuickStart = nil, want the persisted profile")
 	}
-	if fs.Desync.TTL != 13 || fs.Desync.TTLMargin != 2 {
-		t.Fatalf("fast-start desync = %+v", fs.Desync)
+	if fs.Desync.TTL != 13 || fs.Desync.TTL+fs.Desync.TTLMargin < 13 {
+		t.Fatalf("fast-start desync = %+v (programmed ttl must pass the calibrated window)", fs.Desync)
 	}
 }
 

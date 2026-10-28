@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/config"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/json/badoption"
 	"golang.org/x/crypto/curve25519"

@@ -18,9 +18,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/geoip"
-	"github.com/rupas/rupas/internal/rules"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/geoip"
+	"github.com/kshishtovsky/rupas/internal/rules"
 )
 
 // Rule kinds rendered by the screen: one per matcher, exactly the keys the

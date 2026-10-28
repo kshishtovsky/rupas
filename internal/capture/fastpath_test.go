@@ -4,8 +4,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/rupas/rupas/internal/flowtable"
-	"github.com/rupas/rupas/internal/rules"
+	"github.com/kshishtovsky/rupas/internal/flowtable"
+	"github.com/kshishtovsky/rupas/internal/rules"
 )
 
 // hookRecorder is a fake TunnelTCP: records fed packets.

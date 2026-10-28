@@ -5,9 +5,9 @@ package capture
 import (
 	"testing"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/flowtable"
-	"github.com/rupas/rupas/internal/rules"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/flowtable"
+	"github.com/kshishtovsky/rupas/internal/rules"
 )
 
 // TestAllocsPerRunZero pins the §3.2 invariant: 0 heap allocations per

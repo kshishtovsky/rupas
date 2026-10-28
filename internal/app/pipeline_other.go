@@ -6,8 +6,8 @@ import (
 	"errors"
 	"log"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/supervisor"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/supervisor"
 )
 
 // unsupportedPipeline keeps non-Windows builds compiling: the capture

@@ -28,13 +28,13 @@ const (
 // TestRelayDialLive dials a real destination through the started relay and
 // prints what comes back — the on-device "unknown version: 72" triage.
 func TestRelayDialLive(t *testing.T) {
-	links := `{"fallback":true,"links":[` +
-		`"vless://332a87e4-4321-4027-ae49-72a6b67641af@45.67.202.247:12341?type=tcp&security=reality&pbk=shVXc1efjMDpqp8787otzjXqH2xByJTvXkHHLx2PFAQ&sid=999e2fd9&fp=chrome&sni=aws.amazon.com&flow=xtls-rprx-vision#rupas-reality",` +
-		`"vless://d4550250-3222-431e-b8cc-eac9b45bcd7f@mylifemyrulesonline.ru:4443?type=xhttp&encryption=none&path=%2FsteamVideo&host=mylifemyrulesonline.ru&mode=packet-up&x_padding_bytes=100-1000&security=tls&fp=chrome&alpn=h2%2Chttp%2F1.1&sni=mylifemyrulesonline.ru#rupas-xhttp",` +
-		`"hysteria2://7PRCfc5F8X@45.67.202.247:53552?security=tls&fp=chrome&alpn=h3&sni=mylifemyrulesonline.ru#rupas-hy2"]}`
-	if env := os.Getenv("RELAY_LINKS"); env != "" {
-		links = `{"fallback":true,"links":` + env + `}`
+	// Endpoints come from the environment: no real credentials in git
+	// (AGENTS.md invariant 6).
+	env := os.Getenv("RELAY_LINKS")
+	if env == "" {
+		t.Skip("set RELAY_LINKS to run against a real endpoint")
 	}
+	links := `{"fallback":true,"links":` + env + `}`
 	s, err := ParseSettings(links)
 	if err != nil {
 		t.Fatalf("ParseSettings: %v", err)
@@ -48,7 +48,7 @@ func TestRelayDialLive(t *testing.T) {
 	defer r.Close()
 	// Dump the outbound options JSON for diffing against the desktop.
 	if len(r.endpoints) > 0 && !r.endpoints[0].NeedsXHTTP() {
-		if raw, err := json.MarshalContext(ctx, endpointOutbound(r.endpoints[0], "45.67.202.247", "rupas-out-0", "").Options); err == nil {
+		if raw, err := json.MarshalContext(ctx, endpointOutbound(r.endpoints[0], r.endpoints[0].Host, "rupas-out-0", "").Options); err == nil {
 			t.Logf("ANDROID_OUTBOUND=%s", raw)
 		}
 	}

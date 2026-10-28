@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 // TestLiveReverseInjectRule: for INBOUND injections, does delivery depend

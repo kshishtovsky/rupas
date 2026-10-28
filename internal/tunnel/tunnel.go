@@ -29,7 +29,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/rupas/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/config"
 )
 
 // Tunnel is the tunnel-core contract consumed by the supervisor (§2, §6).
@@ -789,21 +789,43 @@ func (t *tunnel) TCPDialer() func(ctx context.Context, dst string) (net.Conn, er
 		}
 		var c net.Conn
 		multi := len(t.tcpChain()) > 1
-		for _, path := range t.dialOrder(ap) {
-			if multi && path.paced && !t.takePathToken(path.name) {
-				continue // rate-limited: overflow rides the next carrier
-			}
+		// paced out of the first pass: retried unpaced only if nothing else
+		// works (see the last-resort loop below).
+		var skipped []namedTCP
+		try := func(path namedTCP) bool {
 			conn, err := path.c.dial(ctx, ap)
 			if err != nil {
 				t.logger.Warn("term: path dial failed",
 					slog.String("path", path.name), slog.String("dst", dst),
 					slog.Any("err", err))
 				t.markPathFailure(path.name)
-				continue
+				return false
 			}
 			t.markPathSuccess(path.name)
 			c = conn
-			break
+			return true
+		}
+		for _, path := range t.dialOrder(ap) {
+			if multi && path.paced && !t.takePathToken(path.name) {
+				skipped = append(skipped, path)
+				continue // rate-limited: overflow rides the next carrier
+			}
+			if try(path) {
+				break
+			}
+		}
+		if c == nil {
+			// Pacing must never leave ZERO carriers. When the paced primary
+			// is rate-limited and the fallbacks are dead, "ride the next
+			// carrier" means no connection at all (live 2026-10-28: a dead
+			// hysteria2 fallback blackholed every flow past 2 rapid dials
+			// while the primary was healthy). An unpaced dial is the lesser
+			// risk: the bucket still paces the common path.
+			for _, path := range skipped {
+				if try(path) {
+					break
+				}
+			}
 		}
 		if c == nil {
 			return nil, errors.New("term: every tunnel path failed")

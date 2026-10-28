@@ -214,11 +214,9 @@ func socks5ReadReplyAddr(conn net.Conn) (netip.AddrPort, error) {
 		if _, err := io.ReadFull(conn, name); err != nil {
 			return netip.AddrPort{}, fmt.Errorf("%w: read bnd name: %w", errSocks5, err)
 		}
-		parsed, err := netip.ParseAddr(string(name))
-		if err != nil {
-			return netip.AddrPort{}, fmt.Errorf("%w: bnd name %q: %v", errSocks5, name, err)
-		}
-		addr = parsed
+		// A domain BND.ADDR is legal (RFC 1928) and the caller discards it
+		// (CONNECT) — only the offset matters, so the name stays unresolved.
+		// addr keeps its zero value (invalid AddrPort).
 	default:
 		return netip.AddrPort{}, fmt.Errorf("%w: bad atyp %d", errSocks5, head[3])
 	}
@@ -262,11 +260,9 @@ func parseUDPFrame(b []byte) (netip.AddrPort, int, error) {
 		if len(b) < 5+n+2 {
 			return netip.AddrPort{}, 0, fmt.Errorf("%w: short name frame", errSocks5)
 		}
-		parsed, err := netip.ParseAddr(string(b[5 : 5+n]))
-		if err != nil {
-			return netip.AddrPort{}, 0, fmt.Errorf("%w: frame name: %v", errSocks5, b[5:5+n])
-		}
-		addr = parsed
+		// A domain source is legal (RFC 1928) and the source is discarded:
+		// only the payload offset matters, so the name is not resolved.
+		// addr keeps its zero value (invalid AddrPort).
 		off = 5 + n
 	default:
 		return netip.AddrPort{}, 0, fmt.Errorf("%w: bad frame atyp %d", errSocks5, b[3])

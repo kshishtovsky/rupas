@@ -17,9 +17,9 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbletea"
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/core"
-	"github.com/rupas/rupas/internal/rpc"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/core"
+	"github.com/kshishtovsky/rupas/internal/rpc"
 	"gopkg.in/yaml.v3"
 )
 
@@ -91,6 +91,7 @@ func rpcCommand(pipePath, cmd string, timeout time.Duration) (rpcResult, error) 
 		return rpcResult{}, fmt.Errorf("%w: %v", errNoDaemon, err)
 	}
 	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 
 	req, _ := json.Marshal(rpc.Request{Cmd: cmd})
 	if _, err := conn.Write(append(req, '\n')); err != nil {

@@ -5,7 +5,7 @@ package capture
 import (
 	"errors"
 
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 // ErrStopped is returned by Transport implementations after Shutdown has

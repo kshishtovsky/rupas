@@ -3,7 +3,7 @@ package rules
 import (
 	"net"
 
-	"github.com/rupas/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/config"
 )
 
 // cidrNode is a node of the binary prefix trie: one child per bit value.

@@ -13,8 +13,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/geoip"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/geoip"
 )
 
 // On sends the RPC `on` (assumes EnsureDaemon already ran).
@@ -90,18 +90,25 @@ func (c *Controller) SaveLinks(blob string) ([]string, error) {
 	if err != nil {
 		return warnings, err
 	}
-	cfg := presetConfig(true)
-	if tcp != nil || udp != nil || fb != nil {
-		cfg.Tunnels = &config.TunnelConfig{TCP: tcp, UDP: udp, Fallback: fb}
+	// Nothing parsed: writing the bare preset would drop the live tunnels,
+	// exclusions and custom rules, and nil tunnels make every TUNNEL rule
+	// escalate to direct. Refuse before touching the file.
+	if tcp == nil && udp == nil && fb == nil {
+		return warnings, errors.New("нет рабочих ссылок: нужен vless (tcp/xhttp) или hysteria2 — trojan/ws десктоп-ядро не поддерживает")
 	}
-	if err := c.writeConfig(cfg); err != nil {
+	cfg := presetConfig(true)
+	cfg.Tunnels = &config.TunnelConfig{TCP: tcp, UDP: udp, Fallback: fb}
+	// ErrDaemonDown means "written to disk, not confirmed": keep the file
+	// (design contract) but still surface it so the UI can say so.
+	err = c.writeConfig(cfg)
+	if err != nil && !errors.Is(err, ErrDaemonDown) {
 		return warnings, err
 	}
-	if err := saveLinksFile(blob); err != nil {
-		return warnings, fmt.Errorf("конфиг сохранён, но список ссылок — нет: %w", err)
+	if lerr := saveLinksFile(blob); lerr != nil {
+		return warnings, fmt.Errorf("конфиг сохранён, но список ссылок — нет: %w", lerr)
 	}
 	c.setGateway(tcp, udp)
-	return warnings, nil
+	return warnings, err
 }
 
 // writeConfig runs the TUI save contract: engine validation on a temp file,
@@ -124,13 +131,26 @@ func (c *Controller) writeConfig(cfg config.Config) error {
 		return fmt.Errorf("конфиг не прошёл валидацию: %w", err)
 	}
 	if _, err := os.Stat(path); err == nil {
-		_ = os.Rename(path, path+".bak")
+		// No backup, no save: a failed .bak (sharing violation) would make a
+		// rollback restore the PREVIOUS generation and lose the last good file.
+		if err := os.Rename(path, path+".bak"); err != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("не удалось создать backup %s: %w", path+".bak", err)
+		}
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}
-	if resp, err := CallPipe(c.opts.Pipe, "reload", 5*time.Second); err == nil && !resp.OK {
-		_ = os.Rename(path+".bak", path)
+	resp, err := CallPipe(c.opts.Pipe, "reload", 5*time.Second)
+	if err != nil {
+		// Daemon unreachable: the validated config stays on disk for its next
+		// start (save contract), but the save is NOT confirmed.
+		return fmt.Errorf("%w — конфиг записан, демон его не загрузил: %v", ErrDaemonDown, err)
+	}
+	if !resp.OK {
+		if err := os.Rename(path+".bak", path); err != nil {
+			return fmt.Errorf("демон отклонил конфиг: %s; откат не удался: %w", resp.Error, err)
+		}
 		return fmt.Errorf("демон отклонил конфиг: %s (откат)", resp.Error)
 	}
 	return nil

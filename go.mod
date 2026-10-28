@@ -1,4 +1,4 @@
-module github.com/rupas/rupas
+module github.com/kshishtovsky/rupas
 
 go 1.26.0
 

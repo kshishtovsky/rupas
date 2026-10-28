@@ -18,10 +18,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/geoip"
-	"github.com/rupas/rupas/internal/rules"
-	"github.com/rupas/rupas/internal/transport/android"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/geoip"
+	"github.com/kshishtovsky/rupas/internal/rules"
+	"github.com/kshishtovsky/rupas/internal/transport/android"
 )
 
 // Platform is the reverse-bound interface implemented on the Java side

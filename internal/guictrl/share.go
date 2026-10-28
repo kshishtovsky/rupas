@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rupas/rupas/internal/config"
-	android "github.com/rupas/rupas/internal/transport/android"
+	"github.com/kshishtovsky/rupas/internal/config"
+	android "github.com/kshishtovsky/rupas/internal/transport/android"
 )
 
 // Channel is one parsed share link with its desktop role and warnings.

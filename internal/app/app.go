@@ -27,12 +27,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/core"
-	"github.com/rupas/rupas/internal/desync"
-	"github.com/rupas/rupas/internal/rules"
-	"github.com/rupas/rupas/internal/supervisor"
-	"github.com/rupas/rupas/internal/tunnel"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/core"
+	"github.com/kshishtovsky/rupas/internal/desync"
+	"github.com/kshishtovsky/rupas/internal/rules"
+	"github.com/kshishtovsky/rupas/internal/supervisor"
+	"github.com/kshishtovsky/rupas/internal/tunnel"
 )
 
 // Options tunes App construction. The zero value is usable: the tunnel

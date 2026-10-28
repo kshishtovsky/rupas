@@ -240,5 +240,8 @@ search:
 	if cal.Effective > opt.Hi {
 		cal.Effective = opt.Hi
 	}
+	// The clamp must reach the margin too: callers persist Margin and the
+	// engine programs Star+Margin, so a stale margin overshoots Hi.
+	cal.Margin = cal.Effective - cal.Star
 	return cal, nil
 }

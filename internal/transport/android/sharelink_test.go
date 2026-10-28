@@ -101,6 +101,28 @@ func TestParseOtherProtocols(t *testing.T) {
 	}
 }
 
+func TestParseHysteria2ALPNAndObfs(t *testing.T) {
+	hy, err := ParseShareLink("hysteria2://pw@hy.example.com:53552?sni=hy.example.com&alpn=h3")
+	if err != nil {
+		t.Fatalf("alpn link: %v", err)
+	}
+	if len(hy.ALPN) != 1 || hy.ALPN[0] != "h3" {
+		t.Fatalf("alpn = %v, want [h3]", hy.ALPN)
+	}
+	plain, err := ParseShareLink("hysteria2://pw@hy.example.com:53552?sni=hy.example.com")
+	if err != nil {
+		t.Fatalf("no-alpn link: %v", err)
+	}
+	if len(plain.ALPN) != 0 {
+		t.Fatalf("no-alpn endpoint carries %v, want empty", plain.ALPN)
+	}
+	// obfs is rejected: silently dropping it yields a carrier that connects
+	// and then speaks the wrong protocol.
+	if _, err := ParseShareLink("hysteria2://pw@hy.example.com:53552?obfs=salamander&obfs-password=x"); err == nil {
+		t.Fatal("obfs link accepted")
+	}
+}
+
 func TestSettingsEndpointsChain(t *testing.T) {
 	s, err := ParseSettings(`{"uuid":"u","server":"old.example.com","port":12341,"sni":"sni.example.com","fallback":true,
 		"links":["vless://u1@p1.example.com:443?security=tls&type=tcp","vless://u2@p2.example.com:4443?security=tls&type=xhttp&path=%2Fx","hysteria2://p3@p3.example.com:53552"]}`)

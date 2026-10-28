@@ -5,7 +5,7 @@ package app
 import (
 	"log"
 
-	"github.com/rupas/rupas/internal/prober"
+	"github.com/kshishtovsky/rupas/internal/prober"
 )
 
 // newFakeInjector returns nil off Windows: TTL calibration needs the

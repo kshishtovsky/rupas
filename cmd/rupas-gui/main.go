@@ -9,6 +9,7 @@ package main
 import (
 	"embed"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -16,7 +17,8 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 
-	"github.com/rupas/rupas/internal/guictrl"
+	"github.com/kshishtovsky/rupas/internal/guictrl"
+	"github.com/kshishtovsky/rupas/internal/version"
 )
 
 //go:embed all:frontend/dist
@@ -31,7 +33,13 @@ func main() {
 	daemonPath := flag.String("daemon", "", "rupasd.exe path (with -startdaemon)")
 	configPath := flag.String("config", "", "rupas YAML config path")
 	logPath := flag.String("log", "", "daemon log path")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("rupas-gui %s\n", version.Version)
+		return
+	}
 
 	if *wipeProfile {
 		if err := guictrl.RunWipeProfileFlag(); err != nil {

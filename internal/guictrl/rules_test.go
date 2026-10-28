@@ -2,13 +2,23 @@ package guictrl
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/rupas/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/config"
 )
+
+// savedOffline tolerates the "daemon unreachable" warning: the save contract
+// keeps the file on disk and only reports that reload is unconfirmed.
+func savedOffline(t *testing.T, err error) {
+	t.Helper()
+	if err != nil && !errors.Is(err, ErrDaemonDown) {
+		t.Fatalf("save: %v", err)
+	}
+}
 
 // newRulesController points a Controller at a throwaway config (no daemon:
 // the reload call fails, which the save contract tolerates).
@@ -118,9 +128,7 @@ func TestSaveRulesKeepsTunnelAndApplies(t *testing.T) {
 		{"sni":"example.com","action":"desync"},
 		{"action":"block"}
 	]`
-	if err := c.SaveRules(rulesJSON); err != nil {
-		t.Fatalf("SaveRules: %v", err)
-	}
+	savedOffline(t, c.SaveRules(rulesJSON))
 	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("reload saved config: %v", err)
@@ -158,9 +166,7 @@ func TestSaveRulesRejectsInvalid(t *testing.T) {
 
 func TestApplyPresets(t *testing.T) {
 	c, path := newRulesController(t, rulesFixture)
-	if err := c.ApplyPreset("all-direct"); err != nil {
-		t.Fatalf("ApplyPreset: %v", err)
-	}
+	savedOffline(t, c.ApplyPreset("all-direct"))
 	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatal(err)
@@ -169,9 +175,7 @@ func TestApplyPresets(t *testing.T) {
 		t.Errorf("all-direct rules = %+v", cfg.Rules)
 	}
 
-	if err := c.ApplyPreset(PresetOwner); err != nil {
-		t.Fatalf("ApplyPreset(owner): %v", err)
-	}
+	savedOffline(t, c.ApplyPreset(PresetOwner))
 	cfg, err = config.Load(path)
 	if err != nil {
 		t.Fatal(err)

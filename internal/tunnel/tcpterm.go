@@ -63,6 +63,10 @@ type Terminator struct {
 
 	// stormDrops counts SYNs dropped by the gate.
 	stormDrops atomic.Uint64
+	// strayRST counts data segments of flows we had no state for and reset
+	// (an already-established connection caught by the fast path: without
+	// this counter the only symptom is "everything died when I turned it on").
+	strayRST atomic.Uint64
 
 	wg sync.WaitGroup
 }
@@ -205,8 +209,9 @@ func NewTerminator(send PacketSender, dial func(ctx context.Context, dst string)
 
 // TermStats is the terminator's diagnostic snapshot.
 type TermStats struct {
-	Conns       int
-	StormDrops  uint64
+	Conns      int
+	StormDrops uint64
+	StrayRST   uint64
 }
 
 // Stats returns a point-in-time snapshot (diagnostics/logging).
@@ -217,7 +222,7 @@ func (tm *Terminator) Stats() TermStats {
 		n = len(tm.conns)
 	}
 	tm.mu.Unlock()
-	return TermStats{Conns: n, StormDrops: tm.stormDrops.Load()}
+	return TermStats{Conns: n, StormDrops: tm.stormDrops.Load(), StrayRST: tm.strayRST.Load()}
 }
 
 // SetAdmission installs the health gate (nil disables it). Call before
@@ -242,9 +247,14 @@ func (tm *Terminator) Feed(p TermPkt) {
 	c := tm.conns[k]
 	if c == nil {
 		if p.Flags&termSYN == 0 || p.Flags&termACK != 0 {
-			// Data without a SYN we answered (late retransmit after
-			// teardown, or a race): reset the stray.
+			// Data without a SYN we answered: capture already CONSUMED this
+			// packet, so nobody else can deliver it. Dropping it silently is
+			// what kills an established connection the moment interception
+			// starts (every retransmit dies the same way, the flow never
+			// recovers). Answer with one forged RST so the client re-dials at
+			// once and the fresh SYN is the one we terminate.
 			tm.mu.Unlock()
+			tm.resetStray(p)
 			return
 		}
 		// Admission (health) gate first, storm gate second: the day-long
@@ -271,6 +281,54 @@ func (tm *Terminator) Feed(p TermPkt) {
 	c.feed(p)
 }
 
+// resetStray forges one RST|ACK from the original destination for a data
+// segment of a flow the terminator holds no state for (see Feed) and injects
+// it at the client. Shape per RFC 793 for a reset in response to an ACKed
+// segment: seq = the segment's ack (what the client expects next from the
+// server), ack = seq + payload length. The client re-dials at once, and that
+// fresh SYN is the one the terminator can serve.
+func (tm *Terminator) resetStray(p TermPkt) {
+	const ipLen, tcpLen = 20, 20
+	pkt := craftBuf(ipLen + tcpLen)
+	pkt = pkt[:ipLen+tcpLen]
+	for i := range pkt {
+		pkt[i] = 0 // pooled buffer: stale bytes would poison the checksums
+	}
+	pkt[0] = 0x45
+	binary.BigEndian.PutUint16(pkt[2:], uint16(ipLen+tcpLen))
+	pkt[4], pkt[5] = 0x12, 0x34
+	pkt[6], pkt[7] = 0x40, 0x00 // DF
+	pkt[8] = 64
+	pkt[9] = 6
+	copy(pkt[12:16], p.DstIP[:]) // src = the "server"
+	copy(pkt[16:20], p.SrcIP[:]) // dst = the client
+	sum := ipChecksum(pkt[:20])
+	pkt[10], pkt[11] = byte(sum>>8), byte(sum)
+
+	tcp := pkt[ipLen:]
+	binary.BigEndian.PutUint16(tcp[0:], p.DstPort)
+	binary.BigEndian.PutUint16(tcp[2:], p.SrcPort)
+	binary.BigEndian.PutUint32(tcp[4:], p.Ack)
+	binary.BigEndian.PutUint32(tcp[8:], p.Seq+uint32(len(p.Payload)))
+	tcp[12] = 5 << 4 // data offset, no options
+	tcp[13] = termRST | termACK
+
+	var pseudo [12]byte
+	copy(pseudo[0:4], p.DstIP[:])
+	copy(pseudo[4:8], p.SrcIP[:])
+	pseudo[8] = 6
+	binary.BigEndian.PutUint16(pseudo[10:], tcpLen)
+	tcpSum := ipChecksum2(pseudo[:], tcp)
+	tcp[16], tcp[17] = byte(tcpSum>>8), byte(tcpSum)
+
+	if err := tm.send.SendInboundTCP(pkt, p.IfIdx, p.SubIfIdx); err != nil {
+		tm.log.Debug("term: stray reset inject failed",
+			slog.String("err", err.Error()))
+	}
+	putCraftBuf(pkt)
+	tm.strayRST.Add(1)
+}
+
 // Close tears down every connection and stops the sweeper.
 func (tm *Terminator) Close() {
 	tm.mu.Lock()
@@ -284,7 +342,7 @@ func (tm *Terminator) Close() {
 	tm.mu.Unlock()
 	close(tm.stopSweep)
 	for _, c := range conns {
-		c.kill(false, "shutdown")
+		c.kill("shutdown")
 	}
 	tm.wg.Wait()
 }
@@ -314,7 +372,7 @@ func (tm *Terminator) sweepLoop() {
 		}
 		tm.mu.Unlock()
 		for _, c := range idle {
-			c.kill(true, "idle sweep")
+			c.kill("idle sweep")
 		}
 	}
 }
@@ -475,8 +533,18 @@ func (c *termConn) start() {
 		up, err := c.tm.dial(ctx, dst)
 		c.mu.Lock()
 		c.upstream, c.dialErr = up, err
-		close(c.dialDone)
+		dead := c.dead
 		c.mu.Unlock()
+		close(c.dialDone)
+		if dead {
+			// The flow died while the dial was in flight (client RST, shutdown):
+			// kill saw upstream == nil, so nobody will ever close this conn and a
+			// pump blocked in Read would hang Terminator.Close forever.
+			if up != nil {
+				_ = up.Close()
+			}
+			return
+		}
 		if err != nil {
 			c.tm.log.Info("term: carrier dial failed",
 				slog.String("flow", c.flowDesc()), slog.Any("err", err))
@@ -498,7 +566,7 @@ func (c *termConn) feed(p TermPkt) {
 
 	// RST from the client: tear everything down.
 	if p.Flags&termRST != 0 {
-		c.kill(false, "client rst")
+		c.kill("client rst")
 		return
 	}
 
@@ -540,7 +608,7 @@ func (c *termConn) feed(p TermPkt) {
 		if c.finSent && p.Ack == c.serverNext+1 {
 			// Client ACKed our FIN: done.
 			c.mu.Unlock()
-			c.kill(false, "client fin acked")
+			c.kill("client fin acked")
 			return
 		}
 	}
@@ -1043,7 +1111,7 @@ func (c *termConn) sendData(b []byte) bool {
 		c.mu.Unlock()
 		if err := c.tm.send.SendInboundTCP(pkt, c.ifIdx(), c.subIfIdx()); err != nil {
 			c.tm.log.Warn("term: data inject failed", slog.String("err", err.Error()))
-			c.kill(false, "data inject failed: "+err.Error())
+			c.kill("data inject failed: "+err.Error())
 			putCraftBuf(pkt)
 			return false
 		}
@@ -1156,7 +1224,7 @@ func (c *termConn) sendFIN() {
 	c.mu.Unlock()
 	if err := c.tm.send.SendInboundTCP(pkt, c.ifIdx(), c.subIfIdx()); err != nil {
 		c.tm.log.Warn("term: fin inject failed", slog.String("err", err.Error()))
-		c.kill(false, "fin inject failed: "+err.Error())
+		c.kill("fin inject failed: "+err.Error())
 	}
 	putCraftBuf(pkt)
 }
@@ -1181,19 +1249,21 @@ func (c *termConn) reset(reason error) {
 	} else {
 		c.mu.Unlock()
 	}
-	c.kill(false, "reset: "+reason.Error())
+	c.kill("reset: "+reason.Error())
 }
 
-// kill closes the upstream relay and marks the conn dead; remove=true also
-// drops it from the table (sweeper path). reason is logged once — WARN for
-// relay failures, DEBUG for the orderly teardowns (shutdown/idle/RST/FIN).
+// kill closes the upstream relay, marks the conn dead and drops it from the
+// table: a dead conn left behind swallows every retransmitted SYN on the same
+// 4-tuple (no SYN-ACK, no dial) until the idle sweep. reason is logged once —
+// WARN for relay failures, DEBUG for the orderly teardowns (shutdown/idle/RST/
+// FIN).
 //
 // The upstream Close runs on a DETACHED goroutine: kill is reached from feed
 // on the capture receive goroutine (a client RST, a dial failure, a reset),
 // and net.Conn.Close on a carrier socket can block on a TLS close_notify
 // write. The conn is already marked dead before the close starts, so no
 // reader can observe a half-closed relay.
-func (c *termConn) kill(remove bool, reason string) {
+func (c *termConn) kill(reason string) {
 	c.closeOne.Do(func() {
 		lvl := slog.LevelWarn
 		switch reason {
@@ -1208,16 +1278,18 @@ func (c *termConn) kill(remove bool, reason string) {
 		up := c.upstream
 		c.mu.Unlock()
 		if up != nil {
+			// Wake a pump parked in Read even if Close itself blocks on a
+			// TLS close_notify write: Close is what Terminator.Close waits for.
+			_ = up.SetReadDeadline(time.Now())
 			go func() { _ = up.Close() }()
 		}
 	})
-	if remove {
-		c.tm.mu.Lock()
-		if c.tm.conns != nil {
-			delete(c.tm.conns, c.k)
-		}
-		c.tm.mu.Unlock()
+	// Map identity check: a newer conn on the same 4-tuple must survive.
+	c.tm.mu.Lock()
+	if c.tm.conns != nil && c.tm.conns[c.k] == c {
+		delete(c.tm.conns, c.k)
 	}
+	c.tm.mu.Unlock()
 }
 
 // ---------------------------------------------------------------------------

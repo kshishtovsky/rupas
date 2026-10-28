@@ -113,6 +113,10 @@ func parseClientHello(b []byte) (Result, error) {
 		return res, nil
 	}
 
+	if off+1 >= len(body) {
+		// Body ends one byte short of the extensions length field.
+		return Result{}, ErrMalformed
+	}
 	extLen := int(body[off])<<8 | int(body[off+1])
 	off += 2
 	if off+extLen > len(body) {

@@ -19,13 +19,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/internal/capture"
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/core"
-	"github.com/rupas/rupas/internal/prober"
-	"github.com/rupas/rupas/internal/rpc"
-	"github.com/rupas/rupas/internal/rules"
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/internal/capture"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/core"
+	"github.com/kshishtovsky/rupas/internal/prober"
+	"github.com/kshishtovsky/rupas/internal/rpc"
+	"github.com/kshishtovsky/rupas/internal/rules"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 // ensureDLL adds the repository's build/windivert directory to PATH so

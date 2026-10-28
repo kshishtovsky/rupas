@@ -5,30 +5,43 @@ package tunnel
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"log/slog"
 	"net"
 	"net/netip"
+	"os"
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/config"
 )
 
 // TestLiveXHTTPDial dials a real destination through the exported XHTTP
 // dialer (the mobile carrier path) and reads a 204 back.
-// Run: go test -tags "live with_utls" -run TestLiveXHTTPDial -v ./internal/tunnel
+// Run: RELAY_XHTTP_ENDPOINT='{"host":"…","port":443,"uuid":"…","sni":"…","path":"/…","mode":"packet-up"}' \
+//
+//	go test -tags "live with_utls" -run TestLiveXHTTPDial -v ./internal/tunnel
+//
+// The endpoint comes from the environment: hardcoding it here would commit a
+// live credential (AGENTS.md invariant 6).
 func TestLiveXHTTPDial(t *testing.T) {
-	ep := config.Endpoint{
-		Kind:        config.KindVLESSXHTTP,
-		Host:        "45.67.202.247",
-		Port:        4443,
-		UUID:        "d4550250-3222-431e-b8cc-eac9b45bcd7f",
-		SNI:         "mylifemyrulesonline.ru",
-		ALPN:        []string{"h2", "http/1.1"},
-		Fingerprint: "chrome",
-		Path:        "/steamVideo",
-		Mode:        "packet-up",
-		XPadding:    "100-1000",
+	raw := os.Getenv("RELAY_XHTTP_ENDPOINT")
+	if raw == "" {
+		t.Skip("set RELAY_XHTTP_ENDPOINT to run against a real endpoint")
+	}
+	var ep config.Endpoint
+	if err := json.Unmarshal([]byte(raw), &ep); err != nil {
+		t.Fatalf("RELAY_XHTTP_ENDPOINT: %v", err)
+	}
+	ep.Kind = config.KindVLESSXHTTP
+	if len(ep.ALPN) == 0 {
+		ep.ALPN = []string{"h2", "http/1.1"}
+	}
+	if ep.Fingerprint == "" {
+		ep.Fingerprint = "chrome"
+	}
+	if ep.XPadding == "" {
+		ep.XPadding = "100-1000"
 	}
 	// Probe destinations: :443 serves TLS only — a PLAINTEXT request there
 	// is closed silently by Google with zero bytes (empty EOF) for ANY

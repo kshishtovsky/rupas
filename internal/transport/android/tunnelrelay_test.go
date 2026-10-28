@@ -132,13 +132,15 @@ func TestPeekNonTLSTimesOutCleanly(t *testing.T) {
 // loopback port (a mock of a dead socks inbound).
 func deadRelayEngine(t *testing.T, fallback bool, log *syncBuffer) *Engine {
 	t.Helper()
+	settings := &Settings{UUID: "u", Server: "127.0.0.1", Port: 1, Fallback: fallback}
 	return &Engine{
-		verdict:  DirectVerdict,
-		protect:  func(int) bool { return true },
-		logFn:    log.line,
-		dialer:   ProtectedDialer(func(int) bool { return true }),
-		settings: &Settings{UUID: "u", Server: "127.0.0.1", Port: 1, Fallback: fallback},
-		rules:    CompileRules(),
+		verdict:   DirectVerdict,
+		protect:   func(int) bool { return true },
+		logFn:     log.line,
+		dialer:    ProtectedDialer(func(int) bool { return true }),
+		settings:  settings,
+		endpoints: []Endpoint{settings.legacyEndpoint()},
+		rules:     CompileRules(),
 		// Relay present but never started → socks dial refused fast.
 		relay: NewRelay(&Settings{UUID: "u", Server: "127.0.0.1", Port: 1, Fallback: fallback},
 			func(line string) { log.line(line) }),

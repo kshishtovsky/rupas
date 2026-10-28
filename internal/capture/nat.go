@@ -5,9 +5,9 @@ package capture
 import (
 	"encoding/binary"
 
-	"github.com/rupas/rupas/internal/core"
-	"github.com/rupas/rupas/internal/flowtable"
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/internal/core"
+	"github.com/kshishtovsky/rupas/internal/flowtable"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 // natKey identifies the client side of a NAT-redirected flow. The loopback

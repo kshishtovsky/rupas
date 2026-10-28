@@ -9,7 +9,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/rupas/rupas/internal/rpc"
+	"github.com/kshishtovsky/rupas/internal/rpc"
 )
 
 // CallPipe sends one command and reads one response line.

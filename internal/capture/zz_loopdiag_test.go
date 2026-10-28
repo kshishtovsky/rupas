@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/rules"
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/rules"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 // TestLiveLoopbackDiag answers two questions with the real driver:

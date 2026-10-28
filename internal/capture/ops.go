@@ -5,9 +5,9 @@ package capture
 import (
 	"encoding/binary"
 
-	"github.com/rupas/rupas/internal/core"
-	"github.com/rupas/rupas/internal/desync"
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/internal/core"
+	"github.com/kshishtovsky/rupas/internal/desync"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 // FAKE-INJECT TIMING DOCTRINE (wave 4A, fixed 2026-10-25; parity with the
@@ -77,8 +77,7 @@ func (e *Engine) applyDesync(pkt []byte, p *pktInfo, addr *windivert.Address, sn
 			e.injectFake(base, baseAddr, o)
 		case desync.SplitAt:
 			if !split {
-				e.sendSplit(pkt, p, addr, o.Offset)
-				split = true
+				split = e.sendSplit(pkt, p, addr, o.Offset)
 			}
 		default:
 			// Unknown op from a newer desync engine: ignore, the original
@@ -174,9 +173,12 @@ func (e *Engine) injectFake(base []byte, addr *windivert.Address, op desync.Inje
 // The TCP window field is deliberately left untouched: the advertised window
 // is a property of the connection's socket buffer, not of the segment, and
 // rewriting it would corrupt flow control.
-func (e *Engine) sendSplit(orig []byte, p *pktInfo, addr *windivert.Address, off uint32) {
+//
+// Returns false when it sent nothing (degenerate offset): the caller must then
+// forward the original segment itself, or the ClientHello never egresses.
+func (e *Engine) sendSplit(orig []byte, p *pktInfo, addr *windivert.Address, off uint32) bool {
 	if int(off) <= 0 || int(off) >= len(p.payload) {
-		return // degenerate split: nothing to do
+		return false // degenerate split: nothing to send
 	}
 	hl := p.hdrLen()
 
@@ -186,11 +188,11 @@ func (e *Engine) sendSplit(orig []byte, p *pktInfo, addr *windivert.Address, off
 	binary.BigEndian.PutUint16(orig[2:4], uint16(part1Len))
 	if err := e.transport.FixChecksums(orig[:part1Len], addr); err != nil {
 		e.sendErr()
-		return
+		return true // never also re-send the whole segment
 	}
 	if err := e.transport.Send(orig[:part1Len], addr); err != nil {
 		e.sendFailed(err)
-		return
+		return true
 	}
 	e.sendOK()
 
@@ -207,7 +209,7 @@ func (e *Engine) sendSplit(orig []byte, p *pktInfo, addr *windivert.Address, off
 	if err := e.transport.FixChecksums(buf, &part2Addr); err != nil {
 		e.sendErr()
 		e.putScratch(buf)
-		return
+		return true
 	}
 	if err := e.transport.Send(buf, &part2Addr); err != nil {
 		e.sendFailed(err)
@@ -215,4 +217,5 @@ func (e *Engine) sendSplit(orig []byte, p *pktInfo, addr *windivert.Address, off
 		e.sendOK()
 	}
 	e.putScratch(buf)
+	return true
 }

@@ -7,7 +7,7 @@ package rules
 import (
 	"fmt"
 
-	"github.com/rupas/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/config"
 )
 
 // Action is re-exported so hot-path callers do not need to import config.

@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/internal/inspector"
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/internal/inspector"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 // TestLiveCHSniff is an on-the-machine diagnostic: for RUPAS_CH_SNIFF_SECONDS

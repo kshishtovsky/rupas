@@ -14,7 +14,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/rupas/rupas/internal/core"
+	"github.com/kshishtovsky/rupas/internal/core"
 )
 
 // testServer starts a Server on a fresh test pipe and waits until the
@@ -263,4 +263,27 @@ func TestSDDLParses(t *testing.T) {
 		t.Fatalf("bad SECURITY_ATTRIBUTES: %+v sd=%x", sa, sd)
 	}
 	procLocalFree.Call(sd)
+}
+
+// TestPipeRejectsOversizedLine: a line past maxLineBytes is rejected from the
+// bounded read buffer instead of being accumulated, and the client dropped.
+func TestPipeRejectsOversizedLine(t *testing.T) {
+	deps, _ := testDeps()
+	srv := testServer(t, deps)
+	c := dial(t, srv.pipe)
+	defer c.close()
+
+	go func() {
+		// No newline: the server must stop reading at its cap, not at EOF.
+		_, _ = c.f.Write(make([]byte, 2*maxLineBytes))
+	}()
+	_ = c.f.SetReadDeadline(time.Now().Add(5 * time.Second))
+	line, err := c.rd.ReadBytes('\n')
+	if err != nil {
+		t.Fatalf("no rejection line, got err %v (%q)", err, line)
+	}
+	var r Response
+	if json.Unmarshal(line, &r) != nil || r.OK || r.Error != "request too large" {
+		t.Fatalf("oversize answer = %q", line)
+	}
 }

@@ -4,6 +4,7 @@ package android
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 )
@@ -12,7 +13,13 @@ import (
 // legacy flat settings (vless tcp): Start must not panic and must report
 // its failure reason clearly.
 func TestRelayStartLiveShape(t *testing.T) {
-	s, err := ParseSettings(`{"uuid":"6ba3bb34-c41d-4e47-a724-18aac84b4d4f","server":"203.0.113.10","port":12341,"sni":"example.com","fallback":true}`)
+	// Legacy flat settings from the environment: no credentials in git
+	// (AGENTS.md invariant 6).
+	raw := os.Getenv("RELAY_LEGACY_SETTINGS")
+	if raw == "" {
+		t.Skip("set RELAY_LEGACY_SETTINGS to run against a real endpoint")
+	}
+	s, err := ParseSettings(raw)
 	if err != nil {
 		t.Fatalf("ParseSettings: %v", err)
 	}

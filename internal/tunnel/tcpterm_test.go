@@ -261,6 +261,57 @@ func TestTerminatorDialFailureRSTs(t *testing.T) {
 	}
 }
 
+// TestTerminatorRSTFreesTuple: a killed (client RST) conn must leave the
+// table, so the client's retried SYN on the SAME 4-tuple is answered with a
+// fresh SYN-ACK instead of hitting the dead entry and being swallowed.
+func TestTerminatorRSTFreesTuple(t *testing.T) {
+	sender := &fakeTermSender{}
+	dialed := make(chan struct{}, 1)
+	dial := func(ctx context.Context, dst string) (net.Conn, error) {
+		c, s := net.Pipe()
+		_ = c.Close()
+		select {
+		case dialed <- struct{}{}:
+		default:
+		}
+		return s, nil
+	}
+	tm := NewTerminator(sender, dial, nil)
+	defer tm.Close()
+
+	countSynACK := func() int {
+		n := 0
+		for _, p := range sender.sent() {
+			if pp := parseTerm(t, p); pp.flags == termSYN|termACK {
+				n++
+			}
+		}
+		return n
+	}
+
+	termFeed(tm, termSYN, 4000, 0, nil)
+	select {
+	case <-dialed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("carrier dial never started")
+	}
+	if n := countSynACK(); n != 1 {
+		t.Fatalf("SYN-ACKs after first SYN = %d, want 1", n)
+	}
+
+	// Client RST: kills the conn and must drop it from the table.
+	termFeed(tm, termRST, 4001, 0, nil)
+	if n := tm.Stats().Conns; n != 0 {
+		t.Fatalf("conns after client RST = %d, want 0 (dead conn left in the table)", n)
+	}
+
+	// Retried SYN, same source port: a new conn must answer.
+	termFeed(tm, termSYN, 5000, 0, nil)
+	if n := countSynACK(); n != 2 {
+		t.Fatalf("SYN-ACKs after retried SYN = %d, want 2 (retry swallowed by a dead conn)", n)
+	}
+}
+
 func TestTerminatorWindowBlocksUntilACK(t *testing.T) {
 	sender := &fakeTermSender{}
 	clientEnd, serverEnd := net.Pipe()

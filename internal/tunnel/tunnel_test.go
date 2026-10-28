@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/config"
 	"github.com/sagernet/sing-box/option"
 )
 
@@ -722,6 +722,17 @@ func TestUDPFrameParse(t *testing.T) {
 	}
 	if _, _, err := parseUDPFrame([]byte{0, 1, 0, 1}); err == nil {
 		t.Fatal("fragmented frame should fail")
+	}
+	// A domain-form source (ATYP=3) is legal per RFC 1928: the payload must
+	// still be delivered, the address is simply not dialable.
+	name := []byte("example.com")
+	dom := []byte{0, 0, 0, 3, byte(len(name))}
+	dom = append(dom, name...)
+	dom = appendUint16BE(dom, 443)
+	dom = append(dom, "payload"...)
+	// Both callers discard the address, so only the payload offset matters.
+	if _, n, err := parseUDPFrame(dom); err != nil || string(dom[n:]) != "payload" {
+		t.Fatalf("domain frame: n=%d payload=%q err=%v", n, dom[n:], err)
 	}
 }
 

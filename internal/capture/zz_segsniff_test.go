@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 func TestLiveSegSniff(t *testing.T) {

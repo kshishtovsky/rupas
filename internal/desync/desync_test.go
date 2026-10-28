@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/rupas/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/config"
 )
 
 // validTmpl — минимальный валидный fake-CH payload (TLS handshake record).

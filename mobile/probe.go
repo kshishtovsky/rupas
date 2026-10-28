@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rupas/rupas/internal/transport/android"
+	"github.com/kshishtovsky/rupas/internal/transport/android"
 )
 
 const (

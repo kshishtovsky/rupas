@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 // TestLiveGenuineSYNRelay: does a GENUINE local client SYN (captured from a

@@ -311,6 +311,32 @@ func TestSplitBatch(t *testing.T) {
 	}
 }
 
+// TestSplitBatchOrWholeLengthAnomaly: a batch whose IP total lengths
+// under-count the received span (trailing frame bytes) must still be delivered
+// — as one packet — instead of failing Recv and killing the capture engine.
+func TestSplitBatchOrWholeLengthAnomaly(t *testing.T) {
+	const pad = 8
+	buf := make([]byte, 0, 20+pad)
+	p := make([]byte, 20)
+	p[0] = 0x45
+	binary.BigEndian.PutUint16(p[2:4], uint16(len(p))) // under-counts by pad
+	buf = append(buf, p...)
+	buf = append(buf, make([]byte, pad)...) // trailing frame bytes
+	slots := make([][]byte, 2)
+	for i := range slots {
+		slots[i] = buf
+	}
+	if n := splitBatchOrWhole(slots, unsafe.Pointer(&buf[0]), len(buf), len(slots)); n != 1 {
+		t.Fatalf("delivered %d packets, want 1 (whole span)", n)
+	}
+	if len(slots[0]) != len(buf) {
+		t.Fatalf("fallback span length = %d, want %d", len(slots[0]), len(buf))
+	}
+	if len(slots[1]) != 0 {
+		t.Fatalf("slot 1 length = %d, want 0", len(slots[1]))
+	}
+}
+
 func TestNewBatch(t *testing.T) {
 	buf, packets, addrs := NewBatch(8, 1500)
 	if len(buf) != 8*1500 || len(packets) != 8 || len(addrs) != 8 {

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rupas/rupas/internal/transport/android"
+	"github.com/kshishtovsky/rupas/internal/transport/android"
 )
 
 // withRules restores the package rule state after the test.

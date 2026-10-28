@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/internal/core"
+	"github.com/kshishtovsky/rupas/internal/core"
 )
 
 func TestRenderSnapshot(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rupas/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/config"
 )
 
 // TestCompileGeoIP: a `geoip: <cc>` rule expands the cached country table

@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/internal/capture"
-	"github.com/rupas/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/capture"
+	"github.com/kshishtovsky/rupas/internal/config"
 )
 
 func TestPipelineTunnelEscalationNoEndpoint(t *testing.T) {

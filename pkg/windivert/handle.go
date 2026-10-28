@@ -225,10 +225,25 @@ func (h *Handle) RecvBatch(packets [][]byte, addrs []Address) (int, error) {
 		return 0, callErr("WinDivertRecvEx", e1)
 	}
 	cnt := int(addrLen) / AddressSize
-	if err := splitBatch(packets, lo, int(total), cnt); err != nil {
-		return 0, fmt.Errorf("windivert: RecvEx returned %d bytes / %d addresses: %w", total, cnt, err)
+	return splitBatchOrWhole(packets, lo, int(total), cnt), nil
+}
+
+// splitBatchOrWhole splits the received span per packet and returns how many
+// packets the caller may read. A length anomaly must never drop the batch: the
+// driver already handed these packets over and a Recv error stops the whole
+// capture pipeline, so the whole span is delivered as one packet instead.
+func splitBatchOrWhole(packets [][]byte, base unsafe.Pointer, total, count int) int {
+	if total <= 0 {
+		return 0 // nothing received: no span to deliver
 	}
-	return cnt, nil
+	if err := splitBatch(packets, base, total, count); err == nil {
+		return count
+	}
+	for i := 1; i < count; i++ {
+		packets[i] = packets[i][:0]
+	}
+	packets[0] = unsafe.Slice((*byte)(base), total)
+	return 1
 }
 
 // splitBatch re-slices packets[0:count] to per-packet lengths, walking the

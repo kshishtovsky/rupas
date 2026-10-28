@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/rupas/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/config"
 )
 
 // Strategy names produced by the prober (subset of
@@ -146,7 +146,7 @@ func (c *Classifier) Classify(ctx context.Context, t Targets) *Result {
 // ApplyCalibration attaches a TTL calibration result and selects the
 // default strategy for it.
 func (r *Result) ApplyCalibration(cal Calibration) {
-	r.TTL = cal.Effective
+	r.TTL = cal.Star // raw t*: the engine adds TTLMargin exactly once
 	r.TTLMargin = cal.Margin
 	if r.Strategy == "" && cal.Star > 0 {
 		r.Strategy = StrategyFake
@@ -158,9 +158,12 @@ func (r *Result) ApplyCalibration(cal Calibration) {
 // fake_split (§7.2); tunnel fallback for dead SNI rules is the
 // supervisor's policy, not the prober's.
 func (r *Result) ToDesyncParams() config.DesyncParams {
+	// A margin of exactly 0 is a REAL value, not "unset": the calibration
+	// clamps the total to the ladder ceiling (CalibrateTTL), so substituting
+	// the default here would push the fake past Hi and kill the desync.
 	margin := r.TTLMargin
-	if margin <= 0 {
-		margin = DefaultTTLMargin
+	if margin < 0 {
+		margin = 0
 	}
 	p := config.DesyncParams{
 		Strategy:     r.Strategy,
@@ -306,10 +309,15 @@ func (p *PersistedProfile) Usable() bool {
 // DesyncParams maps the persisted profile onto the runtime desync
 // parameters. TTL carries the raw t*: the engine adds TTLMargin exactly
 // once (desync.New computes InjectFake.TTL = TTL + TTLMargin).
+//
+// A saved margin of 0 is authoritative: CalibrateTTL clamps t*+margin to
+// the ladder ceiling, and the ceiling rung is a passing TTL by itself
+// (live 2026-10-27: t*=10 on a ceiling of 10 worked, 10+2 was a blackhole).
+// Substituting the default here would undo the clamp on every restart.
 func (p *PersistedProfile) DesyncParams() config.DesyncParams {
 	margin := p.TTLMargin
-	if margin <= 0 {
-		margin = DefaultTTLMargin
+	if margin < 0 {
+		margin = 0
 	}
 	st := p.Strategy
 	if st == "" {

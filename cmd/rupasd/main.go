@@ -17,9 +17,10 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/rupas/rupas/internal/app"
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/rpc"
+	"github.com/kshishtovsky/rupas/internal/app"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/rpc"
+	"github.com/kshishtovsky/rupas/internal/version"
 )
 
 // acquireSingleInstanceLock refuses to start a second rupasd on the same
@@ -51,7 +52,13 @@ func main() {
 	tunnel := flag.String("tunnel", "on", "tunnel branch: on = NAT-redirect TUNNEL-rule flows (TG CIDRs, UDP relay, ECH) to the loopback tproxy and relay them through the configured VLESS+Reality endpoint (empty endpoint: TUNNEL rules escalate to sni→desync / cidr,port→direct, logged and counted); off = demote TUNNEL rules to direct, no NAT")
 	verbose := flag.Bool("verbose", false, "chatty logging on stderr")
 	chlog := flag.Bool("chlog", true, "log every ClientHello decision (sni/ech/dst/verdict) — TSPU-shape diagnostics; TEMPORARY verbose mode, default ON for the debugging phase (pass -chlog=false to silence the hot path)")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("rupasd %s\n", version.Version)
+		return
+	}
 
 	var tunnelOn bool
 	switch *tunnel {

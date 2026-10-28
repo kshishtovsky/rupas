@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 // drainPassThrough opens a handle on filter and relays everything it

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 // TestLiveTCPRealIPForward: THE wave-5 forward leg in isolation. The engine

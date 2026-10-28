@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/flowtable"
-	"github.com/rupas/rupas/internal/rules"
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/flowtable"
+	"github.com/kshishtovsky/rupas/internal/rules"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 const (
@@ -292,6 +292,33 @@ func TestDesyncSplit(t *testing.T) {
 	f, _ := flowOf(e, testServerIP, 443)
 	if f.State.Load() != flowtable.FlowDesynced {
 		t.Fatalf("flow state = %d", f.State.Load())
+	}
+}
+
+// TestDesyncSplitZeroOffsetForwards: split_offset 0 is a degenerate split that
+// config.Validate accepts. The ClientHello must still egress — exactly once,
+// as the original segment — instead of being dropped by the split op.
+func TestDesyncSplitZeroOffsetForwards(t *testing.T) {
+	cfg := &config.Config{
+		Profile: "test",
+		Rules: []config.Rule{
+			{SNI: "blocked.example", Action: config.ActionDesync},
+		},
+	}
+	e, ft, _ := newTestEngine(t, cfg, testDesyncParams("fake_split", 0), false)
+
+	ch := buildClientHello("blocked.example", false)
+	chPkt := buildTCP(testClientIP, testClientPort, testServerIP, 443, 7001, 1, tcpFlagACK|tcpFlagPSH, ch)
+	feed(t, e, chPkt, outboundAddr())
+
+	real := 0
+	for _, s := range ft.Sent() {
+		if bytes.Equal(s.Data, chPkt) {
+			real++
+		}
+	}
+	if real != 1 {
+		t.Fatalf("original CH forwarded %d times, want 1 (degenerate split dropped it)", real)
 	}
 }
 

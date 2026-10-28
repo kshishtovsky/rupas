@@ -8,7 +8,7 @@ import (
 	"net/netip"
 	"sync"
 
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 // ---------------------------------------------------------------------------

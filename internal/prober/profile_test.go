@@ -100,12 +100,13 @@ func TestProfileDesyncParams(t *testing.T) {
 	if got.FakeTemplate != DefaultFakeTemplate || got.Repeats != DefaultRepeats {
 		t.Fatalf("params = %+v", got)
 	}
-	// Zero margin/strategy fall back to the documented defaults.
+	// A zero margin is authoritative, not "unset": calibration clamps
+	// t*+margin to the ladder ceiling and a saved 0 is a real instruction.
 	p.TTLMargin = 0
 	p.Strategy = ""
 	got = p.DesyncParams()
-	if got.TTLMargin != DefaultTTLMargin || got.Strategy != StrategyFake {
-		t.Fatalf("defaults not applied: %+v", got)
+	if got.TTLMargin != 0 || got.Strategy != StrategyFake {
+		t.Fatalf("zero margin must stay zero: %+v", got)
 	}
 }
 

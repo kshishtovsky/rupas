@@ -15,13 +15,13 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/core"
-	"github.com/rupas/rupas/internal/desync"
-	"github.com/rupas/rupas/internal/flowtable"
-	"github.com/rupas/rupas/internal/inspector"
-	"github.com/rupas/rupas/internal/rules"
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/core"
+	"github.com/kshishtovsky/rupas/internal/desync"
+	"github.com/kshishtovsky/rupas/internal/flowtable"
+	"github.com/kshishtovsky/rupas/internal/inspector"
+	"github.com/kshishtovsky/rupas/internal/rules"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 // UDP relay port range captured for the tunnel branch (Discord voice et al.,

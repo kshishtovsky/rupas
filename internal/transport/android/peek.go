@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rupas/rupas/internal/inspector"
+	"github.com/kshishtovsky/rupas/internal/inspector"
 )
 
 const (

@@ -13,8 +13,8 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/core"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/core"
 	"gopkg.in/yaml.v3"
 )
 
@@ -450,6 +450,14 @@ func (m tuiModel) handleRulesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		r := m.rules[m.ruleSel]
+		if r.GeoIP != "" {
+			// The wizard has no geoip matcher: committing would rebuild the
+			// rule as a matcher-less DEFAULT and silently turn a scoped
+			// geoip rule into a catch-all.
+			m.statusMsg = "geoip-правило правится только в YAML (визард не умеет geoip)"
+			m.statusIsErr = true
+			return m, nil
+		}
 		m.edit = editRuleWizard
 		m.editNew = false
 		m.editStep = 0
@@ -489,7 +497,7 @@ func (m tuiModel) handleRulesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		if n > 0 && m.ruleSel < n {
 			r := m.rules[m.ruleSel]
-			if r.CIDR == "" && r.SNI == "" && r.Ports == "" {
+			if r.CIDR == "" && r.SNI == "" && r.Ports == "" && r.GeoIP == "" {
 				m.statusMsg = "дефолтное правило нельзя удалить"
 				m.statusIsErr = true
 				return m, nil
@@ -503,7 +511,7 @@ func (m tuiModel) handleRulesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.dirty = true
 		}
 	case "J", "ctrl+down":
-		if m.ruleSel >= 0 && m.ruleSel < n-2 {
+		if m.ruleSel >= 0 && m.ruleSel < n-1 {
 			m.rules[m.ruleSel], m.rules[m.ruleSel+1] = m.rules[m.ruleSel+1], m.rules[m.ruleSel]
 			m.ruleSel++
 			m.dirty = true

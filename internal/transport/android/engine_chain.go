@@ -30,8 +30,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/tunnel"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/tunnel"
 )
 
 // carrierCooldown is how long a carrier that failed a dial or died before
@@ -390,6 +390,11 @@ func (r *redialConn) Read(b []byte) (int, error) {
 }
 
 func (r *redialConn) Write(b []byte) (int, error) {
+	// failover() nils r.conn and re-dials (up to DialTimeout); a concurrent
+	// writer would deref nil and kill the Android process. Refuse instead.
+	if r.conn == nil {
+		return 0, net.ErrClosed
+	}
 	n, err := r.conn.Write(b)
 	if n > 0 && !r.spent && !r.full {
 		if r.replay == nil {

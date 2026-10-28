@@ -14,8 +14,8 @@ import (
 
 	utls "github.com/refraction-networking/utls"
 
-	"github.com/rupas/rupas/internal/prober"
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/internal/prober"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 // Injector budget: TCP dial + TLS handshake deadlines plus slack for the

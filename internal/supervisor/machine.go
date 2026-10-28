@@ -8,7 +8,7 @@ package supervisor
 import (
 	"time"
 
-	"github.com/rupas/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/config"
 )
 
 // State is a supervisor state-machine state (§8).
@@ -149,6 +149,9 @@ type event struct {
 	outcome ProbeOutcome
 	cfg     *config.Config
 	fast    *FastStart
+	// done, when set (evReload), receives the reload's real outcome so
+	// Reload can report a refused start instead of just "queued".
+	done chan error
 }
 
 type actionKind uint8

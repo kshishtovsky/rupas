@@ -9,10 +9,10 @@ import (
 	"os"
 	"sync/atomic"
 
-	"github.com/rupas/rupas/internal/capture"
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/tunnel"
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/internal/capture"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/tunnel"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 // DefaultTProxyPort is the loopback port TUNNEL-verdict flows are

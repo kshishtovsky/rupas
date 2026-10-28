@@ -21,9 +21,11 @@ import (
 )
 
 func TestRelayBareBox(t *testing.T) {
-	links := `["vless://332a87e4-4321-4027-ae49-72a6b67641af@127.0.0.1:12341?type=tcp&security=reality&pbk=shVXc1efjMDpqp8787otzjXqH2xByJTvXkHHLx2PFAQ&sid=999e2fd9&fp=chrome&sni=aws.amazon.com&flow=xtls-rprx-vision#rupas-reality"]`
-	if env := os.Getenv("RELAY_LINKS"); env != "" {
-		links = env
+	// Bare JSON link array from the environment: no credentials in git
+	// (AGENTS.md invariant 6).
+	links := os.Getenv("RELAY_LINKS")
+	if links == "" {
+		t.Skip("set RELAY_LINKS to run against a real endpoint")
 	}
 	s, err := ParseSettings(`{"fallback":true,"links":` + links + `}`)
 	if err != nil {

@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/core"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/core"
 )
 
 // Pipeline is the capture/tunnel engine lifecycle. Implemented by the
@@ -219,12 +219,29 @@ func (s *Supervisor) Off() error { return s.send(event{kind: evCmdOff}) }
 // ForceProbe re-classifies now (RPC "probe").
 func (s *Supervisor) ForceProbe() error { return s.send(event{kind: evCmdProbe}) }
 
-// Reload swaps the config; a running pipeline is restarted with it.
+// reloadTimeout bounds how long Reload waits for the loop to apply (or
+// refuse) the config.
+const reloadTimeout = 5 * time.Second
+
+// Reload swaps the config; a running pipeline is restarted with it. It
+// waits for the loop's real result, so a refused pipeline start is
+// reported to the caller instead of only being logged.
 func (s *Supervisor) Reload(cfg *config.Config) error {
 	if cfg == nil {
 		return fmt.Errorf("nil config")
 	}
-	return s.send(event{kind: evReload, cfg: cfg})
+	done := make(chan error, 1)
+	if err := s.send(event{kind: evReload, cfg: cfg, done: done}); err != nil {
+		return err
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(reloadTimeout):
+		return fmt.Errorf("config reload timed out after %v", reloadTimeout)
+	case <-s.ctx.Done():
+		return fmt.Errorf("supervisor stopped")
+	}
 }
 
 // Notify implements core.EventSink: capture/prober push lifecycle events.
@@ -388,6 +405,14 @@ func (s *Supervisor) run() {
 					s.evlog.Append("pipeline started")
 				}
 			case actStopPipeline:
+				// Cancel any in-flight probe: an orphan would keep
+				// dialling the same SNI targets and poison the next
+				// classification (TSPU per-host escalation).
+				if probeCancel != nil {
+					probeCancel()
+					probeCancel = nil
+					s.probeGen.Add(1) // discard the orphan's late result
+				}
 				if pipeRunning && s.deps.Pipeline != nil {
 					pipeRunning = false
 					if err := s.deps.Pipeline.Stop(); err != nil {
@@ -518,16 +543,41 @@ func (s *Supervisor) run() {
 			}
 			if ev.kind == evReload && ev.cfg != nil {
 				old := cfg.Profile
+				// A calibration must not outlive the parameters it was
+				// measured for, and an unrelated rule edit must not throw
+				// it away: drop the probed profile only when the desync
+				// section itself changed.
+				desyncChanged := ev.cfg.Desync != cfg.Desync
 				cfg = ev.cfg
+				if desyncChanged {
+					if d, ok := s.deps.Pipeline.(interface{ DropProfile() }); ok {
+						d.DropProfile()
+					}
+				}
+				var reloadErr error
 				if pipeRunning && s.deps.Pipeline != nil {
+					// pipeRunning must drop before Stop: if Start below
+					// fails, actStartPipeline (:366) has to retry instead
+					// of believing capture is still up.
+					pipeRunning = false
 					_ = s.deps.Pipeline.Stop()
 					if err := s.deps.Pipeline.Start(cfg); err != nil {
-						s.logf("pipeline restart after reload failed: %v", err)
+						reloadErr = fmt.Errorf("pipeline restart after reload: %w", err)
+						s.logf("%v", reloadErr)
+						s.evlog.Append("pipeline start failed: " + err.Error())
+						var inner []action
+						m, inner, _ = step(m, event{kind: evDegradation, note: "pipeline start failed"}, s.now(), s.hyst)
+						exec(&m, inner, 1)
+					} else {
+						pipeRunning = true
 					}
 				}
 				s.logf("config reloaded (%s -> %s)", old, cfg.Profile)
 				s.evlog.Append("config reloaded (profile " + cfg.Profile + ")")
 				store()
+				if ev.done != nil {
+					ev.done <- reloadErr // buffered: never blocks the loop
+				}
 				continue
 			}
 

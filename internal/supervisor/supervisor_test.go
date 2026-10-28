@@ -12,14 +12,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/core"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/core"
 )
 
 // fakePipeline records Start/Stop calls.
 type fakePipeline struct {
 	mu       sync.Mutex
 	starts   int
+	okStarts int // starts that actually succeeded (capture is live)
 	stops    int
 	startErr error
 	lastCfg  *config.Config
@@ -30,7 +31,11 @@ func (f *fakePipeline) Start(cfg *config.Config) error {
 	defer f.mu.Unlock()
 	f.starts++
 	f.lastCfg = cfg
-	return f.startErr
+	if f.startErr != nil {
+		return f.startErr
+	}
+	f.okStarts++
+	return nil
 }
 
 func (f *fakePipeline) Stop() error {
@@ -85,6 +90,28 @@ func (p *scriptProber) Run(ctx context.Context) (ProfileResult, error) {
 
 func okDesync(note string) ProfileResult {
 	return ProfileResult{ProfileID: "test-profile", DesyncAlive: true, TunnelOK: true, Note: note}
+}
+
+// cancelProber blocks until its context is cancelled, reporting both the
+// start and the cancellation (models a long calibration cycle).
+type cancelProber struct {
+	once      sync.Once
+	started   chan struct{}
+	cancelled chan struct{}
+}
+
+func newCancelProber() *cancelProber {
+	return &cancelProber{started: make(chan struct{}), cancelled: make(chan struct{}, 1)}
+}
+
+func (p *cancelProber) Run(ctx context.Context) (ProfileResult, error) {
+	p.once.Do(func() { close(p.started) })
+	<-ctx.Done()
+	select {
+	case p.cancelled <- struct{}{}:
+	default:
+	}
+	return ProfileResult{}, ctx.Err()
 }
 
 // fastHysteresis shrinks every timing so integration tests run in ms.
@@ -273,6 +300,79 @@ func TestPipelineStartFailureDegrades(t *testing.T) {
 	waitForState(t, s, StateDegraded, 5*time.Second)
 	_ = s.Off()
 	waitForState(t, s, StateOff, 5*time.Second)
+}
+
+// TestOffCancelsInFlightProbe: `off` during PROBING must cancel the
+// calibration goroutine and drop its late result, or the orphan keeps
+// hammering the same SNI targets and poisons the next classification.
+func TestOffCancelsInFlightProbe(t *testing.T) {
+	pipe := &fakePipeline{}
+	prober := newCancelProber()
+	s := newTestSup(t, fastHysteresis(), pipe, prober)
+
+	_ = s.On() // OFF → PROBING, probe launched immediately
+	select {
+	case <-prober.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("probe never started")
+	}
+
+	_ = s.Off()
+	waitForState(t, s, StateOff, 5*time.Second)
+	select {
+	case <-prober.cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("off left the probe running (context not cancelled)")
+	}
+
+	time.Sleep(20 * time.Millisecond) // let a late result arrive, if any
+	if note := s.Snapshot().Counters.LastProbeNote; note != "" {
+		t.Fatalf("late probe result recorded after off: %q", note)
+	}
+	if st := State(s.Snapshot().State); st != StateOff {
+		t.Fatalf("state=%s after off, want OFF", st)
+	}
+	starts, stops := pipe.stats()
+	if starts != 0 || stops != 0 {
+		t.Fatalf("pipeline starts=%d stops=%d, want 0/0 (never started while PROBING)", starts, stops)
+	}
+}
+
+// TestReloadPipelineStartFailureIsReported: a reload whose pipeline
+// restart fails must be reported to the caller, must not leave the
+// machine claiming ACTIVE, and must recover without a manual off+on.
+func TestReloadPipelineStartFailureIsReported(t *testing.T) {
+	pipe := &fakePipeline{}
+	prober := &scriptProber{script: []ProfileResult{okDesync("open")}}
+	s := newTestSup(t, fastHysteresis(), pipe, prober)
+
+	_ = s.On()
+	waitForState(t, s, StateActive, 5*time.Second)
+
+	pipe.mu.Lock()
+	pipe.startErr = errors.New("windivert handle closed")
+	pipe.mu.Unlock()
+
+	cfg2 := config.Default()
+	cfg2.Profile = "reloaded-profile"
+	if err := s.Reload(cfg2); err == nil {
+		t.Fatal("Reload = nil, want the pipeline start error")
+	}
+	if st := State(s.Snapshot().State); st == StateActive {
+		t.Fatal("state=ACTIVE after a failed pipeline restart; capture is dead")
+	}
+
+	// Clearing the fault must bring capture back on the normal path.
+	pipe.mu.Lock()
+	pipe.startErr = nil
+	pipe.mu.Unlock()
+	waitForState(t, s, StateActive, 10*time.Second)
+	pipe.mu.Lock()
+	okStarts, stops := pipe.okStarts, pipe.stops
+	pipe.mu.Unlock()
+	if okStarts < 2 || stops != 1 {
+		t.Fatalf("live starts=%d stops=%d, want >=2/1 (the start was retried, capture is back)", okStarts, stops)
+	}
 }
 
 // TestConcurrentAccess hammers Notify/Snapshot/On/Off from several

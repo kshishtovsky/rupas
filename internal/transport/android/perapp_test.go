@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rupas/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/config"
 )
 
 // perAppRules is the fixture used by the priority tests: a DIRECT CIDR, a

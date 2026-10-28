@@ -8,8 +8,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/core"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/core"
 )
 
 // TestTUIModelTabs verifies that tab switching works via 1..4 and Tab/Shift+Tab.
@@ -148,6 +148,10 @@ desync:
 	if bak != cfgPath+".bak" {
 		t.Fatalf("expected backup %s, got %s", cfgPath+".bak", bak)
 	}
+	afterFirst, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Case 2: reload failure -> rolls back to previous content
 	m.rules[0].SNI = "broken.test.com"
@@ -159,10 +163,10 @@ desync:
 		t.Fatal("expected saveConfigFile to return error on failed reload")
 	}
 
-	// Live file must contain initial content (rollback happened)
+	// Live file must contain exactly the pre-save bytes (rollback happened).
 	cur, _ := os.ReadFile(cfgPath)
-	if string(cur) == "" || string(cur) == initial {
-		// Valid rolled-back file
+	if string(cur) != string(afterFirst) {
+		t.Fatalf("rollback did not restore the previous config:\n got: %q\nwant: %q", cur, afterFirst)
 	}
 }
 

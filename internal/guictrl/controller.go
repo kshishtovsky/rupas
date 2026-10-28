@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rupas/rupas/internal/core"
-	"github.com/rupas/rupas/internal/rpc"
+	"github.com/kshishtovsky/rupas/internal/core"
+	"github.com/kshishtovsky/rupas/internal/rpc"
 )
 
 // Options configures Controller. Zero value is usable for tests.
@@ -208,12 +208,18 @@ func (c *Controller) emit(s Snapshot) {
 	}
 }
 
-// runPoller polls the daemon and notifies listeners on changes.
-func (c *Controller) runPoller(emit func(Snapshot)) {
+// runPoller polls the daemon and notifies listeners on changes. stop is the
+// channel of THIS run, so a stopped poller never adopts a newer one's stop.
+func (c *Controller) runPoller(emit func(Snapshot), stop <-chan struct{}) {
 	t := time.NewTicker(c.opts.PollInterval)
 	defer t.Stop()
 	var last Snapshot
 	for {
+		select {
+		case <-stop:
+			return
+		default:
+		}
 		s := c.poll()
 		if s != last {
 			last = s
@@ -224,42 +230,49 @@ func (c *Controller) runPoller(emit func(Snapshot)) {
 		}
 		select {
 		case <-t.C:
-		case <-c.pollStopped():
+		case <-stop:
 			return
 		}
 	}
 }
 
-// pollStopped returns the current stop channel under the lock.
-func (c *Controller) pollStopped() <-chan struct{} {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.stopPoll == nil {
-		ch := make(chan struct{})
-		return ch
+// pollerAlive reports whether a poller with stop is still running (its stop
+// channel stays non-nil after StopPoller, so liveness is "not closed").
+func pollerAlive(stop chan struct{}) bool {
+	if stop == nil {
+		return false
 	}
-	return c.stopPoll
+	select {
+	case <-stop:
+		return false
+	default:
+		return true
+	}
 }
 
 // StartPoller starts the background status poller (idempotent).
 func (c *Controller) StartPoller(emit func(Snapshot)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.stopPoll != nil {
+	if pollerAlive(c.stopPoll) {
 		return
 	}
 	stop := make(chan struct{})
 	c.stopPoll = stop
-	go c.runPoller(emit)
+	go c.runPoller(emit, stop)
 }
 
-// StopPoller halts the background poller.
+// StopPoller halts the background poller. The channel is kept: a loop that
+// is inside poll() sees it closed on its next check and exits.
 func (c *Controller) StopPoller() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.stopPoll != nil {
-		close(c.stopPoll)
-		c.stopPoll = nil
+	if ch := c.stopPoll; ch != nil {
+		select {
+		case <-ch: // already stopped
+		default:
+			close(ch)
+		}
 	}
 }
 

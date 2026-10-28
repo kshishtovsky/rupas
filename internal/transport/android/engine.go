@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/rupas/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/config"
 )
 
 // Engine owns one TUN-backed transport session. It is created per Start and

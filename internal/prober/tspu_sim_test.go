@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/internal/inspector"
+	"github.com/kshishtovsky/rupas/internal/inspector"
 )
 
 // tspu is the emulator instance.
@@ -505,6 +505,24 @@ func TestCalibrateTTLEdgeCases(t *testing.T) {
 		if cal.Star != 18 || cal.Effective != 20 {
 			t.Fatalf("Star=%d Effective=%d, want 18/20 (clamped)", cal.Star, cal.Effective)
 		}
+		// The engine programs Star+Margin, so the clamp must reach the
+		// margin too — a stale 5 would overshoot Hi to 23.
+		if cal.Margin != cal.Effective-cal.Star || cal.Star+cal.Margin != opt.Hi {
+			t.Fatalf("Margin=%d, want %d (Star+Margin=%d must equal Hi=%d)",
+				cal.Margin, cal.Effective-cal.Star, cal.Star+cal.Margin, opt.Hi)
+		}
+		// The clamp must survive both downstream paths that build the
+		// runtime params, including the on-disk round trip: the persisted
+		// margin is 0 here and 0 is a real instruction, not "unset".
+		var res Result
+		res.ApplyCalibration(cal)
+		if p := res.ToDesyncParams(); p.TTL+p.TTLMargin != opt.Hi {
+			t.Fatalf("live params program TTL %d+%d, want %d", p.TTL, p.TTLMargin, opt.Hi)
+		}
+		prof := &PersistedProfile{TTLStar: cal.Star, TTLMargin: cal.Margin}
+		if p := prof.DesyncParams(); p.TTL+p.TTLMargin != opt.Hi {
+			t.Fatalf("persisted params program TTL %d+%d, want %d", p.TTL, p.TTLMargin, opt.Hi)
+		}
 	})
 	t.Run("budget exhaustion keeps a working star", func(t *testing.T) {
 		opt := DefaultTTLOptions()
@@ -532,13 +550,19 @@ func TestCalibrateTTLEdgeCases(t *testing.T) {
 
 func TestToDesyncParams(t *testing.T) {
 	t.Run("calibrated window selects fake", func(t *testing.T) {
-		r := &Result{TTL: 14, TTLMargin: 2}
+		// TTL carries the raw t*: the engine adds TTLMargin once, so
+		// TTL+TTLMargin must land on the calibrated Effective.
+		r := &Result{}
+		r.ApplyCalibration(Calibration{Star: 12, Effective: 14, Margin: 2})
 		p := r.ToDesyncParams()
 		if p.Strategy != StrategyFake {
 			t.Fatalf("strategy = %q, want fake", p.Strategy)
 		}
-		if p.TTL != 14 || p.TTLMargin != 2 || p.Repeats != DefaultRepeats || p.FakeTemplate != DefaultFakeTemplate {
+		if p.TTL != 12 || p.TTLMargin != 2 || p.Repeats != DefaultRepeats || p.FakeTemplate != DefaultFakeTemplate {
 			t.Fatalf("params = %+v", p)
+		}
+		if p.TTL != r.TTL || p.TTL+p.TTLMargin != 14 {
+			t.Fatalf("TTL=%d TTLMargin=%d, want TTL=Star 12 and TTL+TTLMargin=Effective 14", p.TTL, p.TTLMargin)
 		}
 	})
 	t.Run("no window falls back to fake_split", func(t *testing.T) {
@@ -562,8 +586,8 @@ func TestToDesyncParams(t *testing.T) {
 func TestResultApplyCalibration(t *testing.T) {
 	r := &Result{}
 	r.ApplyCalibration(Calibration{Star: 12, Effective: 14, Margin: 2})
-	if r.TTL != 14 || r.TTLMargin != 2 || r.Strategy != StrategyFake {
-		t.Fatalf("result = %+v", r)
+	if r.TTL != 12 || r.TTLMargin != 2 || r.Strategy != StrategyFake {
+		t.Fatalf("result = %+v (TTL must stay the raw t*, the engine adds the margin)", r)
 	}
 }
 

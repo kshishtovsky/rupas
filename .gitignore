@@ -8,6 +8,11 @@
 !build/WinDivert64.sys
 !build/windivert/**
 
+# Release artifacts are built by scripts/make-dist.ps1 — never committed.
+dist/
+*.apk
+*.zip
+
 # Runtime logs, diagnostics captures, ad-hoc dumps.
 *.log
 *.out
@@ -21,5 +26,11 @@ goroutines.txt
 configs/rupas.yaml
 configs/rupas.yaml.bak
 configs/*.bak
+configs/*.bak-*
 configs/diag.yaml
 out/
+
+# Release signing key never leaves the machine — it goes to CI as a base64 secret.
+android/keystore/
+android/keystore.properties
+android/app/libs/*.aar

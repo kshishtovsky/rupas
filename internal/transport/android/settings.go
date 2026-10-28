@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rupas/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/config"
 )
 
 // Settings is the W3 tunnel endpoint description delivered by the Java

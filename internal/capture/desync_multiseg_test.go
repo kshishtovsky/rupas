@@ -29,11 +29,11 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/flowtable"
-	"github.com/rupas/rupas/internal/inspector"
-	"github.com/rupas/rupas/internal/rules"
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/flowtable"
+	"github.com/kshishtovsky/rupas/internal/inspector"
+	"github.com/kshishtovsky/rupas/internal/rules"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 const (

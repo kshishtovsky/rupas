@@ -219,7 +219,13 @@ func writeFileAtomic(path string, data []byte) error {
 		return fmt.Errorf("config: rules not saved, config would be invalid: %w", err)
 	}
 	if _, err := os.Stat(path); err == nil {
-		_ = os.Rename(path, path+".bak")
+		// A failed backup must abort the save: the daemon-side rollback
+		// restores .bak, and a missing/stale one would install an older
+		// generation instead of the previous good file.
+		if err := os.Rename(path, path+".bak"); err != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("config: backup %s: %w", path+".bak", err)
+		}
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return err

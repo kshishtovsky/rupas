@@ -12,12 +12,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/rupas/rupas/internal/capture"
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/desync"
-	"github.com/rupas/rupas/internal/rules"
-	"github.com/rupas/rupas/internal/supervisor"
-	"github.com/rupas/rupas/internal/tunnel"
+	"github.com/kshishtovsky/rupas/internal/capture"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/desync"
+	"github.com/kshishtovsky/rupas/internal/rules"
+	"github.com/kshishtovsky/rupas/internal/supervisor"
+	"github.com/kshishtovsky/rupas/internal/tunnel"
 )
 
 // Tunnel branch modes reported by pipelineStats.TunnelMode and rendered by
@@ -140,14 +140,24 @@ func (p *capturePipeline) Start(cfg *config.Config) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.gen++
-	// A REPLACED config wins over a stale probed profile — but the very
-	// first Start (lastCfg still nil) must keep the profile the initial
-	// probe just calibrated.
-	if p.lastCfg != nil && cfg != p.lastCfg {
-		p.override = nil
-	}
+	// The calibrated profile survives a config replacement. Dropping it here
+	// used to make a plain rule edit reset the engine to the yaml default
+	// (13+2 with the TSPU window at 10) so desync died on every reload. The
+	// reload path decides explicitly: DropProfile, when the desync section
+	// itself changed.
 	p.lastCfg = cfg
 	return p.startLocked(cfg)
+}
+
+// DropProfile forgets the calibrated desync profile so the next Start uses
+// the config's own desync section. Called by the supervisor on a reload whose
+// `desync:` block actually changed — a calibration must not outlive the
+// parameters it was measured for, and equally must not be discarded by an
+// unrelated rule edit.
+func (p *capturePipeline) DropProfile() {
+	p.mu.Lock()
+	p.override = nil
+	p.mu.Unlock()
 }
 
 // Stop shuts the pipeline down; idempotent.

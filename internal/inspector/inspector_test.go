@@ -904,3 +904,16 @@ func TestFeedMutationRobustness(t *testing.T) {
 		}
 	}
 }
+
+// TestParseClientHelloOneByteExtTail pins the off-by-one that used to panic
+// the daemon: a coherent ClientHello whose body stops exactly one byte short
+// of the extensions length field. err must be ErrMalformed, never a panic.
+func TestParseClientHelloOneByteExtTail(t *testing.T) {
+	b := synthCH{omitExtBlock: true}.build()
+	b = append(b, 0x00) // lone trailing byte where the u16 ext length starts
+	b[4]++              // record length low byte: counts the tail (body < 256)
+	b[8]++              // handshake length low byte, same
+	if _, err := parseClientHello(b); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("want ErrMalformed, got %v", err)
+	}
+}

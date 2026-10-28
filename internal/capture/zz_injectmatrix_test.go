@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 // craftIPv4TCP builds a TCP/IPv4 packet with proper checksums.

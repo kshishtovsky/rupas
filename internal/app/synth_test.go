@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/internal/capture"
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/internal/capture"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 func buildTCP4(src netip.Addr, sport uint16, dst netip.Addr, dport uint16, seq uint32, flags byte, payload []byte) []byte {

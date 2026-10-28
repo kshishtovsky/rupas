@@ -6,8 +6,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/geoip"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/geoip"
 )
 
 // TestLiveTraceProductionConfig traces real queries through the owner's real

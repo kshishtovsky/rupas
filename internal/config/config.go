@@ -15,7 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/rupas/rupas/internal/geoip"
+	"github.com/kshishtovsky/rupas/internal/geoip"
 )
 
 // vlessFlowVision is the standard VLESS+Reality flow.

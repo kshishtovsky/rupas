@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rupas/rupas/internal/config"
-	"github.com/rupas/rupas/internal/geoip"
+	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/geoip"
 )
 
 // tracePolicy is the fixture used by the stage tests: one rule per stage plus

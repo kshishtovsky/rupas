@@ -2,6 +2,19 @@ plugins {
     id 'com.android.application'
 }
 
+// Single source of truth for the version: <repo>/VERSION (see docs/PRD_RELEASE_PIPELINE.md).
+// versionCode must stay monotonic, so it is derived: major*10000 + minor*100 + patch.
+def appVersion = rootProject.file('../VERSION').text.trim()
+def (vMajor, vMinor, vPatch) = appVersion.tokenize('.').collect { it as int }
+
+// Release signing key is never in git: keystore.properties is local-only,
+// CI writes it from the KEYSTORE_BASE64 / KEYSTORE_PASSWORD secrets.
+def keystoreProps = new Properties()
+def keystorePropsFile = rootProject.file('keystore.properties')
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+
 android {
     namespace 'ru.rupas.android'
     compileSdk 36
@@ -10,16 +23,18 @@ android {
         applicationId "ru.rupas.android"
         minSdk 26
         targetSdk 36
-        versionCode 10
-        versionName "0.5.3"
+        versionCode vMajor * 10000 + vMinor * 100 + vPatch
+        versionName appVersion
     }
 
     signingConfigs {
         release {
-            storeFile file("$rootDir/keystore/rupas-release.jks")
-            storePassword 'rupas-release-2026'
-            keyAlias 'rupas'
-            keyPassword 'rupas-release-2026'
+            if (keystorePropsFile.exists()) {
+                storeFile rootProject.file('keystore/' + (keystoreProps['storeFile'] ?: 'rupas-release.jks'))
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias'] ?: 'rupas'
+                keyPassword keystoreProps['keyPassword'] ?: keystoreProps['storePassword']
+            }
         }
     }
 

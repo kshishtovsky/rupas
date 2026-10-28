@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rupas/rupas/pkg/windivert"
+	"github.com/kshishtovsky/rupas/pkg/windivert"
 )
 
 // TestLiveReplayControl: sanity for the re-injection harness. A genuine

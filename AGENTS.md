@@ -19,6 +19,11 @@ Telegram-CIDR уходит в чёрную дыру. Симптом выгляд
 
 `go test -race` требует cgo/gcc; на хосте без gcc используйте обычный прогон.
 
+**`gomobile` требует Windows-пути в env.** `/c/android-sdk` (MSYS-форма) он не
+понимает и падает с `could not locate Android SDK`. Перед `make aar`/`make apk`
+экспортируйте `ANDROID_HOME=C:/android-sdk`, `ANDROID_SDK_ROOT=C:/android-sdk`,
+`JAVA_HOME=C:/android-sdk/jdk-17.0.20.1+1`.
+
 Известный давний красный тест: `TestPipelineTunnelEscalationNoEndpoint`
 (`internal/app`). Он не связан с текущими правками — не «чините» его попутно,
 если задача не про него.

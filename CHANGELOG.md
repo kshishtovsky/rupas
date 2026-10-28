@@ -1,3 +1,18 @@
+## v0.7.1
+
+- chore(release): v0.7.1 (f49824c)
+- perf(android): 0.7.1 — меньше фонового шума и CPU (d124119)
+- perf(android): убрать фоновый шум — уровни логов, gcTick, поллинг (6b2521b)
+- docs: перформанс-аудит Android (0c62862)
+- docs: перформанс-аудит Android на живом устройстве (176dbce)
+- docs(releasing): переиздание по тегу и грабли CI (784eb9d)
+- docs(changelog): v0.7.0 (1594d0a)
+- ci(release): полный путь к sdkmanager (нет в PATH без setup-android) (80ed9c8)
+- ci(release): снимать префикс v с переиздаваемого тега (055a786)
+- ci(release): переиздание тега через input workflow_dispatch (665cc4e)
+- ci: починка android-джобы релиза и переиздание по тегу (9ec972d)
+- ci: android-джоба без setup-android, переиздание по тегу (8c34743)
+
 ## v0.7.0
 
 - chore(release): v0.7.0 (ea3fd0f)

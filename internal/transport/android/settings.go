@@ -150,6 +150,11 @@ func (s *Settings) Validate() error {
 			return err
 		}
 		return nil
+	case s.UUID == "" && s.Server == "" && s.Adblock != nil:
+		// Zero enabled profiles, filter on: a valid document with no endpoint.
+		// The tunnel stays off (Fallback → rules go direct) and adblock must
+		// keep working — clearing the whole settings would kill it too.
+		return nil
 	case s.UUID == "":
 		return fmt.Errorf("android: settings: uuid is required")
 	case s.Server == "":
@@ -173,6 +178,13 @@ func (s *Settings) Kind() string {
 // ServerAddr returns the server host:port.
 func (s *Settings) ServerAddr() string {
 	return fmt.Sprintf("%s:%d", s.Server, s.Port)
+}
+
+// HasEndpoint reports whether the settings carry any dial target at all. Zero
+// enabled profiles in the app produce a document with the filter but no
+// endpoint: that is a valid "tunnel off" state, not a broken config.
+func (s *Settings) HasEndpoint() bool {
+	return s != nil && (len(s.Links) > 0 || (s.UUID != "" && s.Server != ""))
 }
 
 // Endpoints returns the dial chain: share links when present, otherwise

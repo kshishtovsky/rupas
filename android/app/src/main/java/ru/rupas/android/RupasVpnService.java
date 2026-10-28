@@ -251,11 +251,16 @@ public class RupasVpnService extends VpnService {
         // Go-сторона эскалирует все туннельные правила в direct. В логах —
         // только факт и хост; никаких uuid/ключей.
         try {
-            if (st != null && st.isConfigured()) {
+            if (st != null) {
+                // Всегда отправляем снимок: в нём живёт и фильтр рекламы.
+                // Документ без эндпоинта (ноль включённых профилей) ядро
+                // принимает как «туннель off, фильтр работает».
                 CoreBridge.setSettings(st.toJson());
-                LogBuffer.add("[vpn] tunnel: on (server " + st.server + ":" + st.port + ")");
-            } else {
-                LogBuffer.add("[vpn] tunnel: off (настройки не заданы — правила direct)");
+                if (st.isConfigured()) {
+                    LogBuffer.add("[vpn] tunnel: on (server " + st.server + ":" + st.port + ")");
+                } else {
+                    LogBuffer.add("[vpn] tunnel: off (профили не включены — трафик напрямую)");
+                }
             }
         } catch (Exception e) {
             // Невалидный JSON/отказ хранилища/заглушечный AAR — стартуем без туннеля.

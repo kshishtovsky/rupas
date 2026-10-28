@@ -622,11 +622,13 @@ public class MainActivity extends AppCompatActivity {
                 statusText.setText(R.string.status_connected);
                 statusText.setTextColor(ContextCompat.getColor(this, R.color.accent));
             } else if (!tunnel.isEmpty()) {
+                // "off" = ничего не просили (нет включённых профилей), "failed" =
+                // просили, но не поднялось. Первое — состояние, второе — ошибка.
                 String detail = st.optString("tunnel_detail", "");
                 statusDot.setBackgroundTintList(ColorStateList.valueOf(ContextCompat.getColor(this, R.color.warn)));
-                statusText.setText(detail.isEmpty()
-                        ? getString(R.string.status_tunnel_off)
-                        : getString(R.string.status_tunnel_failed, detail));
+                statusText.setText("failed".equals(tunnel) && !detail.isEmpty()
+                        ? getString(R.string.status_tunnel_failed, detail)
+                        : getString(R.string.status_tunnel_off));
                 statusText.setTextColor(ContextCompat.getColor(this, R.color.warn));
             }
 

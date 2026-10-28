@@ -48,3 +48,28 @@ func TestParseSettingsRejects(t *testing.T) {
 		}
 	}
 }
+
+// Zero enabled profiles: the app sends a document with the filter but no
+// endpoint. It must validate (tunnel off) — rejecting it would also kill the
+// adblock filter, which arrives in the same JSON.
+func TestValidateNoEndpointKeepsAdblock(t *testing.T) {
+	off := false
+	doc := `{"uuid":"","server":"","port":0,"adblock":{"ads":true,"trackers":` + boolStr(off) + `}}`
+	s, err := ParseSettings(doc)
+	if err != nil {
+		t.Fatalf("document without endpoint must validate: %v", err)
+	}
+	if s.HasEndpoint() {
+		t.Fatal("HasEndpoint must be false for a document with no endpoint")
+	}
+	if s.Adblock == nil || !s.Adblock.adsOn() {
+		t.Fatal("adblock must survive a no-endpoint document")
+	}
+}
+
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}

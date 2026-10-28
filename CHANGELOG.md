@@ -1,3 +1,9 @@
+## v0.7.4
+
+- chore(release): v0.7.4 (106042d)
+- fix(xhttp): поток переживает свой dial — отправка не обрывается на старте (f5ec57a)
+- docs(changelog): v0.7.3 (0e1c608)
+
 ## v0.7.3
 
 - chore(release): v0.7.3 (3e6eb0a)

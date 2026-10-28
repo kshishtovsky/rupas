@@ -28,8 +28,9 @@ const (
 	probeAddr = "104.16.124.96:443"
 	probeName = "medium.com"
 
-	// Stage budgets (§5.5); the total caps the sum.
-	probeStart   = 3 * time.Second
+	// Stage budgets (§5.5); probeTotal caps the whole call. Start has no budget
+	// of its own: it shares probeTotal with the stages, because its ctx must
+	// outlive Start (see TestProfile).
 	probeDial    = 3 * time.Second
 	probePayload = 2 * time.Second
 	probeTotal   = 8 * time.Second
@@ -91,9 +92,11 @@ func runProbe(link, filesDir string) (res probeResult) {
 		}
 	}()
 
-	sctx, scancel := context.WithTimeout(ctx, probeStart)
-	err := relay.Start(sctx, nil, dir)
-	scancel()
+	// The relay keeps this ctx for the lifetime of its sing-box: cancelling it
+	// after Start tears the outbound down, and every later dial fails with
+	// "operation was canceled" at 0 ms. So Start gets the run's ctx, and the
+	// per-stage budgets below are applied to the calls, never to the box.
+	err := relay.Start(ctx, nil, dir)
 	if err != nil {
 		return probeResult{Stage: "start", Err: redact(err.Error(), link, secrets...)}
 	}
@@ -159,7 +162,9 @@ func (p *probeLog) tail() string {
 			last = line
 		}
 		lower := strings.ToLower(line)
-		for _, k := range []string{"error", "fail", "reject", "refus", "timeout", "denied", "invalid"} {
+		// "denied" is deliberately absent: Android always logs a benign
+		// "router: failed to search process: dial netlink: permission denied".
+		for _, k := range []string{"error", "refus", "timeout", "cancel", "invalid"} {
 			if strings.Contains(lower, k) {
 				why = line
 				break

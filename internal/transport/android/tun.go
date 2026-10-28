@@ -57,10 +57,12 @@ func (e *Engine) run(ctx context.Context, fd int) error {
 	// TUNNEL flows escalate honestly.
 	e.buildCarriers(ctx)
 	// Honest state for the app: "direct" is the escalation tail, so a chain
-	// without a real carrier means the tunnel never came up.
+	// without a real carrier means the tunnel never came up. A config with no
+	// endpoint at all (zero enabled profiles) is "off", not "failed" — nothing
+	// was asked of the tunnel.
 	if n := e.tunnelCarrierCount(); n > 0 {
 		e.setTunnel("on", fmt.Sprintf("%d carrier(s)", n))
-	} else if st, _ := e.TunnelInfo(); st != "failed" {
+	} else if st, _ := e.TunnelInfo(); st != "failed" && (e.settings == nil || e.settings.HasEndpoint()) {
 		e.setTunnel("failed", "no usable carrier")
 	}
 

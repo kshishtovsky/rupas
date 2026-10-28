@@ -116,14 +116,18 @@ func NewW3EngineWithRules(settings *Settings, protect ProtectFunc, logFn func(st
 	e.rules = CompileRulesWithApps(ruleSet, appRules, filesDir, func(line string) { e.logf("%s", line) })
 	e.filesDir = filesDir
 	if settings != nil {
-		e.relay = NewRelay(settings, func(line string) { e.logf("%s", line) })
-		e.preferIPv4 = settings.PreferIPv4Enabled()
-		// Parsed here, once: isEndpoint runs 2-3× per flow. A parse error
-		// leaves the slice empty (isEndpoint false) — ParseSettings has
-		// already validated the links, so this is belt-and-braces.
-		if eps, err := settings.Endpoints(); err == nil {
-			e.endpoints = eps
+		// No endpoint (zero enabled profiles) → no relay at all: the tunnel is
+		// honestly "off", not a failed box retrying an empty host.
+		if settings.HasEndpoint() {
+			e.relay = NewRelay(settings, func(line string) { e.logf("%s", line) })
+			// Parsed here, once: isEndpoint runs 2-3× per flow. A parse error
+			// leaves the slice empty (isEndpoint false) — ParseSettings has
+			// already validated the links, so this is belt-and-braces.
+			if eps, err := settings.Endpoints(); err == nil {
+				e.endpoints = eps
+			}
 		}
+		e.preferIPv4 = settings.PreferIPv4Enabled()
 		e.initAdblock(settings.Adblock)
 	}
 	return e

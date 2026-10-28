@@ -60,8 +60,11 @@ func main() {
 		"AdguardTeam/AdguardFilters@master/BaseFilter/sections/adservers.txt",
 		"AdguardTeam/HostlistsRegistry@main/assets/filter_1.txt",
 	)}
-	// локальные списки: курируемые вручную (iMe и прочие наши кейсы)
-	ads.local = []string{filepath.Join("configs", "adblock-ime.list")}
+	// локальные списки: курируемые вручную (iMe, RU-биржи mail.ru/VK/Yandex)
+	ads.local = []string{
+		filepath.Join("configs", "adblock-ime.list"),
+		filepath.Join("configs", "adblock-ru.list"),
+	}
 	trackers := src{name: "trackers", urls: expand(
 		"AdguardTeam/AdguardFilters@master/SpywareFilter/sections/tracking_servers.txt",
 	)}

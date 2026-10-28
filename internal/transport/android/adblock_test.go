@@ -360,6 +360,13 @@ func TestAdblockRealLists(t *testing.T) {
 		"googleads.g.doubleclick.net",
 		"rt.applovin.com",
 		"rtb.ads.vungle.com",
+		// mail.ru: реклама отдаётся с собственных доменов холдинга и с биржи
+		// MRADX. Именно эти четыре отсутствовали/лежали в трекерах, из-за чего
+		// science.mail.ru показывал баннеры при включённом фильтре.
+		"ad.mail.ru",
+		"rs.mail.ru",
+		"r.mradx.net",
+		"ads.adfox.ru",
 	} {
 		if _, blocked := a.Match(name); !blocked {
 			t.Errorf("%s must be blocked", name)
@@ -371,6 +378,10 @@ func TestAdblockRealLists(t *testing.T) {
 		"rr3---sn-4g5e6nez.googlevideo.com",
 		"imem.app",
 		"alfabank.ru",
+		// Сам сайт mail.ru и его картинки обязаны открываться.
+		"science.mail.ru",
+		"mail.ru",
+		"resizer.mail.ru",
 	} {
 		if list, blocked := a.Match(name); blocked {
 			t.Errorf("%s must NOT be blocked (matched %s list)", name, list)

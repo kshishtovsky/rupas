@@ -55,6 +55,23 @@ Telegram-CIDR уходит в чёрную дыру. Симптом выгляд
    `build/WinDivert64.sys`, `build/windivert/**` и `build/desync/*.bin` —
    рантайм-ассеты, они отслеживаются. Игнорируются только `*.exe` и логи.
 
+## Релизы и версия
+
+Релиз автоматический: пуш в `master` → `.github/workflows/release.yml` сам
+поднимает `VERSION` по Conventional Commits, ставит тег, собирает Windows-zip и
+APK и публикует Release. Руками ничего не собирай и не загружай.
+
+- Версия — только в `VERSION`. Не правь `versionName`/`versionCode` в
+  `android/app/build.gradle` (они читают `VERSION`) и не дублируй её в коде:
+  `internal/version.Version` вшивается через `-ldflags` из Makefile.
+- Правка, которая ломает совместимость (формат конфига, JSON-протокол pipe,
+  ключ подписи/`applicationId`, флаги CLI), обязана идти с `BREAKING CHANGE` —
+  иначе CI выпустит патч, и старые клиенты отвалятся молча. Список — в
+  `docs/VERSIONING.md`.
+- `android/keystore/**` и `android/keystore.properties` в git не попадают
+  никогда; в CI ключ приезжает из секретов `KEYSTORE_BASE64`/`KEYSTORE_PASSWORD`.
+  Потеря ключа = никто не сможет обновиться.
+
 ## Перезапуск демона на Windows
 
 `rupasctl off` останавливает пайплайн, но не гарантирует завершение процесса.

@@ -1,0 +1,22 @@
+# Normalize line endings: the repo is edited on Windows but built on Linux CI.
+* text=auto eol=lf
+*.go text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.gradle text eol=lf
+*.md text eol=lf
+*.list text eol=lf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Binary/runtime assets — never touch.
+*.png binary
+*.jpg binary
+*.ico binary
+*.dll binary
+*.sys binary
+*.jks binary
+*.aar binary
+*.exe binary
+*.bin binary

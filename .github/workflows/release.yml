@@ -1,0 +1,227 @@
+name: Release
+
+# Пуш в master -> CI сам поднимает версию (Conventional Commits), ставит тег,
+# собирает Windows-архив и APK и публикует GitHub Release + образ GHCR.
+# Ручной запуск позволяет пересобрать артефакты для уже существующего тега.
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    # Коммит самого релизного бота не должен запускать второй релиз.
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release)') }}
+    runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.bump.outputs.released }}
+      version: ${{ steps.bump.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump version from Conventional Commits
+        id: bump
+        run: |
+          set -euo pipefail
+          current=$(tr -d '[:space:]' < VERSION)
+          last=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
+          msgs=$(git log --format=%B ${last:+$last..HEAD})
+          IFS=. read -r major minor patch <<< "$current"
+
+          if grep -qiE 'BREAKING[ -]CHANGE|^[a-z]+(\([^)]*\))?!:' <<< "$msgs"; then
+            major=$((major + 1)); minor=0; patch=0
+          elif grep -qiE '^feat(\([^)]*\))?:' <<< "$msgs"; then
+            minor=$((minor + 1)); patch=0
+          elif grep -qiE '^(fix|perf)(\([^)]*\))?:' <<< "$msgs"; then
+            patch=$((patch + 1))
+          else
+            echo "Нет feat/fix с прошлого тега (${last:-нет}) — релиз не нужен."
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          version="$major.$minor.$patch"
+          printf '%s\n' "$version" > VERSION
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git commit -m "chore(release): v$version" VERSION
+          git tag "v$version"
+          git push origin HEAD:master
+          git push origin "v$version"
+          echo "released=true" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Версия: v$version (было $current)"
+
+  windows:
+    needs: version
+    if: needs.version.outputs.released == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.version.outputs.version }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binaries
+        shell: pwsh
+        run: |
+          $ver = '${{ needs.version.outputs.version }}'
+          $ld = "-s -w -X github.com/kshishtovsky/rupas/internal/version.Version=$ver"
+          New-Item -ItemType Directory -Force build | Out-Null
+          go build -tags "with_utls with_quic" -trimpath -ldflags $ld -o build/ ./cmd/rupasd ./cmd/rupasctl
+          go build -trimpath -ldflags "$ld -H=windowsgui" -o build/rupas-gui.exe ./cmd/rupas-gui
+          build/rupasd.exe -version | Out-Host
+
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          $ver = '${{ needs.version.outputs.version }}'
+          $stage = "stage/Rupas-$ver"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item build/rupasd.exe, build/rupasctl.exe, build/rupas-gui.exe $stage
+          Copy-Item build/WinDivert.dll, build/WinDivert64.sys $stage
+          Copy-Item configs/rupas.example.yaml, README.md $stage
+          Copy-Item build/desync $stage/desync -Recurse
+          Compress-Archive -Path "$stage/*" -DestinationPath "Rupas-win64-$ver.zip"
+          Get-ChildItem "Rupas-win64-$ver.zip" | Select-Object Name, Length | Format-Table
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: Rupas-win64-*.zip
+          if-no-files-found: error
+
+  android:
+    needs: version
+    if: needs.version.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.version.outputs.version }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install SDK bits
+        run: |
+          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.0.12077973" >> "$GITHUB_ENV"
+
+      - name: gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          "$(go env GOPATH)/bin/gomobile" init
+
+      - name: Build AAR
+        run: gomobile bind -tags "with_utls with_quic with_gvisor" -target=android -androidapi 26 -o android/app/libs/rupas-core.aar ./mobile
+
+      - name: Signing key from secrets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          mkdir -p android/keystore
+          echo "$KEYSTORE_BASE64" | base64 -d > android/keystore/rupas-release.jks
+          cat > android/keystore.properties <<EOF
+          storeFile=rupas-release.jks
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=rupas
+          keyPassword=$KEYSTORE_PASSWORD
+          EOF
+          chmod 600 android/keystore.properties
+
+      - name: assembleRelease
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease
+
+      - name: Collect APK
+        run: |
+          ver='${{ needs.version.outputs.version }}'
+          apk=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
+          test -n "$apk" || { echo "APK не собран"; exit 1; }
+          cp "$apk" "Rupas-android-$ver-arm64.apk"
+          ls -l Rupas-android-*.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: Rupas-android-*.apk
+          if-no-files-found: error
+
+  publish:
+    needs: [version, windows, android]
+    if: needs.version.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.version.outputs.version }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Checksums
+        run: sha256sum Rupas-*.zip Rupas-*.apk > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      - name: Prepend CHANGELOG
+        run: |
+          ver='${{ needs.version.outputs.version }}'
+          last=$(git describe --tags --abbrev=0 "v$ver^" 2>/dev/null || true)
+          {
+            echo "## v$ver"
+            echo
+            git log --pretty='- %s (%h)' ${last:+$last..v$ver}
+            echo
+            cat CHANGELOG.md 2>/dev/null || true
+          } > CHANGELOG.new
+          mv CHANGELOG.new CHANGELOG.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.version.outputs.version }}
+          name: Rupas v${{ needs.version.outputs.version }}
+          generate_release_notes: false
+          body_path: CHANGELOG.md
+          files: |
+            Rupas-win64-*.zip
+            Rupas-android-*.apk
+            SHA256SUMS.txt
+
+      - name: Commit CHANGELOG back to master
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git checkout master
+          git add CHANGELOG.md
+          git commit -m "docs(changelog): v${{ needs.version.outputs.version }}" || true
+          git push origin master

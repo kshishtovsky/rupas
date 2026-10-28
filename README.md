@@ -1,10 +1,40 @@
 # Rupas
 
-Клиент обхода DPI для Windows: один процесс решает судьбу каждого потока —
-модифицировать пакеты локально (desync, без сервера, полная скорость канала),
-увести в туннель на VPS (VLESS-Reality) или пропустить напрямую.
+[![CI](https://github.com/kshishtovsky/rupas/actions/workflows/ci.yml/badge.svg)](https://github.com/kshishtovsky/rupas/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/kshishtovsky/rupas?sort=semver)](https://github.com/kshishtovsky/rupas/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/kshishtovsky/rupas)](LICENSE)
+![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Android-0078D4)
 
-Цели v1 — Telegram, YouTube, Discord на домашнем ISP. Пользователь не настраивает
+**Обход DPI без прокси в браузере.** Один процесс смотрит на каждый поток и решает
+его судьбу: модифицировать пакеты локально (desync, без сервера, полная скорость
+канала), увести в туннель на VPS (VLESS-Reality) или пропустить напрямую.
+Цели v1 — Telegram, YouTube, Discord на домашнем ISP; перехват идёт на уровне
+пакетов, ни одно приложение настраивать не нужно.
+
+## Скачать
+
+| Платформа | Файл из [Releases](https://github.com/kshishtovsky/rupas/releases/latest) | Установка |
+|---|---|---|
+| Windows 10/11 | `Rupas-win64-<ver>.zip` | распаковать в любую папку, запустить `rupas-gui.exe` (нужен администратор для WinDivert) |
+| Android 8+ (arm64) | `Rupas-android-<ver>-arm64.apk` | открыть файл, разрешить установку из этого источника |
+
+Рядом лежит `SHA256SUMS.txt` — проверить целостность:
+`certutil -hashfile Rupas-win64-0.6.0.zip SHA256`.
+
+![Интерфейс](docs/screenshots/gui-main.png)
+
+## Автообновление
+
+Приложение само узнаёт о новой версии: раз в 12 часов опрашивает
+`/releases/latest` GitHub API (плюс кнопка «Проверить обновления» в настройках и
+проверка при старте). Нашлась новее — предлагает обновиться, скачивает и
+устанавливает: APK проверяется по подписи, архив для Windows — по SHA256.
+Ручных действий при обновлении не требуется.
+
+## Цели v1
+
+Telegram, YouTube, Discord на домашнем ISP. Пользователь не настраивает
 прокси ни в одном приложении: перехват идёт на уровне пакетов.
 
 ## Стек
@@ -83,9 +113,12 @@ internal/
   core/        контракты между модулями (типы и интерфейсы, без логики)
   rpc/         named pipe сервер/клиент
 pkg/windivert/ обёртка WinDivert (фильтры, адреса, хелперы)
+mobile/        gobind-пакет: мост ядра в Android (AAR)
+android/       Android-приложение (Java, minSdk 26), собирается gradle из mobile/
+.github/       CI: сборка/тесты на PR, релиз и артефакты на push в master
 build/         WinDivert.dll/.sys, шаблоны desync (в git), бинарники и логи (игнор)
 configs/       пример конфига (в git), реальный конфиг и .bak (игнор)
-docs/          PRD.md, SYSTEM_DESIGN.md
+docs/          PRD.md, SYSTEM_DESIGN.md, PRD релизов и автообновления
 ```
 
 ## Архитектура
@@ -143,6 +176,10 @@ ECH: клиент шлёт GREASE-расширение (1 байт) почти �
 |---|---|
 | `docs/PRD.md` | продуктовые требования, лабораторный фундамент, user stories, MVP-скоуп |
 | `docs/SYSTEM_DESIGN.md` | ADR, горячий путь, структуры данных, стратегии desync, prober, супервизор, threat model |
+| `docs/PRD_RELEASE_PIPELINE.md` | требования к релизам, CI/CD и автообновлению (бизнес-обоснование) |
+| `docs/VERSIONING.md` | правило версий: что двигает major/minor/patch, как устроен `VERSION` |
+| `docs/RELEASING.md` | как выпускается релиз, что делать при откате и поломке CI |
+| `CHANGELOG.md` | история изменений (генерируется CI) |
 
 ## Грабли
 

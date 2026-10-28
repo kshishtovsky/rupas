@@ -141,6 +141,13 @@ func NewXHTTPDialer(ep config.Endpoint, logger *slog.Logger) (func(ctx context.C
 	return p.dial, nil
 }
 
+// streamContext — контекст времени жизни потока: значения из родителя,
+// но БЕЗ его отмены. Поток обязан пережить свой dial-ctx (tcpterm и probe
+// отменяют его сразу после Connect), иначе все POST/GET умирают на старте.
+func streamContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithCancel(context.WithoutCancel(ctx))
+}
+
 func (p *xhttpPath) dial(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
 	a := dst.Addr().Unmap()
 	var atyp byte
@@ -186,7 +193,13 @@ func (p *xhttpPath) dialAddr(ctx context.Context, atyp byte, addr []byte, port u
 		tconn.Close()
 		return nil, err
 	}
-	sctx, scancel := context.WithCancel(ctx)
+	// ВАЖНО: поток живёт дольше своего dial. Вызывающий cancels dial-ctx
+	// сразу после установления потока (tcpterm: defer cancel() после
+	// dialWait; probe: dcancel() после Connect). Раньше sctx наследовал эту
+	// отмену — и все POST/GET умирали через миг после старта: отправка
+	// медиа замирала на середине, скачивание обрывалось. Значения из ctx
+	// сохраняем, отмену — нет: поток закрывается своим Close().
+	sctx, scancel := streamContext(ctx)
 	c := &xhttpConn{
 		path:   p,
 		cc:     cc,
@@ -221,6 +234,12 @@ func (p *xhttpPath) dialTLS(ctx context.Context) (net.Conn, error) {
 	case err := <-done:
 		if err != nil {
 			raw.Close()
+			// Если сокет закрыли мы сами по ctx.Done, настоящая причина —
+			// таймаут/отмена, а не "use of closed network connection":
+			// именно эта строка уходила в UI профиля.
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			return nil, err
 		}
 	case <-ctx.Done():

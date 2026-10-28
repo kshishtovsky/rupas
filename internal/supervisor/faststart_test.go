@@ -90,6 +90,12 @@ func TestFastStartGoesActiveWithoutFullProbing(t *testing.T) {
 	if got := pr.runCalls.Load(); got != 0 {
 		t.Fatalf("full probe cycles = %d, want 0 (fast start must skip PROBING)", got)
 	}
+	// Revalidation is a background control probe kicked off after the state
+	// flips, so the counter is observable only eventually.
+	deadline := time.Now().Add(time.Second)
+	for pr.revalCalls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
 	if got := pr.revalCalls.Load(); got != 1 {
 		t.Fatalf("revalidation calls = %d, want 1", got)
 	}
@@ -105,7 +111,7 @@ func TestFastStartGoesActiveWithoutFullProbing(t *testing.T) {
 	}
 	// Once the confirming revalidation lands, the note reflects it and
 	// ACTIVE holds (no re-probing).
-	deadline := time.Now().Add(time.Second)
+	deadline = time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if strings.Contains(s.Snapshot().Counters.LastProbeNote, "revalidated ok") {
 			break

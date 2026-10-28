@@ -283,6 +283,17 @@ func TestAllCarriersDownError(t *testing.T) {
 	}
 }
 
+func TestRelayLogDropsInfoLevel(t *testing.T) {
+	var lines []string
+	w := &relayLogWriter{fn: func(line string) { lines = append(lines, line) }}
+	w.WriteMessage(boxLog.LevelInfo, "inbound connection from 127.0.0.1:60088")
+	w.WriteMessage(boxLog.LevelDebug, "debug detail")
+	w.WriteMessage(boxLog.LevelWarn, "router: failed to search process")
+	if len(lines) != 1 || !bytes.Contains([]byte(lines[0]), []byte("failed to search process")) {
+		t.Fatalf("only warn must reach the journal, got %q", lines)
+	}
+}
+
 func TestRelayLogDedupSuppressesRefusalStorm(t *testing.T) {
 	var lines []string
 	w := &relayLogWriter{fn: func(line string) { lines = append(lines, line) }}

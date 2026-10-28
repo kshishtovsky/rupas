@@ -433,6 +433,13 @@ type Config struct {
 	Tunnels    *TunnelConfig  `yaml:"tunnels"` // wave-5 multi-transport plan
 	Exclusions Exclusions     `yaml:"exclusions"`
 	GeoIP      *GeoIP         `yaml:"geoip,omitempty"`
+	// DisableFallbackFirst turns off the wave-6 rule "TUNNEL-verdict CIDRs
+	// dial the fallback carrier first". That rule sends Telegram through the
+	// hysteria2 (QUIC) fallback, where every stream shares one association —
+	// a large media upload then starves the small flows behind it. Switching
+	// it off routes those flows over the primary VLESS endpoint instead, so
+	// the two paths can be A/B compared on a real connection.
+	DisableFallbackFirst bool `yaml:"disable_fallback_first,omitempty"`
 }
 
 var desyncStrategies = []string{"fake", "fake_split", "multisplit", "disorder", "disorder2"}

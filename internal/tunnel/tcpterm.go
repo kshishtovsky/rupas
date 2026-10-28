@@ -45,8 +45,8 @@ type Terminator struct {
 	dial func(ctx context.Context, dst string) (net.Conn, error)
 	log  *slog.Logger
 
-	mu    sync.Mutex
-	conns map[termKey]*termConn
+	mu     sync.Mutex
+	conns  map[termKey]*termConn
 	closed bool
 
 	stopSweep chan struct{}
@@ -149,9 +149,9 @@ func (g *dialGate) failure() {
 // The values below leave headroom for a media burst while failure() still
 // clamps the rate to the backoff interval when the carrier refuses.
 const (
-	dialConc  = 32   // concurrent carrier dials (one per client flow)
+	dialConc  = 32    // concurrent carrier dials (one per client flow)
 	dialRate  = 128.0 // sustained dials/second while healthy
-	dialBurst = 16   // burst size
+	dialBurst = 16    // burst size
 )
 
 // PacketSender injects one forged inbound IPv4/TCP packet. ifIdx/subIfIdx
@@ -163,13 +163,13 @@ type PacketSender interface {
 
 // TermPkt is one consumed client packet (parsed by the capture layer).
 type TermPkt struct {
-	SrcIP, DstIP             [4]byte // client, original destination
-	SrcPort, DstPort         uint16
-	Seq, Ack                 uint32
-	Flags                    byte // tcpFlagSYN/ACK/PSH/FIN/RST
-	Window                   uint16
-	Payload                  []byte
-	IfIdx, SubIfIdx          uint32
+	SrcIP, DstIP     [4]byte // client, original destination
+	SrcPort, DstPort uint16
+	Seq, Ack         uint32
+	Flags            byte // tcpFlagSYN/ACK/PSH/FIN/RST
+	Window           uint16
+	Payload          []byte
+	IfIdx, SubIfIdx  uint32
 }
 
 // TCP flags (mirror of the capture layer's tcpFlag*).
@@ -423,6 +423,14 @@ type termConn struct {
 
 	lastSeen atomicTime
 
+	// Per-flow byte accounting (diagnostics): without it there is no way to
+	// tell "the upload moved 8 KB and died" from "the flow ran for a minute".
+	upBytes     atomic.Int64 // client → tunnel (upload)
+	downBytes   atomic.Int64 // tunnel → client
+	startedAt   atomicTime
+	stallWarnAt atomic.Int64
+	closeLogged atomic.Bool
+
 	// flowDesc cache (immutable 4-tuple; see flowDesc).
 	fdOnce sync.Once
 	fdStr  string
@@ -553,6 +561,7 @@ func (c *termConn) start() {
 			return
 		}
 		c.tm.gate.success()
+		c.startedAt.Store(time.Now())
 		c.tm.log.Info("term: carrier dial ok", slog.String("flow", c.flowDesc()))
 		c.tm.wg.Add(2)
 		go c.pumpWrites()
@@ -917,6 +926,59 @@ func (c *termConn) warnQueueFull(total uint64) {
 		slog.String("flow", c.flowDesc()), slog.Uint64("total", total))
 }
 
+// carrierStallAfter is the threshold at which one carrier read/write counts
+// as a stall. A healthy flow returns in milliseconds; TCP RTO starts at 1 s
+// and doubles, so a multi-second block is either loss recovery or a dead
+// carrier — the two things a user feels as "upload hangs".
+const carrierStallAfter = 3 * time.Second
+
+// noteStall logs a single carrier read/write that blocked for too long.
+// This is the only signal that distinguishes "the tunnel silently stopped
+// passing bytes" from "the peer is slow": the flow stays alive, so nothing
+// else fires.
+func (c *termConn) noteStall(start time.Time, dir string, n int) {
+	d := time.Since(start)
+	if d < carrierStallAfter || c.tm == nil || c.tm.log == nil {
+		return
+	}
+	if !rateLimit(&c.stallWarnAt, qFullWarnEvery) {
+		return
+	}
+	c.tm.log.Warn("term: carrier stalled",
+		slog.String("flow", c.flowDesc()),
+		slog.String("dir", dir),
+		slog.Duration("blocked", d),
+		slog.Int("bytes", n),
+		slog.Int64("up_total", c.upBytes.Load()),
+		slog.Int64("down_total", c.downBytes.Load()))
+}
+
+// logFlowClose records the per-flow totals once: bytes moved and lifetime.
+// Without it a stalled upload leaves no trace at all — the flow was neither
+// "failed" nor "queue full", it simply stopped.
+func (c *termConn) logFlowClose(reason string) {
+	if c.tm == nil || c.tm.log == nil {
+		return
+	}
+	if !c.closeLogged.CompareAndSwap(false, true) {
+		return
+	}
+	if !c.tm.log.Enabled(context.Background(), slog.LevelDebug) {
+		// INFO only for suspicious flows: tiny transfer or a long life.
+		up, down := c.upBytes.Load(), c.downBytes.Load()
+		lived := time.Since(c.startedAt.Load())
+		if c.startedAt.Load().IsZero() || (up+down > 64<<10 && lived < 5*time.Minute) {
+			return
+		}
+	}
+	c.tm.log.Info("term: flow closed",
+		slog.String("flow", c.flowDesc()),
+		slog.String("reason", reason),
+		slog.Int64("up", c.upBytes.Load()),
+		slog.Int64("down", c.downBytes.Load()),
+		slog.Duration("life", time.Since(c.startedAt.Load())))
+}
+
 // warnOOOOverflow emits the reorder-buffer-overflow WARN, rate-limited like
 // warnQueueFull (evictions can fire on every packet of a bad burst).
 func (c *termConn) warnOOOOverflow() {
@@ -1022,10 +1084,13 @@ func (c *termConn) pumpWrites() {
 	for {
 		select {
 		case p := <-c.writeCh:
+			wStart := time.Now()
 			if _, err := c.upstream.Write(p); err != nil {
 				c.reset(err)
 				return
 			}
+			c.noteStall(wStart, "up", len(p))
+			c.upBytes.Add(int64(len(p)))
 			putPayload(p)
 			// The byte left the receive buffer: uncharge it and let the
 			// client know the window opened (window-update ACK).
@@ -1070,8 +1135,11 @@ func (c *termConn) pumpReads() {
 	defer c.tm.wg.Done()
 	buf := make([]byte, termMSS)
 	for {
+		rStart := time.Now()
 		n, err := c.upstream.Read(buf)
 		if n > 0 {
+			c.noteStall(rStart, "down", n)
+			c.downBytes.Add(int64(n))
 			if !c.sendData(buf[:n]) {
 				return
 			}
@@ -1111,7 +1179,7 @@ func (c *termConn) sendData(b []byte) bool {
 		c.mu.Unlock()
 		if err := c.tm.send.SendInboundTCP(pkt, c.ifIdx(), c.subIfIdx()); err != nil {
 			c.tm.log.Warn("term: data inject failed", slog.String("err", err.Error()))
-			c.kill("data inject failed: "+err.Error())
+			c.kill("data inject failed: " + err.Error())
 			putCraftBuf(pkt)
 			return false
 		}
@@ -1224,7 +1292,7 @@ func (c *termConn) sendFIN() {
 	c.mu.Unlock()
 	if err := c.tm.send.SendInboundTCP(pkt, c.ifIdx(), c.subIfIdx()); err != nil {
 		c.tm.log.Warn("term: fin inject failed", slog.String("err", err.Error()))
-		c.kill("fin inject failed: "+err.Error())
+		c.kill("fin inject failed: " + err.Error())
 	}
 	putCraftBuf(pkt)
 }
@@ -1249,7 +1317,7 @@ func (c *termConn) reset(reason error) {
 	} else {
 		c.mu.Unlock()
 	}
-	c.kill("reset: "+reason.Error())
+	c.kill("reset: " + reason.Error())
 }
 
 // kill closes the upstream relay, marks the conn dead and drops it from the
@@ -1265,6 +1333,7 @@ func (c *termConn) reset(reason error) {
 // reader can observe a half-closed relay.
 func (c *termConn) kill(reason string) {
 	c.closeOne.Do(func() {
+		c.logFlowClose(reason)
 		lvl := slog.LevelWarn
 		switch reason {
 		case "shutdown", "idle sweep", "client rst", "client fin acked":
@@ -1318,9 +1387,9 @@ func (c *termConn) craft(seq, ack uint32, flags byte, payload []byte, win uint16
 	pkt[0] = 0x45
 	binary.BigEndian.PutUint16(pkt[2:], uint16(ipLen+tcpLen))
 	pkt[4], pkt[5] = 0x12, 0x34
-	pkt[6], pkt[7] = 0x40, 0x00 // DF
-	pkt[8] = 64                 // TTL
-	pkt[9] = 6                  // TCP
+	pkt[6], pkt[7] = 0x40, 0x00    // DF
+	pkt[8] = 64                    // TTL
+	pkt[9] = 6                     // TCP
 	copy(pkt[12:16], c.k.dstIP[:]) // src = the "server"
 	copy(pkt[16:20], c.k.srcIP[:]) // dst = the client
 	pkt[10], pkt[11] = 0, 0        // pooled buffer: stale checksum must not leak into the sum

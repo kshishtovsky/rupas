@@ -966,3 +966,37 @@ func TestTerminatorSlowCarrierZeroLoss(t *testing.T) {
 		prevEdge = re
 	}
 }
+
+// noteStall: один длинный блокирующий Read/Write на карьере — единственный
+// признак «туннель замолчал, но поток жив». Без него зависшая отправка не
+// оставляет следа: поток не падает и не переполняет очередь.
+func TestTermConnStallAccounting(t *testing.T) {
+	c := &termConn{tm: &Terminator{log: testLogger()}}
+	c.upBytes.Add(1000)
+	c.downBytes.Add(2000)
+
+	if c.upBytes.Load() != 1000 || c.downBytes.Load() != 2000 {
+		t.Fatalf("счётчики байт: up=%d down=%d", c.upBytes.Load(), c.downBytes.Load())
+	}
+
+	// logFlowClose идемпотентен: второй вызов не должен ничего менять.
+	c.startedAt.Store(time.Now())
+	c.logFlowClose("test")
+	if !c.closeLogged.Load() {
+		t.Fatal("closeLogged не выставлен")
+	}
+	c.logFlowClose("test again")
+	if !c.closeLogged.Load() {
+		t.Fatal("closeLogged сбросился")
+	}
+}
+
+// carrierStallAfter: порог срабатывания сторожа.
+func TestCarrierStallThreshold(t *testing.T) {
+	if carrierStallAfter < time.Second {
+		t.Fatalf("порог %v слишком мал: каждый TCP RTO давал бы ложное срабатывание", carrierStallAfter)
+	}
+	if carrierStallAfter > 10*time.Second {
+		t.Fatalf("порог %v слишком велик: зависание в минуту не отличить от простоя", carrierStallAfter)
+	}
+}

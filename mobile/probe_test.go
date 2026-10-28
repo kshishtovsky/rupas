@@ -81,15 +81,16 @@ func TestTestProfileBadVLESSHidesUUID(t *testing.T) {
 	}
 }
 
-// err is capped at 200 bytes and stays valid UTF-8.
+// err is capped at probeErrMax bytes and stays valid UTF-8. The cap leaves
+// room for the " · <sing-box line>" context a failed dial appends.
 func TestRedactTruncates(t *testing.T) {
-	out := redact(strings.Repeat("a", 250), "")
-	if len(out) != 200 {
-		t.Fatalf("want 200 bytes, got %d", len(out))
+	out := redact(strings.Repeat("a", 400), "")
+	if len(out) != probeErrMax {
+		t.Fatalf("want %d bytes, got %d", probeErrMax, len(out))
 	}
 	wide := redact(strings.Repeat("й", 300), "") // 600 bytes
-	if len(wide) > 200 {
-		t.Fatalf("want <=200 bytes, got %d", len(wide))
+	if len(wide) > probeErrMax {
+		t.Fatalf("want <=%d bytes, got %d", probeErrMax, len(wide))
 	}
 	if !utf8.ValidString(wide) {
 		t.Fatalf("truncation split a rune: %q", wide)

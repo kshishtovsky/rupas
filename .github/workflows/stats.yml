@@ -1,0 +1,60 @@
+name: Stats
+
+# Обновляет блок статистики в README (между маркерами stats:start/end).
+# Ручной запуск или раз в неделю — цифры не должны гнить.
+on:
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  stats:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Recompute
+        run: |
+          set -euo pipefail
+          go build -tags "with_utls with_quic" ./...
+          code=$(find . -name '*.go' ! -name '*_test.go' -not -path './build/*' | xargs wc -l | tail -1 | awk '{print $1}')
+          tests_src=$(find . -name '*_test.go' -not -path './build/*' | xargs wc -l | tail -1 | awk '{print $1}')
+          tests=$(go test -tags "with_utls with_quic" -list '.*' ./internal/... ./cmd/... | grep -c '^Test' || true)
+          pkgs=$(go list ./internal/... ./cmd/... ./pkg/... ./mobile/... | wc -l)
+          java=$(find android -name '*.java' | xargs wc -l | tail -1 | awk '{print $1}')
+          commits=$(git rev-list --count HEAD)
+          releases=$(git tag -l 'v*' | wc -l)
+
+          {
+            echo '| Метрика | Значение |'
+            echo '|---|---|'
+            echo "| Go-код (без тестов) | ${code} строк, ${pkgs} пакетов |"
+            echo "| Тесты | ${tests_src} строк, ${tests} тестов |"
+            echo "| Android (Java) | ${java} строк |"
+            echo "| Коммитов / релизов | ${commits} / ${releases} |"
+          } > /tmp/stats.md
+
+          awk -v f=/tmp/stats.md '
+            /<!-- stats:start -->/ { print; while ((getline line < f) > 0) print line; inblk = 1; next }
+            /<!-- stats:end -->/   { inblk = 0; print; next }
+            !inblk                 { print }
+          ' README.md > /tmp/README.md && mv /tmp/README.md README.md
+          cat /tmp/stats.md
+
+      - name: Commit
+        run: |
+          if git diff --quiet README.md; then
+            echo "статистика без изменений"
+            exit 0
+          fi
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git commit -m "docs(readme): статистика репозитория" README.md
+          git push

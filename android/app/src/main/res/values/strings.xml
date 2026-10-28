@@ -292,6 +292,22 @@
     <string name="app_picker_a11y_segment">%1$s: %2$s</string>
     <string name="app_picker_a11y_segment_off">%1$s: %2$s, недоступно</string>
 
+    <!-- Обновления из GitHub Releases -->
+    <string name="update_version_current">Версия %1$s</string>
+    <string name="update_check_btn">Проверить обновления</string>
+    <string name="update_title">Доступна версия %1$s</string>
+    <string name="update_now">Обновить</string>
+    <string name="update_later">Позже</string>
+    <string name="update_latest">Установлена последняя версия (%1$s)</string>
+    <string name="update_check_failed">Не удалось проверить, попробуйте позже</string>
+    <string name="update_no_apk">В релизе нет APK — откройте страницу релиза</string>
+    <string name="update_no_changelog">Без описания изменений.</string>
+    <string name="update_downloading">Скачивание обновления</string>
+    <string name="update_download_failed">Не удалось скачать обновление</string>
+    <string name="update_bad_signature">Подпись файла не совпадает</string>
+    <string name="update_need_install_permission">Разрешите установку из этого источника в настройках Android</string>
+    <string name="update_open_settings">Открыть настройки</string>
+
     <plurals name="app_shared_uid">
         <item quantity="one">общий UID с %1$d приложением</item>
         <item quantity="few">общий UID с %1$d приложениями</item>

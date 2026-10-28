@@ -53,6 +53,12 @@ android {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
+
+    buildFeatures {
+        // Нужен BuildConfig.VERSION_NAME: на нём сравниваются версии в UpdateChecker.
+        // AGP 8 генерирует его только по явному флагу.
+        buildConfig true
+    }
 }
 
 dependencies {

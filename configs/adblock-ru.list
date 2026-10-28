@@ -1,0 +1,68 @@
+# rupas adblock — RU-рекламные сети (курируемый список)
+# Источник: живой HTML science.mail.ru и mail.ru (2026-10-28) + стек MRADX/AdFox.
+# Формат: домен = блокировать домен и все поддомены. '#' — комментарий.
+#
+# Проблема, которую закрывает файл: реклама mail.ru отдаётся с ЕГО ЖЕ доменов
+# (ad.mail.ru, rs.mail.ru) и с биржи MRADX (r.mradx.net). В публичных списках
+# они либо отсутствуют, либо лежат в трекерах, а трекеры по умолчанию выключены
+# — поэтому science.mail.ru показывал рекламу при включённом фильтре.
+#
+# НЕ включены намеренно: mail.ru, imgsmail.ru, resizer.mail.ru, media-trend.mail.ru
+# (контент и картинки самого сайта), mc.yandex.ru (аналитика → список трекеров).
+
+# --- mail.ru / VK ---
+ad.mail.ru
+ads.mail.ru
+rs.mail.ru
+banners.mail.ru
+rb.mail.ru
+splash-screen.mail.ru
+top-fwz1.mail.ru
+awaps.mail.ru
+media-advcycle.imgsmail.ru
+mediator.imgsmail.ru
+stat.radar.imgsmail.ru
+an.mail.ru
+alt-ad.mail.ru
+xray.mail.ru
+r0.mail.ru
+relap.mail.ru
+
+# --- MRADX: биржа mail.ru (в публичных списках только r0.mradx.net) ---
+mradx.net
+r.mradx.net
+r0.mradx.net
+r1.mradx.net
+r2.mradx.net
+r3.mradx.net
+rb.mradx.net
+rs.mradx.net
+ssp.mradx.net
+ad.mradx.net
+banners.mradx.net
+
+# --- AdFox (Яндекс) ---
+ads.adfox.ru
+banners.adfox.ru
+adfox.ru
+b.adfox.ru
+ads.adfox.net
+banners.adfox.net
+adfox.net
+yieldmo.adfox.ru
+
+# --- AdRiver / myTarget / VK Ads ---
+ad.adriver.ru
+content.adriver.ru
+pb.adriver.ru
+adriver.ru
+target.my.com
+ads.vk.com
+ad.vk.com
+
+# --- прочие RU-биржи, встречающиеся на mail.ru и science.mail.ru ---
+ad.rambler.ru
+kraken.rambler.ru
+ad.republer.com
+adserv.ning.com
+banners.adriver.ru

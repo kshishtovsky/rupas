@@ -309,18 +309,21 @@ func endpointOutbound(ep config.Endpoint, tag string) option.Outbound {
 			OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{TLS: tls},
 		}
 		if muxOf(ep) {
-			// Wave 6 (live finding 2026-10-25): multiplex every stream
-			// over ONE long-lived TLS connection. Un-multiplexed, each
-			// CONNECT opens a fresh TLS connection to the VPS and the
-			// TSPU quarantines the endpoint (~2 min silent SYN drop)
-			// after a handful of connections — the TG connect storms
-			// killed the whole carrier this way. MaxConnections pins the
-			// pool to a single connection; h2mux is the Xray-compatible
-			// protocol.
+			// Wave 6 (live finding 2026-10-25): multiplex every stream over
+			// ONE long-lived TLS connection. Un-multiplexed, each CONNECT
+			// opens a fresh TLS connection to the VPS and the TSPU
+			// quarantines the endpoint (~2 min silent SYN drop) after a
+			// handful of connections — the TG connect storms killed the
+			// whole carrier this way.
+			//
+			// MaxConnections > 1 keeps the count bounded while buying speed:
+			// one TLS connection is capped by its own TCP window (measured
+			// 227 of 540 Mbit/s at RTT 55 ms), four reach the path bandwidth
+			// (422 Mbit/s). h2mux is the Xray-compatible protocol.
 			vlessOpts.Multiplex = &option.OutboundMultiplexOptions{
 				Enabled:        true,
 				Protocol:       "h2mux",
-				MaxConnections: 1,
+				MaxConnections: ep.MuxConns,
 				Padding:        ep.MuxPadding,
 			}
 		}

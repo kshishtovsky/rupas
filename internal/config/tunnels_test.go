@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -304,5 +305,82 @@ tunnels:
 	}
 	if !plan.XHTTPFallbackInChain {
 		t.Error("xhttp_fallback_in_chain not parsed")
+	}
+}
+
+// MuxConns: размер пула mux-соединений. Одно TLS-соединение упирается в своё
+// окно (замер: 227 из 540 Мбит/с при RTT 55 мс), четыре дают полосу маршрута.
+func TestTunnelMuxConns(t *testing.T) {
+	base := `
+profile: p
+rules:
+  - action: direct
+tunnels:
+  tcp:
+    kind: vless_reality
+    host: 203.0.113.10
+    port: 12341
+    uuid: 0f4e1c2d-3b5d-4e6f-8a9b-0c1d2e3f4a5b
+    sni: vps.example.net
+    reality_public_key: AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKKKLL
+    reality_short_id: 999e2fd9
+%s`
+	cases := []struct {
+		name  string
+		extra string
+		want  int
+		fail  bool
+	}{
+		{"по умолчанию 1", "", 1, false},
+		{"явно 4", "    mux: \"on\"\n    mux_conns: 4\n", 4, false},
+		{"явно 7", "    mux: \"on\"\n    mux_conns: 7\n", 7, false},
+		{"верхняя граница 8", "    mux: \"on\"\n    mux_conns: 8\n", 8, false},
+		{"выше границы", "    mux: \"on\"\n    mux_conns: 9\n", 0, true},
+		{"отрицательное", "    mux: \"on\"\n    mux_conns: -1\n", 0, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg, err := Unmarshal([]byte(fmt.Sprintf(base, c.extra)))
+			if c.fail {
+				if err == nil {
+					t.Fatalf("ждали ошибку валидации для mux_conns")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if cfg.Tunnels == nil || cfg.Tunnels.TCP == nil {
+				t.Fatal("no tcp endpoint")
+			}
+			if got := cfg.Tunnels.TCP.MuxConns; got != c.want {
+				t.Fatalf("mux_conns = %d, ждали %d", got, c.want)
+			}
+		})
+	}
+}
+
+// MuxConns не должен влиять на не-mux конфиг: без mux соединение одно на поток.
+func TestTunnelMuxConnsIgnoredWithoutMux(t *testing.T) {
+	cfg, err := Unmarshal([]byte(`
+profile: p
+rules:
+  - action: direct
+tunnels:
+  tcp:
+    kind: vless_reality
+    host: 203.0.113.10
+    port: 12341
+    uuid: 0f4e1c2d-3b5d-4e6f-8a9b-0c1d2e3f4a5b
+    sni: vps.example.net
+    reality_public_key: AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKKKLL
+    reality_short_id: 999e2fd9
+    mux_conns: 4
+`))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Tunnels.TCP.Mux != "" {
+		t.Fatalf("mux включился сам: %q", cfg.Tunnels.TCP.Mux)
 	}
 }

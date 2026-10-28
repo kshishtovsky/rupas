@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -101,8 +102,23 @@ func runProbe(link, filesDir string) (res probeResult) {
 		return probeResult{Stage: "start", Err: redact(err.Error(), link, secrets...)}
 	}
 
+	// xhttp endpoints have no sing-box inbound: our own client carries them,
+	// so the probe must dial through that same client. Before this, every
+	// xhttp profile answered "tunnel unavailable" while the tunnel itself
+	// worked — the profile card lied to the user.
+	var dialOne func(context.Context, netip.AddrPort) (net.Conn, error)
+	if ep.NeedsXHTTP() {
+		dialOne, err = android.XHTTPDialer(ep, rl.add)
+		if err != nil {
+			return probeResult{Stage: "start", Err: redact(err.Error(), link, secrets...)}
+		}
+	} else {
+		dialOne = func(dctx context.Context, dst netip.AddrPort) (net.Conn, error) {
+			return relay.DialTCPIndex(0, dctx, dst)
+		}
+	}
 	dctx, dcancel := context.WithTimeout(ctx, probeDial)
-	conn, err := relay.DialTCPIndex(0, dctx, netip.MustParseAddrPort(probeAddr))
+	conn, err := dialOne(dctx, netip.MustParseAddrPort(probeAddr))
 	dcancel()
 	if err != nil {
 		// The box log says WHY the outbound refused; without it the app can

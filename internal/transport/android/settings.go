@@ -41,6 +41,12 @@ type Settings struct {
 	Fallback  bool   `json:"fallback"`
 	// PreferIPv4: nil (absent in JSON) means enabled.
 	PreferIPv4 *bool `json:"prefer_ipv4,omitempty"`
+	// Mux: "on" multiplexes every flow of the legacy/flat endpoint over a
+	// small pool of long-lived TLS connections. Ignored when Links are used —
+	// each link carries its own mux=… parameters.
+	Mux string `json:"mux,omitempty"`
+	// MuxConns: pool size 1..MaxMuxConns (default 1).
+	MuxConns int `json:"mux_conns,omitempty"`
 	// Links: share links in dial order (optional; replaces the flat fields).
 	Links []string `json:"links,omitempty"`
 	// Rules: the routing rule set edited in the app's Routing screen
@@ -214,6 +220,8 @@ func (s *Settings) legacyEndpoint() Endpoint {
 		UUID:      s.UUID,
 		SNI:       s.SNI,
 		Transport: transportTCP,
+		Mux:       s.Mux,
+		MuxConns:  s.MuxConns,
 	}
 	if s.PublicKey != "" {
 		e.Security = secReality

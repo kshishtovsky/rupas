@@ -6,11 +6,11 @@ name: Release
 on:
   push:
     branches: [master]
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
   contents: write
-  packages: write
 
 concurrency:
   group: release
@@ -18,8 +18,10 @@ concurrency:
 
 jobs:
   version:
-    # Коммит самого релизного бота не должен запускать второй релиз.
-    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release)') }}
+    # Тег = собрать артефакты для уже существующей версии (переиздание или
+    # ремонт CI). Пуш в master = посчитать версию по коммитам. Коммит самого
+    # релизного бота второй релиз не запускает.
+    if: ${{ github.ref_type == 'tag' || !startsWith(github.event.head_commit.message, 'chore(release)') }}
     runs-on: ubuntu-latest
     outputs:
       released: ${{ steps.bump.outputs.released }}
@@ -33,6 +35,13 @@ jobs:
         id: bump
         run: |
           set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+            echo "Переиздание тега ${GITHUB_REF}"
+            exit 0
+          fi
+
           current=$(tr -d '[:space:]' < VERSION)
           last=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
           msgs=$(git log --format=%B ${last:+$last..HEAD})
@@ -124,11 +133,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
-
+      # SDK уже предустановлен на ubuntu-раннере; android-actions/setup-android
+      # падает на `sdkmanager tools` (пакета больше нет в cmdline-tools 16).
       - name: Install SDK bits
         run: |
-          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973" > /dev/null
+          echo "sdk=$ANDROID_SDK_ROOT"
+          yes | sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973" > /dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.0.12077973" >> "$GITHUB_ENV"
 
       - name: gomobile

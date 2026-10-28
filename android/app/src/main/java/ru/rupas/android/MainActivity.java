@@ -198,6 +198,10 @@ public class MainActivity extends AppCompatActivity {
         if (!RupasVpnService.isRunning()) {
             RupasVpnService.showOfflineNotification(this);
         }
+
+        // Авто-проверка обновлений: в фоне, не чаще раза в 12 ч (троттлинг внутри).
+        // После запроса разрешений — иначе диалог обновления уедет под системный.
+        UpdateChecker.checkAuto(this);
     }
 
     private ImageButton btnTheme;
@@ -375,6 +379,9 @@ public class MainActivity extends AppCompatActivity {
         // direct-хвост управляется переключателем — в карточках профилей его нет,
         // значение уходит в настройки обычным «Сохранить и применить».
         btnToggleServerFields.setOnClickListener(v -> toggleServerFields());
+        ((TextView) findViewById(R.id.tvVersion))
+                .setText(getString(R.string.update_version_current, BuildConfig.VERSION_NAME));
+        findViewById(R.id.btnCheckUpdates).setOnClickListener(v -> UpdateChecker.checkManual(this));
     }
 
     /** Сводка в карточке маршрутов: пишется экраном «Маршруты» после чтения/применения. */

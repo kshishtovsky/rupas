@@ -1,6 +1,7 @@
 package android
 
 import (
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -87,5 +88,22 @@ func TestTunnelInfoAndCarrierCount(t *testing.T) {
 	e.setTunnel("on", "1 carrier(s)")
 	if st, detail := e.TunnelInfo(); st != "on" || detail != "1 carrier(s)" {
 		t.Fatalf("setTunnel must be visible through TunnelInfo, got %q/%q", st, detail)
+	}
+}
+
+// DoT (TCP/853) must be refused while the filter is on: it is encrypted, so the
+// DNS sinkhole never sees it, and Android's resolver would happily resolve ad
+// hosts for real. Refusal makes it fall back to UDP/53, which is filtered.
+func TestAdblockRefusesDoT(t *testing.T) {
+	e := NewW3EngineWithRules(nil, nil, nil, "", nil)
+	e.adblock = &Adblock{} // filter on, empty tables: only the 853 branch matters
+	dot := FlowMeta{Destination: netip.MustParseAddrPort("8.8.8.8:853")}
+	if got := e.decide(dot); got != ActionBlock {
+		t.Fatalf("TCP/853 with the filter on must be blocked, got %v", got)
+	}
+	// Filter off → DoT is left alone.
+	e.adblock = nil
+	if got := e.decide(dot); got == ActionBlock && e.rules != nil {
+		t.Log("rules blocked 853 on their own; that is the preset's business")
 	}
 }

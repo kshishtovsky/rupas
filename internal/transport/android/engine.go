@@ -244,6 +244,15 @@ func (e *Engine) decide(m FlowMeta) Action {
 	if a, ok := e.appAction(m); ok {
 		return a
 	}
+	// DNS over TLS (853) is encrypted, so the sinkhole cannot filter it: the app
+	// would resolve ad hosts for real and only the SNI layer would be left. With
+	// the filter on we refuse 853 so the resolver falls back to plain UDP/53,
+	// which serveDNS53 does see. Shortcut: this also blocks deliberate DoT — on
+	// a phone with the filter on that is the intended trade, and apps fall back.
+	if e.adblock != nil && m.Destination.Port() == 853 {
+		e.logf("adblock: %s (dot, refused — dns falls back to udp/53)", m.Destination)
+		return ActionBlock
+	}
 	// Adblock outranks the routing table: a blocked name never gets an
 	// egress socket, whatever the rules would say about its address.
 	if a := e.adblock; a != nil && m.SNI != "" {

@@ -66,10 +66,22 @@ public final class LogBuffer {
         return TIME_FMT.get().format(new Date(e.timeMs)) + " " + e.text + '\n';
     }
 
+    /**
+     * sing-box пишет логи в slog с ANSI-цветом; в журнале приложения они
+     * выглядели как «[36mINFO[0m» — вырезаем escape-последовательности целиком.
+     */
+    private static String stripAnsi(String s) {
+        if (s.indexOf('\u001b') < 0) {
+            return s; // подавляющее большинство строк: ни одной проверки сверх этого
+        }
+        return s.replaceAll("\u001b\\[[0-9;]*[A-Za-z]", "");
+    }
+
     public static void add(String line) {
         if (line == null || line.trim().isEmpty()) {
             return;
         }
+        line = stripAnsi(line);
         long now = System.currentTimeMillis();
         boolean isDebug = isDebugLine(line);
         // Сетевые события остаются в кольцевом буфере, но не пишутся в logcat

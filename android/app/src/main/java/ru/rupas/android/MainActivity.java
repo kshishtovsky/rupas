@@ -198,9 +198,10 @@ public class MainActivity extends AppCompatActivity {
                         ? AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
                         : AppCompatDelegate.MODE_NIGHT_NO;
             SettingsStore.saveThemeMode(this, next);
+            // Иконку ставим сразу: если режим сменился на «как в системе» при
+            // совпадающем с ним виде, uiMode не меняется и пересоздания нет.
+            renderThemeButton(next);
             Toast.makeText(this, themeLabel(next), Toast.LENGTH_SHORT).show();
-            // setDefaultNightMode пересоздаст активити сам (uiMode меняется),
-            // поэтому иконку здесь не трогаем — её выставит новый onCreate.
             AppCompatDelegate.setDefaultNightMode(next);
         });
         renderThemeButton(SettingsStore.loadThemeMode(this));

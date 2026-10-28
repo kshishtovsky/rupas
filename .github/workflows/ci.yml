@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [master, dev]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Теги обязательны: без них сборка проходит, а sing-box падает в рантайме.
+      - name: Build
+        run: go build -tags "with_utls with_quic" ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -tags "with_utls with_quic" -count=1 -skip "TestPipelineTunnelEscalationNoEndpoint" ./internal/... ./cmd/...

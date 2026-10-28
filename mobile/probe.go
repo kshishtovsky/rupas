@@ -14,6 +14,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -33,7 +34,7 @@ const (
 	probePayload = 2 * time.Second
 	probeTotal   = 8 * time.Second
 
-	probeErrMax = 200
+	probeErrMax = 240
 )
 
 // probeMu serialises probes: a second call while one is running answers
@@ -82,7 +83,8 @@ func runProbe(link, filesDir string) (res probeResult) {
 	ctx, cancel := context.WithTimeout(context.Background(), probeTotal)
 	defer cancel()
 
-	relay := android.NewRelay(&android.Settings{Links: []string{link}, Fallback: true}, nil)
+	var rl probeLog
+	relay := android.NewRelay(&android.Settings{Links: []string{link}, Fallback: true}, rl.add)
 	defer func() {
 		if err := relay.Close(); err != nil && res.OK {
 			res = probeResult{Stage: "start", Err: redact("relay close: "+err.Error(), link, secrets...)}
@@ -100,7 +102,9 @@ func runProbe(link, filesDir string) (res probeResult) {
 	conn, err := relay.DialTCPIndex(0, dctx, netip.MustParseAddrPort(probeAddr))
 	dcancel()
 	if err != nil {
-		return probeResult{Stage: "dial", Err: redact(err.Error(), link, secrets...)}
+		// The box log says WHY the outbound refused; without it the app can
+		// only show "socks5: reply code 1" and the user is stuck.
+		return probeResult{Stage: "dial", Err: redact(err.Error()+rl.tail(), link, secrets...)}
 	}
 	defer conn.Close() //nolint:errcheck // read side only; relay.Close tears it down
 
@@ -111,6 +115,67 @@ func runProbe(link, filesDir string) (res probeResult) {
 		return probeResult{Stage: "payload", Err: redact("tls handshake: "+err.Error(), link, secrets...)}
 	}
 	return probeResult{OK: true, MS: time.Since(started).Milliseconds(), Stage: "payload"}
+}
+
+// probeLog keeps the tail of one probe's sing-box log so a failed dial can say
+// WHY (the SOCKS error alone is "reply code 1"). One probe at a time, so a
+// small ring is enough — no need for a lock-free structure.
+type probeLog struct {
+	mu   sync.Mutex
+	ring [8]string
+	n    int
+}
+
+var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*[A-Za-z]")
+
+func (p *probeLog) add(line string) {
+	line = strings.TrimSpace(ansiRe.ReplaceAllString(line, ""))
+	if line == "" {
+		return
+	}
+	// sing-box prefixes the line with "android: sing-box info: INFO[0000] [...]";
+	// keep from the message itself.
+	if i := strings.Index(line, "] "); i >= 0 && i < len(line)-2 {
+		line = line[i+2:]
+	}
+	p.mu.Lock()
+	p.ring[p.n%len(p.ring)] = line
+	p.n++
+	p.mu.Unlock()
+}
+
+// tail returns " · <why>" with the most explanatory line of the ring: the last
+// one mentioning a failure, else the last line at all.
+func (p *probeLog) tail() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var last, why string
+	for i := 0; i < len(p.ring) && i < p.n; i++ {
+		line := p.ring[(p.n-1-i+len(p.ring)*2)%len(p.ring)]
+		if line == "" {
+			continue
+		}
+		if last == "" {
+			last = line
+		}
+		lower := strings.ToLower(line)
+		for _, k := range []string{"error", "fail", "reject", "refus", "timeout", "denied", "invalid"} {
+			if strings.Contains(lower, k) {
+				why = line
+				break
+			}
+		}
+		if why != "" {
+			break
+		}
+	}
+	if why == "" {
+		why = last
+	}
+	if why == "" {
+		return ""
+	}
+	return " · " + why
 }
 
 // redact keeps the secret out of the JSON: the whole link, any prefix of it

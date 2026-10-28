@@ -10,7 +10,9 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -31,6 +33,29 @@ public final class SettingsStore {
     public static final String APP_TUNNEL = "tunnel";
     public static final String APP_BLOCK = "block";
 
+    /**
+     * VPN-профиль (0.5.0): одна share-ссылка + метка + участие в цепочке.
+     * Порядок в {@link Settings#profiles} = порядок перебора (dial order).
+     */
+    public static final class Profile {
+        /** Устойчивый id: по нему UI держит результат теста, индекс не годится. */
+        public String id = "";
+        public String link = "";
+        /** Ярлык из '#' ссылки; пусто → метка считается из ссылки при рендере. */
+        public String label = "";
+        public boolean enabled = true;
+
+        public Profile() {
+        }
+
+        public Profile(String id, String link, String label, boolean enabled) {
+            this.id = id;
+            this.link = link;
+            this.label = label;
+            this.enabled = enabled;
+        }
+    }
+
     /** Снимок настроек; изменяемый только в UI-потоке SettingsActivity. */
     public static final class Settings {
         public String uuid = "";
@@ -45,6 +70,11 @@ public final class SettingsStore {
         public boolean blockTrackers = false;
         /** Share links in dial order, newline-separated (universal config). */
         public String links = "";
+        /**
+         * Профили в порядке приоритета (0.5.0). Источник истины: {@link #links}
+         * и плоские поля — производные от включённых профилей.
+         */
+        public final List<Profile> profiles = new ArrayList<>();
         /**
          * Per-app правила: package → action (direct|tunnel|block).
          * Пустая карта == поведения до per-app routing (ничего не исключаем).
@@ -65,6 +95,14 @@ public final class SettingsStore {
                 return true;
             }
             return !uuid.isEmpty() && !server.isEmpty() && port > 0 && port <= 65535;
+        }
+
+        /** Первый включённый профиль (primary) или null. */
+        public Profile firstEnabled() {
+            for (Profile p : profiles) {
+                if (p.enabled) return p;
+            }
+            return null;
         }
 
         /** JSON ровно по контракту W3 (org.json доступен на Android из коробки). */
@@ -125,6 +163,8 @@ public final class SettingsStore {
     private static final String K_BLOCK_ADS = "blockAds";
     private static final String K_BLOCK_TRACKERS = "blockTrackers";
     private static final String K_LINKS = "links";
+    /** 0.5.0: [{id,link,label,enabled}] в порядке приоритета; ключ = признак миграции. */
+    private static final String K_PROFILES = "profiles";
     private static final String K_APP_RULES = "appRules";
     // Тема — НЕ секрет, но живёт в том же хранилище: один MasterKey на процесс.
     private static final String K_THEME = "themeMode";
@@ -194,6 +234,17 @@ public final class SettingsStore {
         s.blockAds = prefs.getBoolean(K_BLOCK_ADS, true);
         s.blockTrackers = prefs.getBoolean(K_BLOCK_TRACKERS, false);
         s.links = prefs.getString(K_LINKS, "");
+        String rawProfiles = prefs.getString(K_PROFILES, null);
+        if (rawProfiles == null) {
+            // Одноразовая миграция 0.4.x → 0.5.0: строка links → профили.
+            // Ключ profiles — сам признак миграции, повторно не выполнится.
+            migrateLinks(s.links, s.profiles);
+            prefs.edit().putString(K_PROFILES, profilesToJson(s.profiles).toString()).apply();
+        } else {
+            parseProfiles(rawProfiles, s.profiles);
+            // Источник истины — профили: в цепочку идут только включённые.
+            s.links = joinEnabled(s.profiles);
+        }
         parseAppRules(prefs.getString(K_APP_RULES, ""), s.appRules);
         s.savedSnapshot = true;
         return s;
@@ -203,8 +254,17 @@ public final class SettingsStore {
      * Сохраняет снимок. Per-app правила пишутся, только если снимок пришёл из
      * {@link #load()} (то есть UI их видел) — иначе экран, который заполняет лишь
      * endpoint из {@code new Settings()}, не должен стирать выбор приложений.
+     * То же правило для профилей: чужой снимок без профилей их не затирает.
+     * {@code links} всегда пересобирается из включённых профилей (обратная
+     * совместимость: старое приложение читает ту же строку).
      */
     public void save(Settings s) {
+        String links;
+        if (s.profiles != null && !s.profiles.isEmpty()) {
+            links = joinEnabled(s.profiles);
+        } else {
+            links = s.links == null ? "" : s.links.trim();
+        }
         SharedPreferences.Editor e = prefs.edit()
                 .putString(K_UUID, s.uuid == null ? "" : s.uuid.trim())
                 .putString(K_SERVER, s.server == null ? "" : s.server.trim())
@@ -215,11 +275,91 @@ public final class SettingsStore {
                 .putBoolean(K_FALLBACK, s.fallback)
                 .putBoolean(K_BLOCK_ADS, s.blockAds)
                 .putBoolean(K_BLOCK_TRACKERS, s.blockTrackers)
-                .putString(K_LINKS, s.links == null ? "" : s.links.trim());
+                .putString(K_LINKS, links);
+        if (s.savedSnapshot || (s.profiles != null && !s.profiles.isEmpty())) {
+            e.putString(K_PROFILES, profilesToJson(s.profiles).toString());
+        }
         if (s.savedSnapshot || (s.appRules != null && !s.appRules.isEmpty())) {
             e.putString(K_APP_RULES, appRulesToJson(s.appRules).toString());
         }
         e.apply();
+    }
+
+    /** Включённые ссылки в порядке приоритета, по одной на строку. */
+    static String joinEnabled(List<Profile> profiles) {
+        StringBuilder sb = new StringBuilder();
+        if (profiles == null) {
+            return "";
+        }
+        for (Profile p : profiles) {
+            if (p == null || !p.enabled) continue;
+            String link = p.link == null ? "" : p.link.trim();
+            if (link.isEmpty()) continue;
+            if (sb.length() > 0) sb.append('\n');
+            sb.append(link);
+        }
+        return sb.toString();
+    }
+
+    /** Профили → JSON-массив для prefs; пустая/битая запись отбрасывается. */
+    static JSONArray profilesToJson(List<Profile> profiles) {
+        JSONArray arr = new JSONArray();
+        if (profiles == null) {
+            return arr;
+        }
+        for (Profile p : profiles) {
+            if (p == null) continue;
+            String link = p.link == null ? "" : p.link.trim();
+            if (link.isEmpty()) continue;
+            try {
+                JSONObject o = new JSONObject();
+                o.put("id", p.id == null || p.id.isEmpty() ? link.hashCode() + "" : p.id);
+                o.put("link", link);
+                o.put("label", p.label == null ? "" : p.label.trim());
+                o.put("enabled", p.enabled);
+                arr.put(o);
+            } catch (JSONException ignored) {
+                // put(String, Object) на валидных ключах не бросает; защита от будущих правок.
+            }
+        }
+        return arr;
+    }
+
+    /** Разбор массива профилей; мусор == пустой список (как до 0.5.0). */
+    static void parseProfiles(String raw, List<Profile> out) {
+        if (raw == null || raw.isEmpty()) {
+            return;
+        }
+        try {
+            JSONArray arr = new JSONArray(raw);
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) continue;
+                String link = o.optString("link", "").trim();
+                if (link.isEmpty()) continue;
+                String id = o.optString("id", "").trim();
+                out.add(new Profile(
+                        id.isEmpty() ? "p" + (i + 1) : id,
+                        link,
+                        o.optString("label", "").trim(),
+                        o.optBoolean("enabled", true)));
+            }
+        } catch (JSONException ignored) {
+            // битый JSON не должен валить старт VPN
+        }
+    }
+
+    /** Старая строка links → профили: порядок сохраняется, все включены. */
+    private static void migrateLinks(String legacy, List<Profile> out) {
+        if (legacy == null) {
+            return;
+        }
+        int n = 0;
+        for (String l : legacy.split("\n")) {
+            String t = l.trim();
+            if (t.isEmpty()) continue;
+            out.add(new Profile("p" + (++n), t, "", true));
+        }
     }
 
     /** Отдельное сохранение per-app правил (экран «Приложения»). */

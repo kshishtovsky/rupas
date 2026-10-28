@@ -61,6 +61,31 @@
     <string name="settings_priorities_direct">Прямое соединение (крайний резерв)</string>
     <string name="btn_move_up">Поднять канал</string>
     <string name="btn_move_down">Опустить канал</string>
+
+    <!-- Профили VPN (0.5.0) -->
+    <string name="profiles_title">Профили VPN</string>
+    <string name="profiles_hint">Первая включённая — основная; остальные — резерв при сбое.</string>
+    <string name="profiles_empty">Профилей нет. Добавьте конфиг ссылкой.</string>
+    <string name="profiles_none_enabled">Нет активных профилей — VPN не подключится</string>
+    <string name="profiles_added">Добавлено профилей: %1$d</string>
+    <string name="profiles_duplicates">Такие ссылки уже есть в списке</string>
+    <string name="profile_add">Добавить конфиг</string>
+    <string name="profile_show_fields">Показать поля сервера</string>
+    <string name="profile_hide_fields">Скрыть поля сервера</string>
+    <string name="profile_test">Проверить</string>
+    <string name="profile_edit">Изменить</string>
+    <string name="profile_delete">Удалить</string>
+    <string name="profile_move_up">Выше</string>
+    <string name="profile_move_down">Ниже</string>
+    <string name="profile_test_running">Проверяю…</string>
+    <string name="profile_test_ok">Работает · %1$d мс</string>
+    <string name="profile_test_fail">Не работает: %1$s</string>
+    <string name="profile_test_unavailable">проверка недоступна</string>
+    <string name="profile_test_stage">этап %1$s</string>
+    <string name="profile_edit_title">Ссылка профиля</string>
+    <string name="profile_delete_title">Удалить профиль?</string>
+    <string name="profile_delete_message">«%1$s» будет убран из цепочки.</string>
+    <string name="profile_delete_ok">Удалить</string>
     <string name="home_active_carrier">Активен: %1$s</string>
     <string name="home_active_none">Канал: —</string>
 

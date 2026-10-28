@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hallmark · dose · карточка VPN-профиля (0.5.0): метка + мета + вкл/выкл,
+     строка результата теста и ряд действий (проверить · изменить · удалить · порядок). -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/profileRoot"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="@dimen/space_xs"
+    android:background="@drawable/bg_card"
+    android:orientation="vertical"
+    android:paddingStart="@dimen/space_s"
+    android:paddingTop="@dimen/space_xs"
+    android:paddingEnd="@dimen/space_xxs"
+    android:paddingBottom="@dimen/space_xxs">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <View
+            android:id="@+id/profileStateDot"
+            android:layout_width="8dp"
+            android:layout_height="8dp"
+            android:layout_marginEnd="@dimen/space_xs"
+            android:background="@drawable/bg_dot"
+            android:backgroundTint="@color/ink_faint" />
+
+        <TextView
+            android:id="@+id/tvProfileLabel"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:fontFamily="sans-serif-medium"
+            android:maxLines="1"
+            android:textColor="@color/ink"
+            android:textSize="14sp" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/switchProfile"
+            style="@style/Widget.Rupas.Switch"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minWidth="@dimen/touch_target_min"
+            android:minHeight="@dimen/touch_target_min" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/tvProfileMeta"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:ellipsize="end"
+        android:fontFamily="sans-serif"
+        android:maxLines="2"
+        android:paddingEnd="@dimen/space_s"
+        android:textColor="@color/ink_soft"
+        android:textSize="12sp" />
+
+    <TextView
+        android:id="@+id/tvProfileTest"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:ellipsize="end"
+        android:fontFamily="sans-serif-medium"
+        android:maxLines="2"
+        android:paddingEnd="@dimen/space_s"
+        android:textColor="@color/ink_soft"
+        android:textSize="12sp"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/btnProfileTest"
+            android:layout_width="wrap_content"
+            android:layout_height="@dimen/touch_target_min"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:clickable="true"
+            android:focusable="true"
+            android:fontFamily="sans-serif-medium"
+            android:gravity="center"
+            android:minWidth="@dimen/touch_target_min"
+            android:paddingStart="@dimen/space_xs"
+            android:paddingEnd="@dimen/space_xs"
+            android:text="@string/profile_test"
+            android:textColor="@color/accent"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/btnProfileEdit"
+            android:layout_width="wrap_content"
+            android:layout_height="@dimen/touch_target_min"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:clickable="true"
+            android:focusable="true"
+            android:fontFamily="sans-serif"
+            android:gravity="center"
+            android:minWidth="@dimen/touch_target_min"
+            android:paddingStart="@dimen/space_xs"
+            android:paddingEnd="@dimen/space_xs"
+            android:text="@string/profile_edit"
+            android:textColor="@color/ink_2"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/btnProfileDelete"
+            android:layout_width="wrap_content"
+            android:layout_height="@dimen/touch_target_min"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:clickable="true"
+            android:focusable="true"
+            android:fontFamily="sans-serif"
+            android:gravity="center"
+            android:minWidth="@dimen/touch_target_min"
+            android:paddingStart="@dimen/space_xs"
+            android:paddingEnd="@dimen/space_xs"
+            android:text="@string/profile_delete"
+            android:textColor="@color/danger"
+            android:textSize="13sp" />
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <TextView
+            android:id="@+id/btnProfileUp"
+            android:layout_width="@dimen/touch_target_min"
+            android:layout_height="@dimen/touch_target_min"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:clickable="true"
+            android:contentDescription="@string/profile_move_up"
+            android:focusable="true"
+            android:gravity="center"
+            android:text="▲"
+            android:textColor="@color/ink_2"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/btnProfileDown"
+            android:layout_width="@dimen/touch_target_min"
+            android:layout_height="@dimen/touch_target_min"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:clickable="true"
+            android:contentDescription="@string/profile_move_down"
+            android:focusable="true"
+            android:gravity="center"
+            android:text="▼"
+            android:textColor="@color/ink_2"
+            android:textSize="14sp" />
+    </LinearLayout>
+</LinearLayout>

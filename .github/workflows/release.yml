@@ -8,6 +8,10 @@ on:
     branches: [master]
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Переиздать существующий тег (например v0.7.0); пусто — обычный релиз по master'
+        required: false
 
 permissions:
   contents: write
@@ -21,7 +25,7 @@ jobs:
     # Тег = собрать артефакты для уже существующей версии (переиздание или
     # ремонт CI). Пуш в master = посчитать версию по коммитам. Коммит самого
     # релизного бота второй релиз не запускает.
-    if: ${{ github.ref_type == 'tag' || !startsWith(github.event.head_commit.message, 'chore(release)') }}
+    if: ${{ github.ref_type == 'tag' || github.event.inputs.tag != '' || !startsWith(github.event.head_commit.message, 'chore(release)') }}
     runs-on: ubuntu-latest
     outputs:
       released: ${{ steps.bump.outputs.released }}
@@ -35,10 +39,12 @@ jobs:
         id: bump
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          republish="${{ github.event.inputs.tag }}"
+          if [[ "$GITHUB_REF_TYPE" == "tag" || -n "$republish" ]]; then
+            ref="${republish:-$GITHUB_REF}"
             echo "released=true" >> "$GITHUB_OUTPUT"
-            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-            echo "Переиздание тега ${GITHUB_REF}"
+            echo "version=${ref#refs/tags/v}" >> "$GITHUB_OUTPUT"
+            echo "Переиздание ${ref}"
             exit 0
           fi
 

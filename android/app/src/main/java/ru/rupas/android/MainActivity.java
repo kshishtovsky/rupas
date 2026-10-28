@@ -61,7 +61,7 @@ import core.Core;
 public class MainActivity extends AppCompatActivity {
 
     private static final int VPN_REQUEST_CODE = 42;
-    private static final long TELEMETRY_POLL_INTERVAL_MS = 1000;
+    private static final long TELEMETRY_POLL_INTERVAL_MS = 2000;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
 

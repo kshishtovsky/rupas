@@ -1,3 +1,9 @@
+## v0.8.3
+
+- chore(release): v0.8.3 (5b3e220)
+- fix(android): direct больше не выходит вперёд живого канала из-за бана (e057090)
+- docs(changelog): v0.8.2 (dada44f)
+
 ## v0.8.2
 
 - chore(release): v0.8.2 (acf9376)

@@ -88,6 +88,11 @@ func (e *Engine) markCarrierFail(idx int, cause error) {
 	if idx < 0 || idx >= len(e.health) {
 		return
 	}
+	// The escalation tail has nowhere to fail over TO: benching it just puts
+	// direct ahead of live tunnel carriers on the next flow.
+	if e.carriers[idx].tail {
+		return
+	}
 	dur := carrierCooldownSoft
 	if e.health[idx].fails.Add(1) >= carrierCooldownFails {
 		dur = carrierCooldown
@@ -155,8 +160,15 @@ func (e *Engine) carrierOrder() []int {
 	n := len(e.carriers)
 	order := make([]int, 0, n)
 	var rank [4][]int
+	var tail []int
 	now := time.Now().UnixNano()
 	for i := range e.carriers {
+		// The direct tail is not a candidate to steer away from: it stays
+		// last no matter how its own flows ended up.
+		if e.carriers[i].tail {
+			tail = append(tail, i)
+			continue
+		}
 		r := 0
 		if n > 1 && !e.health[i].proven.Load() {
 			r += 2
@@ -169,12 +181,16 @@ func (e *Engine) carrierOrder() []int {
 	for _, bucket := range rank {
 		order = append(order, bucket...)
 	}
-	return order
+	return append(order, tail...)
 }
 
 // tcpCarrier is one named way to reach the internet for a TUNNEL flow.
 type tcpCarrier struct {
 	name string
+	// tail marks the direct escalation tail. It is never reordered and never
+	// benched: benches exist to steer traffic BETWEEN tunnel carriers, and
+	// benching the last resort only moves it in front of live carriers.
+	tail bool
 	dial func(ctx context.Context, dst netip.AddrPort) (net.Conn, error)
 }
 
@@ -218,6 +234,7 @@ func (e *Engine) buildCarriers(ctx context.Context) {
 	if e.fallbackAllowed() {
 		e.carriers = append(e.carriers, tcpCarrier{
 			name: "direct",
+			tail: true,
 			dial: func(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
 				e.counters.TunnelEscalate()
 				e.logf("tcp %s: ESCALATED tunnel->direct (carrier chain exhausted)", dst)

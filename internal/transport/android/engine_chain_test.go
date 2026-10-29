@@ -14,6 +14,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -209,6 +210,34 @@ func TestCarrierDialTimeout(t *testing.T) {
 	}
 	if spent := time.Since(started); spent > time.Second {
 		t.Fatalf("dial stalled %v, want ~%v", spent, carrierDialTimeout)
+	}
+}
+
+// TestDirectTailStaysLast: the bench is a steering hint BETWEEN tunnel
+// carriers. Once reality was benched, direct (proven, healthy) won rank 0 and
+// every new flow went out unprotected — for the sites the tunnel exists for
+// that reads as "the app died", and the hole lasted carrierCooldownSoft = 10s
+// (live Android log 2026-10-29: 23:16:31 down, then blank until 23:17:13).
+func TestDirectTailStaysLast(t *testing.T) {
+	var logs []string
+	e := stubEngine(t, &logs, ok(""), ok(""))
+	e.carriers[1].name, e.carriers[1].tail = "direct", true
+	// Both carriers delivered payload at some point; only reality is benched.
+	e.markCarrierSuccess(0)
+	e.markCarrierSuccess(1)
+	e.markCarrierFail(0, errors.New("EOF"))
+
+	order := e.carrierOrder()
+	if len(order) != 2 || order[1] != 1 {
+		t.Fatalf("order = %v, want direct tail last", order)
+	}
+	if e.health[1].down.Load() != 0 {
+		t.Fatal("the escalation tail must never be benched")
+	}
+	for _, line := range logs {
+		if strings.Contains(line, "direct: down") {
+			t.Fatalf("benched the tail: %s", line)
+		}
 	}
 }
 

@@ -112,6 +112,16 @@ func main() {
 		URL:              "/",
 	})
 
+	// Window background only shows until the webview paints its first frame, and
+	// that frame already comes from html[data-theme] (index.html sets it before
+	// paint). So only the stored explicit dark mode is worth a second colour here;
+	// mode -1 (system) keeps the light default, and a system-dark user may see one
+	// light frame — resolving the OS mode in Go would cost a registry read plus
+	// WM_SETTINGCHANGE tracking that Wails v3 does not expose.
+	if ctrl.ThemeMode() == guictrl.ThemeDark {
+		win.SetBackgroundColour(application.NewRGBA(18, 21, 20, 255)) // paper #121514 (values-night)
+	}
+
 	// Minimize-to-tray (GUI_DESIGN §6.4): the close (X) button hides the
 	// window instead of quitting; real exit is the tray menu «Выход».
 	// Hooks run synchronously BEFORE the internal WindowClosing listener

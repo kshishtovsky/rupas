@@ -4,6 +4,18 @@
 <head>
 <meta charset="utf-8">
 <title>Rupas</title>
+<script>
+/* Theme before the first paint: html[data-theme] picks the palette, so reading it
+   later flashes the light theme on a dark start. localStorage mirrors theme.json
+   (the Go side is the source of truth and wins as soon as app.js asks ThemeMode). */
+(function () {
+  var m = -1;
+  try { m = parseInt(localStorage.getItem("rupas.theme"), 10); } catch (_) {}
+  if (m !== 0 && m !== 1) m = -1; // -1 = follow the system (or an unreadable mirror)
+  var dark = m === 1 || (m === -1 && matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+})();
+</script>
 <link rel="stylesheet" href="/theme.css">
 </head>
 <body>
@@ -25,6 +37,9 @@
         <div class="status-text" id="dotText">Отключено</div>
       </div>
       <div class="caption-btns">
+        <button class="cap-btn" id="btnTheme" title="Тема: как в системе" aria-label="Тема: как в системе">
+          <svg viewBox="0 0 12 12"><circle cx="6" cy="6" r="2.6"/></svg>
+        </button>
         <button class="cap-btn" id="btnMinimize" title="Свернуть" aria-label="Свернуть">
           <svg viewBox="0 0 12 12"><path d="M2 6h8"/></svg>
         </button>

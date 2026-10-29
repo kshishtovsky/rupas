@@ -68,6 +68,11 @@ func main() {
 		log.Fatalf("rupas-gui: %v", err)
 	}
 	liveCtrl = ctrl
+	// The HKCU Run entry is written once: keep it pointing at this binary so a
+	// rebuild in a new path does not leave the login start on a deleted exe.
+	if err := ctrl.RepairAutostart(); err != nil {
+		log.Printf("autostart: %v", err)
+	}
 
 	app := application.New(application.Options{
 		Name:        "Rupas",

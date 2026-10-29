@@ -1,3 +1,16 @@
+## v0.8.0
+
+- chore(release): v0.8.0 (dfbe035)
+- Merge remote-tracking branch 'origin/master' (75dd3b1)
+- merge: 0.8 — маршрутизация по процессу, тёмная тема, проверка конфига и GeoIP в GUI (212e27e)
+- fix(gui): сохранение каналов больше не стирает правила и исключения (f348a43)
+- feat(gui): стадия «Приложения», + в шапке маршрутов, GeoIP, удаление канала (0f6ef1d)
+- docs: план 0.8 — контракт и четыре потока работ (45d1db8)
+- feat(gui): CheckLinks, RefreshGeoIP, ListProcesses (cbcb10e)
+- feat(gui): тёмная тема — системная / светлая / тёмная (81f9c83)
+- feat(routing): app-правило — маршрутизация по процессу на Windows (9af945c)
+- docs(changelog): v0.7.6 (9939432)
+
 ## v0.7.6
 
 - chore(release): v0.7.6 (b23a30a)

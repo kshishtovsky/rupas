@@ -97,17 +97,9 @@ func (c *Controller) EnsureDaemon() error {
 	if _, err := CallPipe(c.opts.Pipe, "status", time.Second); err == nil {
 		return nil
 	}
-	daemonPath, err := findDaemon(c.opts.DaemonPath)
+	daemonPath, cfg, logPath, err := c.launchSpec()
 	if err != nil {
 		return err
-	}
-	cfg := c.opts.ConfigPath
-	if cfg == "" {
-		cfg = DefaultConfigPath()
-	}
-	logPath := c.opts.LogPath
-	if logPath == "" {
-		logPath = filepath.Join(os.TempDir(), "rupasd-gui.log")
 	}
 	if err := startDaemon(daemonPath, cfg, logPath); err != nil {
 		// Likely ERROR_ELEVATION_REQUIRED (WinDivert driver) → runas path.
@@ -116,6 +108,24 @@ func (c *Controller) EnsureDaemon() error {
 		}
 	}
 	return waitForPipe(c.opts.Pipe, 15*time.Second)
+}
+
+// launchSpec resolves everything needed to spawn the daemon: binary (next to the
+// GUI, else ../build), config and log. Shared by EnsureDaemon and the logon task.
+func (c *Controller) launchSpec() (daemonPath, cfg, logPath string, err error) {
+	daemonPath, err = findDaemon(c.opts.DaemonPath)
+	if err != nil {
+		return "", "", "", err
+	}
+	cfg = c.opts.ConfigPath
+	if cfg == "" {
+		cfg = DefaultConfigPath()
+	}
+	logPath = c.opts.LogPath
+	if logPath == "" {
+		logPath = filepath.Join(os.TempDir(), "rupasd-gui.log")
+	}
+	return daemonPath, cfg, logPath, nil
 }
 
 // waitForPipe polls status until the daemon answers or the deadline passes.

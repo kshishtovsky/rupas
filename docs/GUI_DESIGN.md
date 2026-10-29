@@ -235,7 +235,7 @@ off --(tap)--> connecting --(ACTIVE*)--> on
 ## 8. Доступ и безопасность
 
 - GUI не повышает собственных привилегий: команды — через pipe (DACL: interactive user может писать, SYSTEM тоже) — уже в коде.
-- Elevation нужен только для spawn rupasd (один UAC-промпт на запуск демона; v1.1 — запуск демона через Task Scheduler с сохранённым согласием → ноль промптов).
+- Elevation нужен только для spawn rupasd (один UAC-промпт на запуск демона). С 0.7.5: тумблер «Запускать при входе» ставит HKCU Run для GUI + задачу планировщика `Rupas daemon` (`ONLOGON`, `HIGHEST`) → после ребута демон поднимается без промпта, а GUI по маркеру `active.flag` возвращает перехват (`Controller.AutoStart`). Задача пересоздаётся `RepairAutostart` при смене пути exe.
 - Секреты: uuid/password/pbk в Settings маскируются (кнопка-глаз, как ic_visibility на Android); в логах не печатаются (контракт ядра), GUI не пишет их в чарты/трей.
 - vless://-ссылка содержит uuid — после парсинга из буфера удаляется (Clipboard.clear), как на Android.
 - Ошибки elevation/UAC показываются экраном ошибки с retry (см. §5 шаг 2).

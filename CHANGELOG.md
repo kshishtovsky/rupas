@@ -1,3 +1,10 @@
+## v0.8.2
+
+- chore(release): v0.8.2 (acf9376)
+- Merge remote-tracking branch 'origin/master' (12b42ab)
+- fix(android): дайл в канал ограничен 6 с, смерть после commit видна в логе (962d87b)
+- docs(changelog): v0.8.1 (4a49e97)
+
 ## v0.8.1
 
 - chore(release): v0.8.1 (3635b45)

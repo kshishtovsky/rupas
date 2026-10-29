@@ -86,12 +86,17 @@
       <!-- ROUTING (docs/ROUTING_UI.md §4.1) -->
       <div class="page" id="page-routing">
         <div class="rt-head">
-          <h1 class="rt-title">Маршруты</h1>
-          <div class="rt-summary" id="rtSummary" aria-live="polite"></div>
+          <div class="rt-head-body">
+            <h1 class="rt-title">Маршруты</h1>
+            <div class="rt-summary" id="rtSummary" aria-live="polite"></div>
+          </div>
+          <button class="rt-btn rt-btn-quiet" id="rtGeoRefresh" type="button">Обновить GeoIP</button>
+          <button class="rt-btn rt-btn-quiet rt-addbtn" type="button" data-rt="header-add" aria-label="Добавить правило" title="Добавить правило">+</button>
         </div>
         <div class="rt-saved" id="rtSaved" role="status" aria-live="polite"><i aria-hidden="true"></i><span>Применено</span></div>
 
         <div id="rtSaveError"></div>
+        <div id="rtGeoReport" role="status" aria-live="polite"></div>
 
 
         <div class="rt-grid">
@@ -155,7 +160,10 @@
             <textarea class="textarea" id="setLinks" placeholder="vless://uuid@host:443?security=reality&pbk=…&sni=…#канал 1&#10;hysteria2://pass@host:53552?sni=…#канал 2" spellcheck="false"></textarea>
             <div class="hint" id="linksHint"></div>
           </div>
-          <button class="btn ghost small" id="btnLinksParse">Разобрать</button>
+          <div style="display:flex;gap:var(--space-s)">
+            <button class="btn ghost small" id="btnLinksParse">Разобрать</button>
+            <button class="btn ghost small" id="btnLinksCheck">Проверить</button>
+          </div>
         </div>
         <div class="section" id="channelsSection" style="display:none">
           <div class="section-title">Приоритеты каналов</div>

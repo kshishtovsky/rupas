@@ -168,6 +168,7 @@ html, body {
 .ch-btns { display: flex; gap: 2px; flex-shrink: 0; }
 .ch-btns .cap-btn:disabled { opacity: 0.3; cursor: default; }
 .ch-btns .cap-btn:disabled:hover { background: none; color: var(--ink-soft); }
+.ch-btns .cap-btn.ch-del:hover { color: var(--danger); }
 
 /* ---------- Cards ---------- */
 .cards { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-s); margin-top: var(--space-s); }
@@ -307,9 +308,11 @@ html, body {
 #page-routing { max-width: 1180px; margin: 0 auto; padding-bottom: var(--space-xl); }
 
 /* ---------- head + summary ---------- */
-.rt-head { padding: var(--space-xs) 0 var(--space-xxs); }
+.rt-head { display: flex; align-items: center; gap: var(--space-s); padding: var(--space-xs) 0 var(--space-xxs); }
+.rt-head-body { flex: 1; min-width: 0; }
 .rt-title { font-size: 19px; font-weight: 600; color: var(--ink); }
 .rt-summary { margin-top: 2px; font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.rt-addbtn { width: 40px; padding: 0; font-size: 20px; line-height: 1; }
 
 .rt-saved {
   display: none; align-items: center; gap: var(--space-xs);
@@ -518,6 +521,9 @@ html, body {
 .rt-editor-hint { flex: 1; font-size: 11px; color: var(--ink-soft); }
 .rt-err { margin-top: var(--space-xxs); font-size: 12px; color: var(--danger); }
 .rt-err:empty { display: none; }
+/* app rules: the process picker sits under the value input */
+.rt-pickproc { margin-top: var(--space-xs); }
+.rt-pickproc[hidden] { display: none; }
 
 /* ---------- buttons (single primary style) ---------- */
 .rt-btn {

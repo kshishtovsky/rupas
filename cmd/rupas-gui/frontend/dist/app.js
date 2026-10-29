@@ -137,6 +137,46 @@ $("btnLogsCopy").addEventListener("click", async () => {
   setTimeout(() => ($("btnLogsCopy").textContent = "Копировать"), 1200);
 });
 
+// ---------- theme (Android parity: -1 system, 0 light, 1 dark) ----------
+const THEME_KEY = "rupas.theme";
+const THEME_LABEL = { "-1": "Тема: как в системе", 0: "Тема: светлая", 1: "Тема: тёмная" };
+const THEME_ICON = {
+  "-1": '<svg viewBox="0 0 12 12"><rect x="1.4" y="2.2" width="9.2" height="6" rx="1"/><path d="M4.2 10.4h3.6"/></svg>',
+  0: '<svg viewBox="0 0 12 12"><circle cx="6" cy="6" r="2.5"/><path d="M6 1v1.4M6 9.6V11M1 6h1.4M9.6 6H11M2.5 2.5l1 1M8.5 8.5l1 1M9.5 2.5l-1 1M3.5 8.5l-1 1"/></svg>',
+  1: '<svg viewBox="0 0 12 12"><path d="M9.8 7.3A4.3 4.3 0 0 1 4.7 2.2a4.7 4.7 0 1 0 5.1 5.1z"/></svg>',
+};
+let themeMode = -1;
+const sysTheme = matchMedia("(prefers-color-scheme: dark)");
+
+function themeApply() {
+  const dark = themeMode === 1 || (themeMode === -1 && sysTheme.matches);
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  try { localStorage.setItem(THEME_KEY, String(themeMode)); } catch (_) {} // mirror for the pre-paint script
+  const label = THEME_LABEL[themeMode];
+  $("btnTheme").innerHTML = THEME_ICON[themeMode];
+  $("btnTheme").title = label;
+  $("btnTheme").setAttribute("aria-label", label);
+}
+
+// theme.json is the source of truth; the mirror above only carries the mode across
+// the reload, so a failed call keeps whatever the pre-paint script resolved.
+async function themeLoad() {
+  try { themeMode = await call("ThemeMode"); } catch (_) { return; }
+  if (themeMode !== 0 && themeMode !== 1) themeMode = -1;
+  themeApply();
+}
+
+// light → dark → system, the cycle MainActivity.java uses; the third state is
+// otherwise invisible, so the tooltip names the mode that is now active.
+$("btnTheme").addEventListener("click", async () => {
+  themeMode = themeMode === 0 ? 1 : themeMode === 1 ? -1 : 0;
+  themeApply();
+  await call("SetThemeMode", themeMode).catch(() => {});
+});
+
+// A system-theme change repaints only while the mode follows the system.
+sysTheme.addEventListener("change", () => { if (themeMode === -1) themeApply(); });
+
 // ---------- settings: links + channel priorities (Android W3 parity) ----------
 let channels = [];
 let linksInitialized = false; // populate from storage once; never clobber unsaved edits
@@ -1656,6 +1696,7 @@ function rtOnDragEnd() {
 
 // ---------- boot ----------
 (async () => {
+  themeLoad();
   try {
     const onboarded = await call("Onboarded");
     if (onboarded) {

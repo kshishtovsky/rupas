@@ -63,6 +63,13 @@ const replayCap = 16 * 1024
 type carrierHealth struct {
 	down  atomic.Int64
 	fails atomic.Int64
+	// proven is set once the carrier has delivered payload in this run.
+	// A proven carrier outranks an unproven one in the dial order: on a
+	// DPI'd access link the secondary profiles are frequently dead outright
+	// (live 2026-10-29: Rostelecom, reality works while xhttp/hysteria2 never
+	// return a byte), and benching the working primary for 10s used to
+	// blackhole every new flow into them — "works 5s, then nothing loads".
+	proven atomic.Bool
 }
 
 // markCarrierFail puts the carrier on cooldown; logs only the transition
@@ -90,6 +97,7 @@ func (e *Engine) markCarrierSuccess(idx int) {
 		return
 	}
 	e.activeIdx.Store(int64(idx))
+	e.health[idx].proven.Store(true)
 	e.health[idx].fails.Store(0)
 	if e.health[idx].down.Swap(0) != 0 && len(e.carriers) > 1 {
 		e.logf("carrier %s: healthy again", e.carriers[idx].name)
@@ -101,9 +109,9 @@ func (e *Engine) markCarrierSuccess(idx int) {
 type CarrierState struct {
 	Index int    `json:"index"`
 	Name  string `json:"name"`
-	// State is one of: "active" (delivered the last payload, or — while it
-	// has none yet — the head of the healthy order where new flows start),
-	// "cooldown" (failed recently, tried last), "ready".
+	// State is one of: "active" (where new flows start: the head of the
+	// dial order — a recently benched carrier that already proved itself
+	// keeps that slot), "cooldown" (failed recently, tried last), "ready".
 	State string `json:"state"`
 }
 
@@ -115,17 +123,12 @@ func (e *Engine) CarrierStates() []CarrierState {
 		return nil
 	}
 	now := time.Now().UnixNano()
-	last := int(e.activeIdx.Load())
-	if last < 0 || last >= n || (n > 1 && e.health[last].down.Load() > now) {
-		// No payload yet, or the last active carrier is on cooldown:
-		// show the head of the healthy order (where new flows start).
-		last = e.carrierOrder()[0]
-	}
+	head := e.carrierOrder()[0]
 	out := make([]CarrierState, n)
 	for i, c := range e.carriers {
 		st := "ready"
 		switch {
-		case i == last:
+		case i == head:
 			st = "active"
 		case n > 1 && e.health[i].down.Load() > now:
 			st = "cooldown"
@@ -135,23 +138,31 @@ func (e *Engine) CarrierStates() []CarrierState {
 	return out
 }
 
-// carrierOrder returns carrier indexes in try order: healthy ones in dial
-// order first, carriers in failure cooldown last (desktop orderedChain
+// carrierOrder returns carrier indexes in try order: carriers that have
+// already delivered payload come before carriers that never have (a bench
+// must not divert traffic into a profile that has not proven itself),
+// then dial order, healthy before failure cooldown (desktop orderedChain
 // parity — deprioritized, never skipped: the primary still gets tried and
 // can recover). Single-carrier engines keep the plain order.
 func (e *Engine) carrierOrder() []int {
 	n := len(e.carriers)
 	order := make([]int, 0, n)
-	var cooled []int
+	var rank [4][]int
 	now := time.Now().UnixNano()
 	for i := range e.carriers {
-		if n > 1 && e.health[i].down.Load() > now {
-			cooled = append(cooled, i)
-		} else {
-			order = append(order, i)
+		r := 0
+		if n > 1 && !e.health[i].proven.Load() {
+			r += 2
 		}
+		if n > 1 && e.health[i].down.Load() > now {
+			r++
+		}
+		rank[r] = append(rank[r], i)
 	}
-	return append(order, cooled...)
+	for _, bucket := range rank {
+		order = append(order, bucket...)
+	}
+	return order
 }
 
 // tcpCarrier is one named way to reach the internet for a TUNNEL flow.

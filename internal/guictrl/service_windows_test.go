@@ -121,6 +121,62 @@ func TestSaveLinksRejectsEmptyPlan(t *testing.T) {
 	}
 }
 
+// TestSaveLinksKeepsPolicy: saving channels must not wipe the owner's own
+// rules, exclusions or the calibrated desync (a preset rebuild dropped them
+// on a live config on 2026-10-29).
+func TestSaveLinksKeepsPolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rupas.yaml")
+	body := `profile: gui
+rules:
+  - cidr: 10.0.0.0/8
+    action: direct
+  - sni: tanuki.onteco.dev
+    action: direct
+exclusions:
+  cidrs: []
+  domains:
+    - spiderssense.com
+desync:
+  strategy: fake
+  ttl: 7
+  ttl_margin: 2
+  repeats: 6
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := New(Options{Pipe: `\\.\pipe\rupas-guictrl-test-absent`, ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := "vless://0f4e1c2d-3b5a-4c6d-8e9f-aabbccddeeff@vps.example.net:443?security=reality&pbk=PBK&sid=AB&sni=camo.net&type=tcp#primary"
+	// No daemon: ErrDaemonDown still means "written to disk".
+	if _, err := c.SaveLinks(blob); err != nil && !errors.Is(err, ErrDaemonDown) {
+		t.Fatalf("SaveLinks: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("saved config does not load: %v", err)
+	}
+	var tanuki, lan bool
+	for _, r := range cfg.Rules {
+		tanuki = tanuki || r.SNI == "tanuki.onteco.dev"
+		lan = lan || r.CIDR == "10.0.0.0/8"
+	}
+	if !tanuki || !lan {
+		t.Fatalf("custom rules dropped: tanuki=%v lan=%v (%d rules)", tanuki, lan, len(cfg.Rules))
+	}
+	if len(cfg.Exclusions.Domains) != 1 || cfg.Exclusions.Domains[0] != "spiderssense.com" {
+		t.Fatalf("exclusions dropped: %v", cfg.Exclusions.Domains)
+	}
+	if cfg.Desync.TTL != 7 {
+		t.Fatalf("calibrated desync replaced by the preset: ttl=%d, want 7", cfg.Desync.TTL)
+	}
+	if cfg.Tunnels == nil || cfg.Tunnels.TCP == nil {
+		t.Fatal("channels were not written")
+	}
+}
+
 // TestCheckLinks: the validation path must report warnings/errors without
 // touching the live config, the backup or the daemon.
 func TestCheckLinks(t *testing.T) {

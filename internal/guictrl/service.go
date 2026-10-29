@@ -108,6 +108,20 @@ func (c *Controller) SaveLinks(blob string) ([]string, error) {
 		return warnings, errors.New("нет рабочих ссылок: нужен vless (tcp/xhttp) или hysteria2 — trojan/ws десктоп-ядро не поддерживает")
 	}
 	cfg := presetConfig(true)
+	// A link edit changes the channels, not the policy: keep the rules,
+	// exclusions, geoip and the calibrated desync the profile already has.
+	// Rebuilding from the preset silently dropped the owner's custom rules
+	// and exclusions (live 2026-10-29: the tanuki.onteco.dev rule and the
+	// spiderssense.com exclusion vanished on «Сохранить»).
+	if cur, err := c.loadConfigForRules(); err == nil && len(cur.Rules) > 0 {
+		cfg.Rules, cfg.Exclusions = cur.Rules, cur.Exclusions
+		if cur.Desync != (config.DesyncParams{}) {
+			cfg.Desync = cur.Desync // keep the binary-searched t*, not the preset 13
+		}
+		if cur.GeoIP != nil {
+			cfg.GeoIP = cur.GeoIP
+		}
+	}
 	cfg.Tunnels = &config.TunnelConfig{TCP: tcp, UDP: udp, Fallback: fb}
 	// ErrDaemonDown means "written to disk, not confirmed": keep the file
 	// (design contract) but still surface it so the UI can say so.

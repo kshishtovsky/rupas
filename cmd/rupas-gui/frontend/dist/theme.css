@@ -1,6 +1,8 @@
-/* Rupas GUI — theme "dose" (ported 1:1 from E:\rupas-android res/values/colors.xml + dimens.xml).
-   Rule: every colour resolves to one of these names; no literal colour outside this block. */
+/* Rupas GUI — theme "dose" (ported 1:1 from res/values/colors.xml + dimens.xml,
+   dark block from res/values-night/colors.xml).
+   Rule: every colour resolves to one of these names; no literal colour outside these blocks. */
 :root {
+  color-scheme: light;          /* html[data-theme] decides; native scrollbars follow it */
   /* Paper */
   --paper: #F7F3EC; --paper-2: #FDFBF6; --paper-3: #EFEAE0; --paper-4: #E6E0D4;
   /* Ink */
@@ -33,6 +35,22 @@
   /* elevation (ink at alpha — no new colour) */
   --shadow-pop: 0 10px 26px rgba(38,49,44,.12);
   --shadow-lift: 0 8px 22px rgba(38,49,44,.16);
+}
+
+/* Night: same 26 colour names as :root, values 1:1 from android values-night/colors.xml.
+   Contrast table (sRGB WCAG) lives in that file; ink_faint is 3.66:1 here — lines and
+   dots only, never text. ink is #BFC4BD and never white: on a dark ground white glares. */
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #121514; --paper-2: #181C1A; --paper-3: #0D100F; --paper-4: #090B0A;
+  --ink: #BFC4BD; --ink-2: #A2A9A2; --ink-soft: #868D87; --ink-faint: #6A716B;
+  --rule: #262B28; --rule-strong: #384039; --field: #58615B;
+  --accent: #79A38C; --accent-deep: #9CC0AD; --accent-soft: #1E2E27;
+  --accent-tint: #17241E; --accent-ink: #0F1412; --focus: #8FBDA4;
+  --tint-sand: #211D17; --tint-sky: #161E20;
+  --warn: #B08A5A; --warn-soft: #2A2317;
+  --danger: #B8786D; --danger-soft: #291C19;
+  --log-text: #A9AFA8; --log-meta: #7B837C; --log-accent: #8CB4A0;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -150,6 +168,7 @@ html, body {
 .ch-btns { display: flex; gap: 2px; flex-shrink: 0; }
 .ch-btns .cap-btn:disabled { opacity: 0.3; cursor: default; }
 .ch-btns .cap-btn:disabled:hover { background: none; color: var(--ink-soft); }
+.ch-btns .cap-btn.ch-del:hover { color: var(--danger); }
 
 /* ---------- Cards ---------- */
 .cards { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-s); margin-top: var(--space-s); }
@@ -289,9 +308,11 @@ html, body {
 #page-routing { max-width: 1180px; margin: 0 auto; padding-bottom: var(--space-xl); }
 
 /* ---------- head + summary ---------- */
-.rt-head { padding: var(--space-xs) 0 var(--space-xxs); }
+.rt-head { display: flex; align-items: center; gap: var(--space-s); padding: var(--space-xs) 0 var(--space-xxs); }
+.rt-head-body { flex: 1; min-width: 0; }
 .rt-title { font-size: 19px; font-weight: 600; color: var(--ink); }
 .rt-summary { margin-top: 2px; font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.rt-addbtn { width: 40px; padding: 0; font-size: 20px; line-height: 1; }
 
 .rt-saved {
   display: none; align-items: center; gap: var(--space-xs);
@@ -500,6 +521,9 @@ html, body {
 .rt-editor-hint { flex: 1; font-size: 11px; color: var(--ink-soft); }
 .rt-err { margin-top: var(--space-xxs); font-size: 12px; color: var(--danger); }
 .rt-err:empty { display: none; }
+/* app rules: the process picker sits under the value input */
+.rt-pickproc { margin-top: var(--space-xs); }
+.rt-pickproc[hidden] { display: none; }
 
 /* ---------- buttons (single primary style) ---------- */
 .rt-btn {

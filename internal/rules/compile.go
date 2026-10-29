@@ -23,6 +23,7 @@ func Compile(cfg *config.Config) (*Table, error) {
 		return nil, fmt.Errorf("rules: invalid config: %w", err)
 	}
 	t := &Table{
+		apps:     make(map[appKey]config.Action),
 		sniExact: make(map[sniKey]config.Action),
 		sniWild:  make(map[sniKey]config.Action),
 		def:      config.ActionDirect,
@@ -43,6 +44,13 @@ func Compile(cfg *config.Config) (*Table, error) {
 			return nil, fmt.Errorf("rules: rule %d: %v", i, err)
 		}
 		switch {
+		case r.App != "":
+			// First rule wins on a duplicate (name, proto) key, like
+			// addSNI; r.App is already lower-case (Validate).
+			k := appKey{app: r.App, proto: proto}
+			if _, exists := t.apps[k]; !exists {
+				t.apps[k] = r.Action
+			}
 		case r.CIDR != "":
 			if err := t.insertCIDR(r.CIDR, r.Action, proto); err != nil {
 				return nil, fmt.Errorf("rules: rule %d: bad cidr %q: %v", i, r.CIDR, err)

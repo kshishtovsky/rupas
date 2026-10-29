@@ -51,6 +51,8 @@ rules:
   - ports: '443'
     proto: udp
     action: block
+  - app: steam.exe
+    action: tunnel
   - action: tunnel
 desync:
   strategy: fake
@@ -74,15 +76,15 @@ func TestLoadRulesView(t *testing.T) {
 	if view.Error != "" {
 		t.Errorf("unexpected engine error: %s", view.Error)
 	}
-	// 6 matching rules + the default pulled into its own zone.
-	if len(view.Rules) != 6 {
-		t.Fatalf("got %d rule views, want 6", len(view.Rules))
+	// 7 matching rules + the default pulled into its own zone.
+	if len(view.Rules) != 7 {
+		t.Fatalf("got %d rule views, want 7", len(view.Rules))
 	}
-	if view.Default.Action != "TUNNEL" || view.Default.Index != 6 {
-		t.Errorf("default = %+v, want TUNNEL at index 6", view.Default)
+	if view.Default.Action != "TUNNEL" || view.Default.Index != 7 {
+		t.Errorf("default = %+v, want TUNNEL at index 7", view.Default)
 	}
-	if view.StageCounts != [3]int{3, 2, 1} {
-		t.Errorf("stage counts = %v, want [3 2 1]", view.StageCounts)
+	if view.StageCounts != [4]int{1, 3, 2, 1} {
+		t.Errorf("stage counts = %v, want [1 3 2 1]", view.StageCounts)
 	}
 	if view.Rules[0].Kind != KindCIDR || view.Rules[0].Human == "" {
 		t.Errorf("cidr row = %+v, want a kind and a human hint", view.Rules[0])
@@ -98,6 +100,26 @@ func TestLoadRulesView(t *testing.T) {
 	}
 	if view.Rules[5].Kind != KindPorts || !strings.Contains(view.Rules[5].Human, "udp") {
 		t.Errorf("ports row = %+v, want a udp hint", view.Rules[5])
+	}
+	if view.Rules[6].Kind != KindApp || view.Rules[6].Matcher != "steam.exe" {
+		t.Errorf("app row = %+v, want kind app + steam.exe", view.Rules[6])
+	}
+}
+
+// TestAppRuleRoundTrip: the app matcher survives save → load as its own kind,
+// and the first stage counter sees it (PLAN-0.8 §1.3).
+func TestAppRuleRoundTrip(t *testing.T) {
+	c, _ := newRulesController(t, rulesFixture)
+	savedOffline(t, c.SaveRules(`[{"app":"Steam.exe","action":"tunnel"},{"cidr":"10.0.0.0/8","action":"direct"}]`))
+	view, err := c.LoadRules()
+	if err != nil {
+		t.Fatalf("LoadRules: %v", err)
+	}
+	if len(view.Rules) != 2 || view.Rules[0].Kind != KindApp || view.Rules[0].Matcher != "steam.exe" {
+		t.Fatalf("app rule not round-tripped: %+v", view.Rules)
+	}
+	if view.StageCounts != [4]int{1, 1, 0, 0} {
+		t.Errorf("stage counts = %v, want [1 1 0 0]", view.StageCounts)
 	}
 }
 

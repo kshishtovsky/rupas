@@ -121,6 +121,149 @@ func TestSaveLinksRejectsEmptyPlan(t *testing.T) {
 	}
 }
 
+// TestSaveLinksKeepsPolicy: saving channels must not wipe the owner's own
+// rules, exclusions or the calibrated desync (a preset rebuild dropped them
+// on a live config on 2026-10-29).
+func TestSaveLinksKeepsPolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rupas.yaml")
+	body := `profile: gui
+rules:
+  - cidr: 10.0.0.0/8
+    action: direct
+  - sni: tanuki.onteco.dev
+    action: direct
+exclusions:
+  cidrs: []
+  domains:
+    - spiderssense.com
+desync:
+  strategy: fake
+  ttl: 7
+  ttl_margin: 2
+  repeats: 6
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := New(Options{Pipe: `\\.\pipe\rupas-guictrl-test-absent`, ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := "vless://0f4e1c2d-3b5a-4c6d-8e9f-aabbccddeeff@vps.example.net:443?security=reality&pbk=PBK&sid=AB&sni=camo.net&type=tcp#primary"
+	// No daemon: ErrDaemonDown still means "written to disk".
+	if _, err := c.SaveLinks(blob); err != nil && !errors.Is(err, ErrDaemonDown) {
+		t.Fatalf("SaveLinks: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("saved config does not load: %v", err)
+	}
+	var tanuki, lan bool
+	for _, r := range cfg.Rules {
+		tanuki = tanuki || r.SNI == "tanuki.onteco.dev"
+		lan = lan || r.CIDR == "10.0.0.0/8"
+	}
+	if !tanuki || !lan {
+		t.Fatalf("custom rules dropped: tanuki=%v lan=%v (%d rules)", tanuki, lan, len(cfg.Rules))
+	}
+	if len(cfg.Exclusions.Domains) != 1 || cfg.Exclusions.Domains[0] != "spiderssense.com" {
+		t.Fatalf("exclusions dropped: %v", cfg.Exclusions.Domains)
+	}
+	if cfg.Desync.TTL != 7 {
+		t.Fatalf("calibrated desync replaced by the preset: ttl=%d, want 7", cfg.Desync.TTL)
+	}
+	if cfg.Tunnels == nil || cfg.Tunnels.TCP == nil {
+		t.Fatal("channels were not written")
+	}
+}
+
+// TestCheckLinks: the validation path must report warnings/errors without
+// touching the live config, the backup or the daemon.
+func TestCheckLinks(t *testing.T) {
+	path, before := initialConfig(t)
+	// No daemon on purpose: a check that dialed RPC would return ErrDaemonDown.
+	c, err := New(Options{Pipe: `\\.\pipe\rupas-guictrl-test-absent`, ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	valid := "vless://0f4e1c2d-3b5a-4c6d-8e9f-aabbccddeeff@vps.example.net:443?security=reality&pbk=PBK&sid=AB&sni=camo.net&type=tcp#primary\n" +
+		"hysteria2://hy2secret@vps.example.net:53552?sni=camo.net#voice\n" +
+		"trojan://pass@trojan.example.net:443?security=tls&sni=t.net#ignored\n"
+	warnings, err := c.CheckLinks(valid)
+	if err != nil {
+		t.Fatalf("valid blob: %v", err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "trojan") {
+		t.Fatalf("want the trojan warning, got %v", warnings)
+	}
+
+	if _, err := c.CheckLinks("vless://not-a-link"); err == nil || err.Error() == "" {
+		t.Fatalf("broken blob: want a message, got %v", err)
+	}
+	warnings, err = c.CheckLinks("")
+	if err != nil || len(warnings) == 0 || !strings.Contains(strings.Join(warnings, " "), "нет ссылок") {
+		t.Fatalf("empty blob: want a «нет ссылок» warning, got %v / %v", warnings, err)
+	}
+
+	for _, suffix := range []string{".bak", ".tmp"} {
+		if _, err := os.Stat(path + suffix); err == nil {
+			t.Fatalf("CheckLinks created %s", path+suffix)
+		}
+	}
+	cur, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(cur) != string(before) || !after.ModTime().Equal(st.ModTime()) {
+		t.Fatalf("CheckLinks wrote the live config:\n%s", cur)
+	}
+}
+
+// TestListProcesses: the picker must see at least itself, be sorted and
+// deduplicated by name.
+func TestListProcesses(t *testing.T) {
+	c, err := New(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	procs, err := c.ListProcesses()
+	if err != nil {
+		t.Fatalf("ListProcesses: %v", err)
+	}
+	if len(procs) == 0 {
+		t.Fatal("process list is empty")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	selfName := strings.ToLower(filepath.Base(self))
+	found := false
+	for i, p := range procs {
+		if p.Name != strings.ToLower(p.Name) || p.Path == "" || p.PID == 0 {
+			t.Errorf("row %d not normalized: %+v", i, p)
+		}
+		if i > 0 && procs[i-1].Name >= p.Name {
+			t.Errorf("not sorted/deduplicated: %q then %q", procs[i-1].Name, p.Name)
+		}
+		if p.Name == selfName {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("current process %q missing from the list", selfName)
+	}
+}
+
 // TestPollerStopsAndRestarts: StopPoller must actually stop the loop, and a
 // restart must run exactly one poller.
 func TestPollerStopsAndRestarts(t *testing.T) {

@@ -760,7 +760,7 @@ func (e *Engine) inspectClientHello(pkt []byte, addr *windivert.Address, p *pktI
 	}
 	f.ECH = res.ECH
 
-	action := e.rules.MatchProto(v4mapped(p.dst4), unsafeString(res.SNI), p.dstPort, config.ProtoTCP)
+	action := e.rules.MatchProc(v4mapped(p.dst4), unsafeString(res.SNI), p.dstPort, config.ProtoTCP, e.appOf(p, false))
 	if res.ECH && action != config.ActionDirect {
 		// Encrypted Client Hello: desync is pointless (lab: Schannel-ECH
 		// не пробивается) — route to the tunnel instead.
@@ -1020,7 +1020,7 @@ func (e *Engine) putHold(h *chHold) {
 // TCP), everything else passes.
 func (e *Engine) processUDP(pkt []byte, addr *windivert.Address, p *pktInfo) {
 	key := flowKeyOut(p)
-	action := e.rules.MatchProto(v4mapped(p.dst4), "", p.dstPort, config.ProtoUDP)
+	action := e.rules.MatchProc(v4mapped(p.dst4), "", p.dstPort, config.ProtoUDP, e.appOf(p, true))
 	switch action {
 	case config.ActionTunnel:
 		f := e.flows.GetOrCreate(key)
@@ -1031,6 +1031,16 @@ func (e *Engine) processUDP(pkt []byte, addr *windivert.Address, p *pktInfo) {
 	default:
 		e.passVerdict(pkt, addr, core.VerdictPass)
 	}
+}
+
+// appOf names the local process owning the flow's socket for the `app:`
+// rule stage (PLAN-0.8 §1.1). "" when the table has no app rules (the
+// common case — skips the socket snapshot) or the owner is unknown.
+func (e *Engine) appOf(p *pktInfo, udp bool) string {
+	if !e.rules.HasApps() {
+		return ""
+	}
+	return procName(p.srcPort, udp)
 }
 
 // tgFastTunnel reports the §4.2 fast-path verdict: the destination is in a

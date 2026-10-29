@@ -122,6 +122,48 @@ func TestListBadBodyRejected(t *testing.T) {
 	}
 }
 
+func TestRefreshIgnoresFreshCache(t *testing.T) {
+	dir := t.TempDir()
+	cache := filepath.Join(dir, "geoip-ru.txt")
+	if err := os.WriteFile(cache, []byte("9.9.9.0/24\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Fresh on purpose: List would keep it, Refresh must not.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("8.8.8.0/24\n"))
+	}))
+	defer srv.Close()
+	p := Params{Dir: dir, Mirrors: []string{srv.URL + "/{cc}"}}
+
+	if got, err := List(p, "ru"); err != nil || len(got) != 1 || got[0].String() != "9.9.9.0/24" {
+		t.Fatalf("precondition: fresh cache must not be downloaded, got %v %v", got, err)
+	}
+	got, err := Refresh(p, "ru")
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if len(got) != 1 || got[0].String() != "8.8.8.0/24" {
+		t.Fatalf("fresh cache not re-downloaded: %v", got)
+	}
+}
+
+func TestRefreshFailureKeepsCache(t *testing.T) {
+	dir := t.TempDir()
+	cache := filepath.Join(dir, "geoip-ru.txt")
+	if err := os.WriteFile(cache, []byte("9.9.9.0/24\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Refresh(Params{Dir: dir, Mirrors: []string{"http://127.0.0.1:1/{cc}"}}, "ru"); err == nil {
+		t.Fatal("mirror failure not reported")
+	}
+	if b, err := os.ReadFile(cache); err != nil || string(b) != "9.9.9.0/24\n" {
+		t.Fatalf("failed refresh clobbered the cache: %q %v", b, err)
+	}
+	if _, err := Refresh(Params{Dir: dir}, "rus"); err == nil {
+		t.Fatal("bad country code accepted")
+	}
+}
+
 func TestListBadCountryCode(t *testing.T) {
 	dir := t.TempDir()
 	for _, cc := range []string{"", "rus", "r1"} {

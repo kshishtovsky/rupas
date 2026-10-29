@@ -57,6 +57,13 @@ const carrierCooldownFails = 3
 // switching carriers under it buys nothing, so it commits instead.
 const replayCap = 16 * 1024
 
+// carrierDialTimeout bounds ONE carrier's dial. Without it a blackholed
+// endpoint (DPI drop, dead node) stalls the flow for the SOCKS handshake
+// deadline (10s) per carrier, so on a 3-profile chain every new connection
+// hung ~30s and the app read as "nothing loads at all" (live 2026-10-29).
+// A var so tests can shrink it.
+var carrierDialTimeout = 6 * time.Second
+
 // carrierHealth is one carrier's failure cooldown deadline (unix nanos,
 // 0 = healthy) plus the consecutive-death counter for cooldown escalation.
 // Touches are atomic: dials happen on many goroutines.
@@ -293,6 +300,9 @@ func (e *Engine) dialChain(dst netip.AddrPort) (net.Conn, error) {
 		onFail:    e.markCarrierFail,
 		onSuccess: e.markCarrierSuccess,
 	}
+	rc.onDead = func(idx int, cause error) {
+		e.logf("tcp %s: carrier %s died after commit: %v", dst, e.carriers[idx].name, cause)
+	}
 	if err := rc.dialCurrent(); err != nil {
 		return nil, err
 	}
@@ -321,6 +331,10 @@ type redialConn struct {
 	// health callbacks (engine-owned, nil-safe for tests).
 	onFail    func(idx int, cause error)
 	onSuccess func(idx int)
+	// onDead fires once when a COMMITTED connection (first payload already
+	// received) dies: that case never reaches failover, so without this the
+	// log says nothing about a tunnel the DPI cut mid-stream.
+	onDead func(idx int, cause error)
 
 	// deadlines captured before the carrier dials (net.Conn contract).
 	deadline      time.Time
@@ -331,7 +345,9 @@ type redialConn struct {
 func (r *redialConn) dialCurrent() error {
 	for {
 		idx := r.order[r.pos]
-		c, err := r.carriers[idx].dial(r.ctx, r.dst)
+		dctx, cancel := context.WithTimeout(r.ctx, carrierDialTimeout)
+		c, err := r.carriers[idx].dial(dctx, r.dst)
+		cancel() // the dialed conn does not inherit it (socks5/xhttp detach)
 		if err == nil {
 			r.conn = c
 			r.applyDeadlines()
@@ -399,6 +415,11 @@ func (r *redialConn) Read(b []byte) (int, error) {
 		}
 		if err == nil {
 			return 0, nil
+		}
+		if r.spent && r.onDead != nil {
+			dead := r.onDead
+			r.onDead = nil
+			dead(r.order[r.pos], err)
 		}
 		if r.failover(err) {
 			continue

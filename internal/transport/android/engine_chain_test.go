@@ -187,6 +187,31 @@ func TestBenchKeepsProvenPrimaryFirst(t *testing.T) {
 	}
 }
 
+// TestCarrierDialTimeout: a carrier whose dial never returns must not stall
+// the flow. Without the per-dial budget the SOCKS handshake deadline (10s)
+// held every new connection open — the "10s and nothing loads" blackout.
+func TestCarrierDialTimeout(t *testing.T) {
+	old := carrierDialTimeout
+	carrierDialTimeout = 100 * time.Millisecond
+	defer func() { carrierDialTimeout = old }()
+
+	hang := func(ctx context.Context, _ netip.AddrPort) (net.Conn, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	e := &Engine{}
+	e.carriers = []tcpCarrier{{name: "blackhole", dial: hang}}
+	e.health = make([]carrierHealth, 1)
+
+	started := time.Now()
+	if _, err := e.dialChain(dest()); err == nil {
+		t.Fatal("a blackholed carrier must fail the dial")
+	}
+	if spent := time.Since(started); spent > time.Second {
+		t.Fatalf("dial stalled %v, want ~%v", spent, carrierDialTimeout)
+	}
+}
+
 func TestCooldownExpiryRetriesPrimary(t *testing.T) {
 	e := stubEngine(t, nil,
 		ok("OK"),

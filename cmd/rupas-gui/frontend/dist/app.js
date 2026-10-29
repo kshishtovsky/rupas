@@ -6,7 +6,7 @@ import Window from "./vendor/runtime/window.js";
 import "./vendor/runtime/drag.js"; // side-effect: installs --wails-draggable handlers
 
 const $ = (id) => document.getElementById(id);
-const FQN = "github.com/rupas/rupas/internal/guictrl.Controller";
+const FQN = "github.com/kshishtovsky/rupas/internal/guictrl.Controller";
 const call = (method, ...args) => callRaw(`${FQN}.${method}`, ...args);
 
 // ---------- state ----------
@@ -1662,6 +1662,9 @@ function rtOnDragEnd() {
       $("wizard").style.display = "none";
       $("mainApp").style.display = "flex";
       call("Status").then(render);
+      // Login restore: the Run entry starts this GUI, the «Rupas daemon» task
+      // starts rupasd; AutoStart waits for the pipe and re-applies "on".
+      call("AutoStart").catch(() => {});
     } else {
       $("wizard").style.display = "flex";
       showWizardStep(WELCOME);

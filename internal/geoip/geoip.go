@@ -99,6 +99,22 @@ func List(p Params, cc string) ([]netip.Prefix, error) {
 	return parseFile(path)
 }
 
+// Refresh re-downloads cc regardless of how fresh the cache is (the GUI's
+// «Обновить GeoIP» button). A failed download keeps the old cache untouched
+// and returns the mirror errors.
+func Refresh(p Params, cc string) ([]netip.Prefix, error) {
+	p = p.WithDefaults()
+	cc = strings.ToLower(strings.TrimSpace(cc))
+	if cc == "" || !isCountryCode(cc) {
+		return nil, fmt.Errorf("geoip: bad country code %q", cc)
+	}
+	path := filepath.Join(p.Dir, "geoip-"+cc+".txt")
+	if err := download(p, cc, path); err != nil {
+		return nil, err
+	}
+	return parseFile(path)
+}
+
 // download fetches cc from the mirror chain and atomically installs the
 // body at path (temp file + rename, so a crash never leaves a truncated
 // cache in place of the old one).

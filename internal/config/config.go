@@ -379,12 +379,15 @@ type Exclusions struct {
 	Domains []string `yaml:"domains"`
 }
 
-// Rule routes traffic to an Action by exactly one matcher: cidr, sni or
-// ports. A rule with no matcher is the default rule (at most one allowed).
-// Proto narrows the rule to one transport protocol ("tcp" | "udp"); empty
-// matches both. Resolution order is fixed by SYSTEM_DESIGN §4.2:
-// CIDR → SNI → port → default.
+// Rule routes traffic to an Action by exactly one matcher: app, cidr, sni,
+// geoip or ports. A rule with no matcher is the default rule (at most one
+// allowed). Proto narrows the rule to one transport protocol ("tcp" |
+// "udp"); empty matches both. App narrows the rule to one process and is
+// matched only where PID attribution exists (Windows; elsewhere the field
+// validates but never fires). Resolution order is fixed by
+// SYSTEM_DESIGN §4.2: app → CIDR → SNI → port → default.
 type Rule struct {
+	App    string `yaml:"app,omitempty" json:"app,omitempty"` // process basename, lower-case: "steam.exe"
 	CIDR   string `yaml:"cidr,omitempty" json:"cidr,omitempty"`
 	SNI    string `yaml:"sni,omitempty" json:"sni,omitempty"`     // exact name or "*.suffix" wildcard
 	Ports  string `yaml:"ports,omitempty" json:"ports,omitempty"` // "443", "50000-65535", "53,123"
@@ -489,18 +492,24 @@ func (c *Config) Validate() error {
 				i, r.Proto, ProtoAny, ProtoTCP, ProtoUDP)
 		}
 		matchers := 0
-		for _, s := range []string{r.CIDR, r.SNI, r.Ports, r.GeoIP} {
+		for _, s := range []string{r.CIDR, r.SNI, r.Ports, r.GeoIP, r.App} {
 			if s != "" {
 				matchers++
 			}
 		}
 		if matchers > 1 {
-			return fmt.Errorf("config: rule %d: at most one of cidr/sni/ports/geoip is allowed", i)
+			return fmt.Errorf("config: rule %d: at most one of cidr/sni/ports/geoip/app is allowed", i)
 		}
 		if r.Action == ActionInvalid {
 			return fmt.Errorf("config: rule %d: missing action", i)
 		}
 		switch {
+		case r.App != "":
+			r.App = strings.ToLower(strings.TrimSpace(r.App))
+			// A path validates but could never match a basename.
+			if strings.ContainsAny(r.App, `/\`) {
+				return fmt.Errorf("config: rule %d: app %q: want a process basename, not a path", i, r.App)
+			}
 		case r.CIDR != "":
 			if _, _, err := net.ParseCIDR(r.CIDR); err != nil {
 				return fmt.Errorf("config: rule %d: bad cidr %q: %v", i, r.CIDR, err)

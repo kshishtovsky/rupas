@@ -26,6 +26,7 @@ import (
 // Rule kinds rendered by the screen: one per matcher, exactly the keys the
 // §10 JSON uses ("sni" covers both an exact name and a "*.suffix" wildcard).
 const (
+	KindApp     = "app"
 	KindCIDR    = "cidr"
 	KindGeoIP   = "geoip"
 	KindSNI     = "sni"
@@ -54,7 +55,7 @@ type RuleView struct {
 type RulesView struct {
 	Rules       []RuleView `json:"rules"`
 	Default     RuleView   `json:"default"`
-	StageCounts [3]int     `json:"stageCounts"` // 1 IP, 2 domains, 3 ports
+	StageCounts [4]int     `json:"stageCounts"` // 0 apps, 1 IP, 2 domains, 3 ports
 	Error       string     `json:"error,omitempty"`
 }
 
@@ -195,26 +196,30 @@ func buildRulesView(list []config.Rule) RulesView {
 	for i, r := range list {
 		rv := RuleView{Index: i, Action: r.Action.String(), Proto: r.Proto}
 		switch {
+		case r.App != "":
+			rv.Kind, rv.Matcher = KindApp, r.App
+			rv.Human = "весь трафик процесса"
+			view.StageCounts[0]++
 		case r.CIDR != "":
 			rv.Kind, rv.Matcher = KindCIDR, r.CIDR
 			rv.Human = cidrHuman(r.CIDR)
-			view.StageCounts[0]++
+			view.StageCounts[1]++
 		case r.GeoIP != "":
 			rv.Kind, rv.Matcher = KindGeoIP, r.GeoIP
 			rv.Human = "таблица стран, обновляется раз в 30 дней"
-			view.StageCounts[0]++
+			view.StageCounts[1]++
 		case strings.HasPrefix(r.SNI, "*."):
 			rv.Kind, rv.Matcher = KindSNI, r.SNI
 			rv.Human = "все поддомены " + strings.TrimPrefix(r.SNI, "*.")
-			view.StageCounts[1]++
+			view.StageCounts[2]++
 		case r.SNI != "":
 			rv.Kind, rv.Matcher = KindSNI, r.SNI
 			rv.Human = "точное имя"
-			view.StageCounts[1]++
+			view.StageCounts[2]++
 		case r.Ports != "":
 			rv.Kind, rv.Matcher = KindPorts, r.Ports
 			rv.Human = portsHuman(r.Ports, r.Proto)
-			view.StageCounts[2]++
+			view.StageCounts[3]++
 		default:
 			rv.Kind, rv.Matcher = KindDefault, "default"
 			rv.Human = "весь прочий трафик"

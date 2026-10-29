@@ -108,6 +108,20 @@ func (c *Controller) SaveLinks(blob string) ([]string, error) {
 		return warnings, errors.New("нет рабочих ссылок: нужен vless (tcp/xhttp) или hysteria2 — trojan/ws десктоп-ядро не поддерживает")
 	}
 	cfg := presetConfig(true)
+	// A link edit changes the channels, not the policy: keep the rules,
+	// exclusions, geoip and the calibrated desync the profile already has.
+	// Rebuilding from the preset silently dropped the owner's custom rules
+	// and exclusions (live 2026-10-29: the tanuki.onteco.dev rule and the
+	// spiderssense.com exclusion vanished on «Сохранить»).
+	if cur, err := c.loadConfigForRules(); err == nil && len(cur.Rules) > 0 {
+		cfg.Rules, cfg.Exclusions = cur.Rules, cur.Exclusions
+		if cur.Desync != (config.DesyncParams{}) {
+			cfg.Desync = cur.Desync // keep the binary-searched t*, not the preset 13
+		}
+		if cur.GeoIP != nil {
+			cfg.GeoIP = cur.GeoIP
+		}
+	}
 	cfg.Tunnels = &config.TunnelConfig{TCP: tcp, UDP: udp, Fallback: fb}
 	// ErrDaemonDown means "written to disk, not confirmed": keep the file
 	// (design contract) but still surface it so the UI can say so.
@@ -120,6 +134,41 @@ func (c *Controller) SaveLinks(blob string) ([]string, error) {
 	}
 	c.setGateway(tcp, udp)
 	return warnings, err
+}
+
+// CheckLinks runs the same plan + engine validation as SaveLinks but on a
+// temp file: no .bak, no write to the live config, no daemon reload. Returns
+// the parser warnings and the engine's first error line, if any.
+func (c *Controller) CheckLinks(blob string) ([]string, error) {
+	tcp, udp, fb, warnings, err := channelsToPlan(blob)
+	if err != nil {
+		return warnings, err
+	}
+	if tcp == nil && udp == nil && fb == nil {
+		return append(warnings, "нет ссылок: нужен vless (tcp/xhttp) или hysteria2"), nil
+	}
+	cfg := presetConfig(true)
+	cfg.Tunnels = &config.TunnelConfig{TCP: tcp, UDP: udp, Fallback: fb}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return warnings, err
+	}
+	f, err := os.CreateTemp("", "rupas-check-*.yaml")
+	if err != nil {
+		return warnings, err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return warnings, err
+	}
+	if err := f.Close(); err != nil {
+		return warnings, err
+	}
+	if _, err := config.Load(f.Name()); err != nil {
+		return warnings, fmt.Errorf("конфиг не прошёл валидацию: %s", firstLine(err))
+	}
+	return warnings, nil
 }
 
 // writeConfig runs the TUI save contract: engine validation on a temp file,

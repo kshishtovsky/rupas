@@ -156,6 +156,37 @@ func TestSuccessResetsAndKeepsOrder(t *testing.T) {
 	}
 }
 
+// TestBenchKeepsProvenPrimaryFirst: a single pre-payload death (soft 10s
+// bench) must not divert new flows into a carrier that has never delivered
+// a byte — live 2026-10-29 (Rostelecom): reality worked, xhttp/hysteria2
+// never returned anything, and every bench of the primary blackholed all
+// traffic for 10s.
+func TestBenchKeepsProvenPrimaryFirst(t *testing.T) {
+	e := stubEngine(t, nil,
+		ok("OK-OK-OK"), // carrier 0 delivers payload -> proven
+		ok("OK-OK-OK"),
+	)
+	conn, err := e.dialChain(dest())
+	if err != nil {
+		t.Fatalf("dialChain: %v", err)
+	}
+	if _, err := io.ReadFull(conn, make([]byte, 8)); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	conn.Close()
+
+	e.markCarrierFail(0, errors.New("pre-payload death"))
+	if got := e.carrierOrder(); got[0] != 0 {
+		t.Fatalf("a proven carrier on soft cooldown must stay first, got %v", got)
+	}
+	// The unproven secondary still gets tried right after it, and once it
+	// delivers payload a live proven secondary outranks the benched primary.
+	e.markCarrierSuccess(1)
+	if got := e.carrierOrder(); got[0] != 1 {
+		t.Fatalf("a proven healthy carrier must outrank a benched one, got %v", got)
+	}
+}
+
 func TestCooldownExpiryRetriesPrimary(t *testing.T) {
 	e := stubEngine(t, nil,
 		ok("OK"),
@@ -225,11 +256,20 @@ func TestCarrierStatesActiveAndCooldown(t *testing.T) {
 		t.Fatalf("after success: %+v", states)
 	}
 
-	// The active carrier going on cooldown hands "active" to the healthy head.
+	// The proven active carrier going on cooldown keeps the lead: the
+	// unproven carrier must not be promoted into a path that never worked.
 	e.health[1].down.Store(time.Now().Add(time.Minute).UnixNano())
 	states = e.CarrierStates()
-	if states[0].State != "active" || states[1].State != "cooldown" {
-		t.Fatalf("cooldown states: %+v", states)
+	if states[1].State != "active" || states[0].State != "ready" {
+		t.Fatalf("benched proven carrier must keep the lead: %+v", states)
+	}
+
+	// With nothing proven yet a benched carrier is labelled "cooldown".
+	fresh := stubEngine(t, nil, ok("OK"), ok("OK"))
+	fresh.markCarrierFail(0, io.EOF)
+	states = fresh.CarrierStates()
+	if states[0].State != "cooldown" || states[1].State != "active" {
+		t.Fatalf("fresh cooldown states: %+v", states)
 	}
 
 	// Expiry gives the lead back to the last committed carrier.

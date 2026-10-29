@@ -121,6 +121,93 @@ func TestSaveLinksRejectsEmptyPlan(t *testing.T) {
 	}
 }
 
+// TestCheckLinks: the validation path must report warnings/errors without
+// touching the live config, the backup or the daemon.
+func TestCheckLinks(t *testing.T) {
+	path, before := initialConfig(t)
+	// No daemon on purpose: a check that dialed RPC would return ErrDaemonDown.
+	c, err := New(Options{Pipe: `\\.\pipe\rupas-guictrl-test-absent`, ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	valid := "vless://0f4e1c2d-3b5a-4c6d-8e9f-aabbccddeeff@vps.example.net:443?security=reality&pbk=PBK&sid=AB&sni=camo.net&type=tcp#primary\n" +
+		"hysteria2://hy2secret@vps.example.net:53552?sni=camo.net#voice\n" +
+		"trojan://pass@trojan.example.net:443?security=tls&sni=t.net#ignored\n"
+	warnings, err := c.CheckLinks(valid)
+	if err != nil {
+		t.Fatalf("valid blob: %v", err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "trojan") {
+		t.Fatalf("want the trojan warning, got %v", warnings)
+	}
+
+	if _, err := c.CheckLinks("vless://not-a-link"); err == nil || err.Error() == "" {
+		t.Fatalf("broken blob: want a message, got %v", err)
+	}
+	warnings, err = c.CheckLinks("")
+	if err != nil || len(warnings) == 0 || !strings.Contains(strings.Join(warnings, " "), "нет ссылок") {
+		t.Fatalf("empty blob: want a «нет ссылок» warning, got %v / %v", warnings, err)
+	}
+
+	for _, suffix := range []string{".bak", ".tmp"} {
+		if _, err := os.Stat(path + suffix); err == nil {
+			t.Fatalf("CheckLinks created %s", path+suffix)
+		}
+	}
+	cur, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(cur) != string(before) || !after.ModTime().Equal(st.ModTime()) {
+		t.Fatalf("CheckLinks wrote the live config:\n%s", cur)
+	}
+}
+
+// TestListProcesses: the picker must see at least itself, be sorted and
+// deduplicated by name.
+func TestListProcesses(t *testing.T) {
+	c, err := New(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	procs, err := c.ListProcesses()
+	if err != nil {
+		t.Fatalf("ListProcesses: %v", err)
+	}
+	if len(procs) == 0 {
+		t.Fatal("process list is empty")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	selfName := strings.ToLower(filepath.Base(self))
+	found := false
+	for i, p := range procs {
+		if p.Name != strings.ToLower(p.Name) || p.Path == "" || p.PID == 0 {
+			t.Errorf("row %d not normalized: %+v", i, p)
+		}
+		if i > 0 && procs[i-1].Name >= p.Name {
+			t.Errorf("not sorted/deduplicated: %q then %q", procs[i-1].Name, p.Name)
+		}
+		if p.Name == selfName {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("current process %q missing from the list", selfName)
+	}
+}
+
 // TestPollerStopsAndRestarts: StopPoller must actually stop the loop, and a
 // restart must run exactly one poller.
 func TestPollerStopsAndRestarts(t *testing.T) {

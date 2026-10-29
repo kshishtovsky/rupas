@@ -122,6 +122,41 @@ func (c *Controller) SaveLinks(blob string) ([]string, error) {
 	return warnings, err
 }
 
+// CheckLinks runs the same plan + engine validation as SaveLinks but on a
+// temp file: no .bak, no write to the live config, no daemon reload. Returns
+// the parser warnings and the engine's first error line, if any.
+func (c *Controller) CheckLinks(blob string) ([]string, error) {
+	tcp, udp, fb, warnings, err := channelsToPlan(blob)
+	if err != nil {
+		return warnings, err
+	}
+	if tcp == nil && udp == nil && fb == nil {
+		return append(warnings, "нет ссылок: нужен vless (tcp/xhttp) или hysteria2"), nil
+	}
+	cfg := presetConfig(true)
+	cfg.Tunnels = &config.TunnelConfig{TCP: tcp, UDP: udp, Fallback: fb}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return warnings, err
+	}
+	f, err := os.CreateTemp("", "rupas-check-*.yaml")
+	if err != nil {
+		return warnings, err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return warnings, err
+	}
+	if err := f.Close(); err != nil {
+		return warnings, err
+	}
+	if _, err := config.Load(f.Name()); err != nil {
+		return warnings, fmt.Errorf("конфиг не прошёл валидацию: %s", firstLine(err))
+	}
+	return warnings, nil
+}
+
 // writeConfig runs the TUI save contract: engine validation on a temp file,
 // backup, atomic replace, hot-reload a live daemon, rollback on refusal.
 func (c *Controller) writeConfig(cfg config.Config) error {

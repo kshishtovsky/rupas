@@ -24,9 +24,10 @@ const validationProfile = "rules-validation"
 var validationDesync = DesyncParams{Strategy: "fake", TTL: 13, TTLMargin: 0, Repeats: 1}
 
 // jsonRule is the wire shape of one rule (§10): exactly one of
-// cidr/sni/ports/geoip, an optional proto scope and a mandatory action.
+// app/cidr/sni/ports/geoip, an optional proto scope and a mandatory action.
 // An empty matcher makes the rule the default one.
 type jsonRule struct {
+	App    string `json:"app,omitempty"`
 	CIDR   string `json:"cidr,omitempty"`
 	SNI    string `json:"sni,omitempty"`
 	Ports  string `json:"ports,omitempty"`
@@ -103,6 +104,7 @@ func ParseRulesJSON(data []byte) ([]Rule, error) {
 			return nil, fmt.Errorf("config: rule %d: %v", i, err)
 		}
 		rules[i] = Rule{
+			App:    jr.App,
 			CIDR:   jr.CIDR,
 			SNI:    jr.SNI,
 			Ports:  jr.Ports,

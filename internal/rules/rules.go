@@ -50,10 +50,20 @@ type sniKey struct {
 	proto protoID
 }
 
+// appKey is an app-map key: the lower-case process basename plus the
+// protocol scope, so a udp-scoped app rule never fires for TCP.
+type appKey struct {
+	app   string
+	proto protoID
+}
+
 // Table is an immutable, concurrency-safe decision table. Build it with
 // Compile, then call Match from any goroutine without synchronization.
 type Table struct {
 	root4, root6 *cidrNode
+	// apps maps a process basename (already lower-case) to an action.
+	apps map[appKey]config.Action
+
 	// sniExact maps a full lower-case SNI to an action (O(1) lookup).
 	sniExact map[sniKey]config.Action
 	// sniWild maps the suffix after "*." (e.g. "googlevideo.com") to an
@@ -86,8 +96,9 @@ func (t *Table) Match(ip [16]byte, sni string, port uint16) config.Action {
 }
 
 // MatchProto resolves the action for a flow of transport protocol proto
-// (config.ProtoAny / ProtoTCP / ProtoUDP). A rule scoped to proto="udp"
-// matches only UDP queries and vice versa; unscoped rules match both.
+// (config.ProtoAny / ProtoTCP / ProtoUDP) with no process attribution. A
+// rule scoped to proto="udp" matches only UDP queries and vice versa;
+// unscoped rules match both.
 //
 // ip must be a 16-byte address; IPv4 addresses must be in v4-mapped form
 // (::ffff:a.b.c.d). sni must be lower case and may be an uncopied
@@ -97,9 +108,26 @@ func (t *Table) Match(ip [16]byte, sni string, port uint16) config.Action {
 // MatchProto performs zero allocations; the CIDR walk is O(prefix length),
 // an exact SNI hit is O(1).
 func (t *Table) MatchProto(ip [16]byte, sni string, port uint16, proto string) config.Action {
+	return t.MatchProc(ip, sni, port, proto, "")
+}
+
+// MatchProc resolves the action for a flow whose owning process is known:
+// app is the lower-case executable basename ("steam.exe") or "" when the
+// owner could not be attributed. Resolution order (PLAN-0.8 §1.1) is
+// app → CIDR → SNI → port → default: an app rule means "all traffic of
+// this process", so it outranks destination matches.
+//
+// An empty or unmatched app falls through to the other stages (fail-open).
+// Zero allocations; the app lookup is O(1) map probing.
+func (t *Table) MatchProc(ip [16]byte, sni string, port uint16, proto, app string) config.Action {
 	q, err := protoIDOf(proto)
 	if err != nil {
 		q = protoAnyID
+	}
+	if app != "" {
+		if a, ok := t.lookupApp(app, q); ok {
+			return a
+		}
 	}
 	if a, ok := t.matchCIDR(ip, q); ok {
 		return a
@@ -123,6 +151,25 @@ func (t *Table) MatchProto(ip [16]byte, sni string, port uint16, proto string) c
 	}
 	return t.def
 }
+
+// lookupApp probes the app table for (app, q) and, for a concrete query,
+// the unscoped (app, any) entry — the exact-protocol scope wins. Mirrors
+// lookupSNI.
+func (t *Table) lookupApp(app string, q protoID) (config.Action, bool) {
+	if a, ok := t.apps[appKey{app: app, proto: q}]; ok {
+		return a, true
+	}
+	if q != protoAnyID {
+		if a, ok := t.apps[appKey{app: app, proto: protoAnyID}]; ok {
+			return a, true
+		}
+	}
+	return 0, false
+}
+
+// HasApps reports whether the table carries process rules. Callers use it
+// to skip the PID attribution (a socket snapshot) when no app rule exists.
+func (t *Table) HasApps() bool { return len(t.apps) > 0 }
 
 // lookupSNI probes m for (sni, q) and, for a concrete query, the
 // unscoped (sni, any) entry — the exact-protocol scope wins.

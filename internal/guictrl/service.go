@@ -17,11 +17,22 @@ import (
 	"github.com/kshishtovsky/rupas/internal/geoip"
 )
 
-// On sends the RPC `on` (assumes EnsureDaemon already ran).
-func (c *Controller) On() error { return c.simpleRPC("on") }
+// On sends the RPC `on` (assumes EnsureDaemon already ran). The state is
+// remembered on disk so AutoStart can restore it after a reboot.
+func (c *Controller) On() error {
+	if err := c.simpleRPC("on"); err != nil {
+		return err
+	}
+	return writeWantOn(true)
+}
 
 // Off sends the RPC `off` (interception stops, daemon keeps running).
-func (c *Controller) Off() error { return c.simpleRPC("off") }
+func (c *Controller) Off() error {
+	if err := c.simpleRPC("off"); err != nil {
+		return err
+	}
+	return writeWantOn(false)
+}
 
 // Logs returns the daemon lifecycle log tail (last N events).
 func (c *Controller) Logs() ([]string, error) {

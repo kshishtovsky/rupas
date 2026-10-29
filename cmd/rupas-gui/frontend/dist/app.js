@@ -238,11 +238,18 @@ function renderChannels() {
         <button class="cap-btn" data-act="down" title="Опустить" ${i === channels.length - 1 ? "disabled" : ""}>
           <svg viewBox="0 0 12 12"><path d="M2 4l4 4 4-4"/></svg>
         </button>
+        <button class="cap-btn ch-del" data-act="del" title="Удалить" aria-label="Удалить канал">
+          <svg viewBox="0 0 12 12"><path d="M2 2l8 8M10 2l-8 8"/></svg>
+        </button>
       </div>`;
     row.querySelectorAll("button[data-act]").forEach((b) =>
       b.addEventListener("click", () => {
-        const j = b.dataset.act === "up" ? i - 1 : i + 1;
-        [channels[i], channels[j]] = [channels[j], channels[i]];
+        if (b.dataset.act === "del") {
+          channels.splice(i, 1);            // textarea only; the disk write stays in SaveLinks
+        } else {
+          const j = b.dataset.act === "up" ? i - 1 : i + 1;
+          [channels[i], channels[j]] = [channels[j], channels[i]];
+        }
         $("setLinks").value = channels.map((c) => c.link).join("\n");
         renderChannels();
       })
@@ -252,6 +259,26 @@ function renderChannels() {
 }
 
 $("btnLinksParse").addEventListener("click", parseLinks);
+// Dry run: CheckLinks parses + validates on a temp file, nothing is written.
+$("btnLinksCheck").addEventListener("click", async () => {
+  const hint = $("linksHint"), btn = $("btnLinksCheck");
+  const blob = $("setLinks").value.trim();
+  if (!blob) {
+    hint.textContent = "нет ссылок";
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "Проверяю…";
+  try {
+    const warnings = (await call("CheckLinks", blob)) || [];
+    const list = warnings.filter(Boolean);
+    hint.textContent = list.length ? list.join("; ") : "ссылки разбираются, ошибок нет";
+  } catch (e) {
+    hint.textContent = "⚠ " + (e.message || e);
+  }
+  btn.disabled = false;
+  btn.textContent = "Проверить";
+});
 
 $("setAutostart").addEventListener("change", async (e) => {
   try {
@@ -520,11 +547,13 @@ function showWizardStep(step) {
    ========================================================================== */
 
 const RT_STAGES = [
+  { title: "Приложения", kinds: ["app"] },
   { title: "IP-адреса", kinds: ["cidr", "geoip"] },
   { title: "Домены", kinds: ["sni"] },
   { title: "Порты", kinds: ["ports"] },
 ];
 const RT_KINDS = [
+  { key: "app", label: "Программа", ph: "steam.exe" },
   { key: "cidr", label: "IP/CIDR", ph: "91.105.192.0/23" },
   { key: "geoip", label: "Страна", ph: "ru" },
   { key: "sni", label: "Домен", ph: "*.googlevideo.com" },
@@ -565,7 +594,7 @@ const rtState = {
   saveError: "",
   violations: [],
   rowErrors: {},
-  collapsed: [false, false, false],
+  collapsed: RT_STAGES.map(() => false),
   sel: null,
   menu: null,
   edit: null,                // { mode, uid, stage, kind, value, proto, action }
@@ -620,7 +649,7 @@ function rtMatcherText(r) {
   return r.kind === "geoip" ? "geoip: " + r.matcher : r.matcher;
 }
 function rtRegroup() {
-  rtState.rules = [0, 1, 2].reduce((acc, s) => acc.concat(rtStageRules(s)), []);
+  rtState.rules = RT_STAGES.flatMap((_, s) => rtStageRules(s));
 }
 
 /* ---------- engine adapter: a missing method is a state ---------- */
@@ -640,9 +669,10 @@ async function rtRpc(method, ...args) {
 function rtNormRule(raw, i) {
   if (!raw || typeof raw !== "object") return null;
   const kindRaw = String(rtPick(raw, "kind", "Kind") || "").toLowerCase();
-  let kind = ["cidr", "geoip", "sni", "ports"].includes(kindRaw) ? kindRaw : "";
+  let kind = ["app", "cidr", "geoip", "sni", "ports"].includes(kindRaw) ? kindRaw : "";
   if (!kind) {
-    if (rtPick(raw, "cidr", "CIDR")) kind = "cidr";
+    if (rtPick(raw, "app", "App")) kind = "app";
+    else if (rtPick(raw, "cidr", "CIDR")) kind = "cidr";
     else if (rtPick(raw, "geoip", "GeoIP")) kind = "geoip";
     else if (rtPick(raw, "sni", "SNI")) kind = "sni";
     else if (rtPick(raw, "ports", "Ports")) kind = "ports";
@@ -680,7 +710,7 @@ function rtToJson() {
 
 function rtMakeBase() {
   return {
-    byStage: [0, 1, 2].map((s) => rtStageRules(s).map((r) => ({
+    byStage: RT_STAGES.map((_, s) => rtStageRules(s).map((r) => ({
       kind: r.kind, matcher: r.matcher, proto: r.proto || "", action: r.action,
     }))),
     def: { action: rtState.def.action, proto: rtState.def.proto || "" },
@@ -692,7 +722,7 @@ function rtChanges() {
   const base = rtState.base;
   if (!base) return 0;
   let n = 0;
-  for (let s = 0; s < 3; s++) {
+  for (let s = 0; s < RT_STAGES.length; s++) {
     const a = base.byStage[s] || [], b = rtStageRules(s);
     const len = Math.max(a.length, b.length);
     for (let i = 0; i < len; i++) {
@@ -755,6 +785,9 @@ function rtFindPortClash(span, proto, exceptUid) {
 function rtValidateRule(kind, rawValue, proto, exceptUid) {
   const v = String(rawValue == null ? "" : rawValue).trim();
   if (!v) return { err: "Введите значение" };
+  if (kind === "app" && /[\\/\s]/.test(v)) {
+    return { err: "Имя программы без пути и пробелов — например steam.exe" };
+  }
   if (kind === "cidr" && !rtIsCidr(v)) return { err: "Неверный CIDR — ожидается адрес вида 91.105.192.0/23" };
   if (kind === "geoip" && !/^[A-Za-z]{2}$/.test(v)) return { err: "Неверный код страны — две латинские буквы, например ru" };
   if (kind === "sni" && !rtIsDomainPattern(v)) return { err: "Неверный домен — например example.com или *.googlevideo.com" };
@@ -767,6 +800,7 @@ function rtValidateRule(kind, rawValue, proto, exceptUid) {
   return {};
 }
 function rtDeriveSub(r) {
+  if (r.kind === "app") return "весь трафик процесса";
   if (r.kind === "cidr") {
     const n = rtCidrCount(r.matcher);
     if (n === null) return "";
@@ -891,7 +925,7 @@ function rtRenderList() {
     host.innerHTML = rtErrorBlock();
     return;
   }
-  if (!rtState.rules.length) {
+  if (!rtState.rules.length && !rtState.edit) {
     host.innerHTML = '<div class="rt-empty">' +
       '<div class="rt-empty-text">Правил нет. Весь трафик пойдёт по умолчанию.</div>' +
       '<div class="rt-empty-actions">' +
@@ -902,7 +936,7 @@ function rtRenderList() {
   }
   let h = "";
   if (rtState.engineNote) h += '<div class="rt-note">' + rtEsc(rtState.engineNote) + '</div>';
-  for (let s = 0; s < 3; s++) h += rtStageHtml(s);
+  for (let s = 0; s < RT_STAGES.length; s++) h += rtStageHtml(s);
   host.innerHTML = h;
   if (rtState.edit) rtMountEditor();
 }
@@ -1017,7 +1051,7 @@ function rtRenderCheck() {
   const warn = String(rtPick(t, "warning", "Warning") || "");
   const act = rtAction(rtPick(t, "action", "Action"));
   const isDefault = !matcher || stage === 4 || stage === 0;
-  const name = givenName || (stage >= 1 && stage <= 3 ? RT_STAGES[stage - 1].title : "по умолчанию");
+  const name = givenName || (stage >= 1 && stage < RT_STAGES.length ? RT_STAGES[stage].title : "по умолчанию");
   const lines = [];
   lines.push('<div class="rt-result-stage">стадия ' + (isDefault ? "4" : stage) + ' · ' + rtEsc(isDefault ? "по умолчанию" : name) + '</div>');
   if (matcher) lines.push('<div class="rt-result-rule">правило: ' + rtEsc(matcher) + '</div>');
@@ -1073,9 +1107,9 @@ async function rtLoad(opts) {
     const d = rtNormRule(dflt, 0);
     if (d) def = { action: d.action || (def && def.action) || "TUNNEL", proto: d.proto || "" };
   }
-  const byStage = [[], [], []];
+  const byStage = RT_STAGES.map(() => []);
   picked.forEach((r) => byStage[rtStageOf(r.kind)].push(r));
-  rtState.rules = byStage[0].concat(byStage[1], byStage[2]);
+  rtState.rules = byStage.flat();
   rtState.def = def || { action: "TUNNEL", proto: "" };
   rtState.engineNote = String(view.error || view.Error || "");
   rtState.status = rtState.rules.length ? "full" : "empty";
@@ -1166,7 +1200,11 @@ function rtEditorHtml() {
     '<div><div class="rt-field-label">Вид</div>' + rtSegHtml("kind", RT_KINDS, e.kind) + '</div>' +
     '<div><div class="rt-field-label">Значение</div>' +
     '<input class="rt-value" id="rtEditValue" type="text" spellcheck="false" autocomplete="off" value="' +
-    rtEsc(e.value) + '" placeholder="' + rtEsc(kind.ph) + '" aria-label="Значение правила" aria-invalid="false">' +
+    rtEsc(e.value) + '" placeholder="' + rtEsc(kind.ph) + '" aria-label="Значение правила" aria-invalid="false"' +
+    (e.kind === "app" ? ' list="rtProcList"' : "") + '>' +
+    '<button class="rt-btn rt-btn-quiet rt-pickproc" type="button" data-rt="pick-proc"' +
+    (e.kind === "app" ? "" : " hidden") + '>Выбрать процесс…</button>' +
+    '<datalist id="rtProcList"></datalist>' +
     '<div class="rt-err" id="rtEditErr" role="alert"></div></div>' +
     '<div class="rt-editor-cols">' +
     '<div><div class="rt-field-label">Протокол</div>' + rtSegHtml("proto", RT_PROTOS, e.proto) + '</div>' +
@@ -1212,7 +1250,11 @@ function rtSyncEditor() {
   if (val) {
     const k = RT_KINDS.find((x) => x.key === e.kind);
     if (k) val.placeholder = k.ph;
+    if (e.kind === "app") val.setAttribute("list", "rtProcList");
+    else val.removeAttribute("list");
   }
+  const pick = host.querySelector("[data-rt=\"pick-proc\"]");
+  if (pick) pick.hidden = e.kind !== "app";
   const hint = host.querySelector("#rtEditHint");
   if (hint) hint.textContent = rtEditHint();
   rtValidateEditor(false);
@@ -1231,6 +1273,26 @@ function rtValidateEditor(submitted) {
   if (val) val.setAttribute("aria-invalid", show ? "true" : "false");
   return !msg;
 }
+// Fills the app-rule datalist from the running processes; the input keeps
+// free entry (a stopped program is still a legal rule).
+async function rtPickProc() {
+  if (!rtState.edit) return;
+  const list = document.getElementById("rtProcList");
+  const val = document.querySelector("#page-routing #rtEditValue");
+  const err = document.querySelector("#page-routing #rtEditErr");
+  if (!list || !val) return;
+  const res = await rtRpc("ListProcesses");
+  if (!res.ok) {
+    if (err) err.textContent = "список процессов недоступен: " + res.error;
+    return;
+  }
+  if (err) err.textContent = "";
+  list.innerHTML = (Array.isArray(res.value) ? res.value : []).map((p) =>
+    '<option value="' + rtEsc(rtPick(p, "name", "Name") || "") + '">' +
+    rtEsc(rtPick(p, "path", "Path") || "") + '</option>').join("");
+  val.focus();
+}
+
 function rtSaveEditor() {
   const e = rtState.edit;
   if (!e) return;
@@ -1239,7 +1301,7 @@ function rtSaveEditor() {
     if (val) val.focus();
     return;
   }
-  const value = String(e.value).trim();
+  const value = e.kind === "app" ? String(e.value).trim().toLowerCase() : String(e.value).trim();
   if (e.mode === "edit") {
     const r = rtFind(e.uid);
     if (r) {
@@ -1256,6 +1318,7 @@ function rtSaveEditor() {
     });
   }
   rtRegroup();
+  if (rtState.status === "empty") rtState.status = "full";
   rtClearPreset();
   rtState.edit = null;
   rtState.saveError = "";
@@ -1295,7 +1358,7 @@ function rtDuplicate(uid) {
 /* ---------- keyboard order ---------- */
 function rtFlatRows() {
   const out = [];
-  for (let s = 0; s < 3; s++) {
+  for (let s = 0; s < RT_STAGES.length; s++) {
     if (rtState.collapsed[s]) continue;
     rtStageRules(s).forEach((r) => out.push(r.uid));
   }
@@ -1520,6 +1583,8 @@ function rtOnClick(ev) {
         return;
       }
       case "add": rtOpenEditor(+btn.dataset.stage, null); return;
+      case "header-add": rtOpenEditor(0, null); return;
+      case "pick-proc": rtPickProc(); return;
       case "menu": rtState.menu = rtState.menu === uid ? null : uid; rtRenderList(); return;
       case "edit": {
         rtState.menu = null;
@@ -1685,6 +1750,18 @@ function rtOnDragEnd() {
   });
   $("rtApply").addEventListener("click", rtApplyRules);
   $("rtRevert").addEventListener("click", rtRevert);
+  // Slow (up to 2×30 s per country): a disabled label instead of a dead window.
+  $("rtGeoRefresh").addEventListener("click", async () => {
+    const btn = $("rtGeoRefresh"), out = $("rtGeoReport");
+    btn.disabled = true;
+    btn.textContent = "Обновляю…";
+    out.innerHTML = "";
+    const res = await rtRpc("RefreshGeoIP");
+    btn.disabled = false;
+    btn.textContent = "Обновить GeoIP";
+    const lines = res.ok ? (Array.isArray(res.value) ? res.value : []) : ["ошибка: " + res.error];
+    out.innerHTML = lines.map((l) => '<div class="rt-note">' + rtEsc(l) + '</div>').join("");
+  });
   $("rtPresetsToggle").addEventListener("click", () => {
     rtState.presetOpen = !rtState.presetOpen;
     if (!rtState.presetOpen) rtState.presetConfirm = null;

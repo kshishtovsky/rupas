@@ -319,7 +319,9 @@ async function checkUpdate(force) {
     renderVersion(info);
     return info;
   } catch (e) {
-    if (force) alert("Не удалось проверить обновления, попробуйте позже.");
+    // The cause must reach the user: a bare «попробуйте позже» hid a plain
+    // network error and made the button undiagnosable (2026-10-30).
+    if (force) alert("Не удалось проверить обновления: " + ((e && (e.message || e)) || "неизвестная ошибка"));
     return null;
   }
 }

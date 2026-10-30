@@ -51,6 +51,7 @@ func socks5Connect(ctx context.Context, proxy string, dst netip.AddrPort) (net.C
 		conn.Close()
 		return nil, err
 	}
+	conn.SetDeadline(time.Time{}) //nolint:errcheck — handshake deadline off
 	return conn, nil
 }
 
@@ -76,6 +77,7 @@ func socks5DialHost(ctx context.Context, proxy, host string, port uint16) (net.C
 		conn.Close()
 		return nil, err
 	}
+	conn.SetDeadline(time.Time{}) //nolint:errcheck — handshake deadline off
 	return conn, nil
 }
 
@@ -112,6 +114,7 @@ func socks5UDPAssociate(ctx context.Context, proxy string) (*udpRelay, error) {
 	if relay.Addr().Is6() && relay.Addr().Is4In6() {
 		relay = netip.AddrPortFrom(relay.Addr().Unmap(), relay.Port())
 	}
+	conn.SetDeadline(time.Time{}) //nolint:errcheck — handshake deadline off
 	socket, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		conn.Close()
@@ -158,7 +161,16 @@ func socks5Handshake(ctx context.Context, proxy string) (net.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: dial %s: %w", errSocks5, proxy, err)
 	}
-	conn.SetDeadline(time.Now().Add(socks5HandshakeTimeout)) //nolint:errcheck
+	// The deadline stays on the connection until the caller has read its
+	// reply: a CONNECT reply only arrives once the relay reached the
+	// destination, and without any deadline that wait was unbounded (the
+	// caller's DialTimeout did not reach the read). The ctx deadline wins
+	// here so a legitimately slow exit (10-18s observed live) still passes.
+	dl := time.Now().Add(socks5HandshakeTimeout)
+	if deadline, ok := ctx.Deadline(); ok {
+		dl = deadline
+	}
+	conn.SetDeadline(dl) //nolint:errcheck
 	if _, err := conn.Write([]byte{socks5Version, 1, socks5NoAuth}); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("%w: write greeting: %w", errSocks5, err)
@@ -172,7 +184,6 @@ func socks5Handshake(ctx context.Context, proxy string) (net.Conn, error) {
 		conn.Close()
 		return nil, fmt.Errorf("%w: unexpected greeting reply %x", errSocks5, m)
 	}
-	conn.SetDeadline(time.Time{}) //nolint:errcheck
 	return conn, nil
 }
 

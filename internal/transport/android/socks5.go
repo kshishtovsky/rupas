@@ -60,6 +60,7 @@ func socks5Connect(ctx context.Context, proxy string, dst netip.AddrPort) (net.C
 		conn.Close()
 		return nil, err
 	}
+	conn.SetDeadline(time.Time{}) //nolint:errcheck — handshake deadline off
 	return conn, nil
 }
 
@@ -87,6 +88,7 @@ func socks5UDPAssociate(ctx context.Context, proxy string) (*socksUDP, error) {
 	if relay.Addr().Is6() && relay.Addr().Is4In6() {
 		relay = netip.AddrPortFrom(relay.Addr().Unmap(), relay.Port())
 	}
+	conn.SetDeadline(time.Time{}) //nolint:errcheck — handshake deadline off
 	socket, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		conn.Close()
@@ -133,7 +135,16 @@ func socks5Handshake(ctx context.Context, proxy string) (net.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: dial %s: %w", errSocks5, proxy, err)
 	}
-	conn.SetDeadline(time.Now().Add(socks5HandshakeTimeout)) //nolint:errcheck
+	// The deadline stays on the connection until the caller has read its
+	// reply: a CONNECT reply only arrives once the relay reached the
+	// destination, and without it that wait is unbounded — the caller's
+	// carrierDialTimeout bounded nothing (live log 2026-10-30: 38 flows
+	// waited the relay's own ~15.7s while the budget promised 6s).
+	dl := time.Now().Add(socks5HandshakeTimeout)
+	if deadline, ok := ctx.Deadline(); ok && deadline.Before(dl) {
+		dl = deadline
+	}
+	conn.SetDeadline(dl) //nolint:errcheck
 	if _, err := conn.Write([]byte{socks5Version, 1, socks5NoAuth}); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("%w: write greeting: %w", errSocks5, err)
@@ -147,7 +158,6 @@ func socks5Handshake(ctx context.Context, proxy string) (net.Conn, error) {
 		conn.Close()
 		return nil, fmt.Errorf("%w: unexpected greeting reply %x", errSocks5, m)
 	}
-	conn.SetDeadline(time.Time{}) //nolint:errcheck
 	return conn, nil
 }
 

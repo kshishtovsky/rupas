@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -263,5 +264,50 @@ func TestEndpointMuxPoolClamp(t *testing.T) {
 	ep = Endpoint{Mux: "on", MuxConns: 0}
 	if got := ep.MuxPool(); got != 1 {
 		t.Fatalf("MuxPool = %d, ждали 1", got)
+	}
+}
+
+// TestParseTMNLink pins the tmn:// format: PSK in the userinfo slot, SNI
+// mandatory for an IP host, pool bounds, and no secret in error text.
+func TestParseTMNLink(t *testing.T) {
+	const psk = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+	ep, err := ParseShareLink("tmn://" + psk + "@45.67.202.247:18443?sni=camo.example.org&conns=6&profile=browse&insecure=1#tuman")
+	if err != nil {
+		t.Fatalf("valid link rejected: %v", err)
+	}
+	if ep.Kind != KindTMN || ep.Host != "45.67.202.247" || ep.Port != 18443 {
+		t.Fatalf("parsed %+v", ep)
+	}
+	if ep.PSK != psk || ep.SNI != "camo.example.org" || ep.Conns != 6 || !ep.Insecure || ep.Name != "tuman" {
+		t.Fatalf("fields %+v", ep)
+	}
+	if !ep.NeedsNative() || ep.NeedsXHTTP() {
+		t.Fatalf("tmn must be native-carried: NeedsNative=%v NeedsXHTTP=%v", ep.NeedsNative(), ep.NeedsXHTTP())
+	}
+
+	// Domain host without sni: the host is the SNI, conns defaults to 4.
+	ep, err = ParseShareLink("tmn://" + psk + "@vps.example.net:18443")
+	if err != nil {
+		t.Fatalf("domain link rejected: %v", err)
+	}
+	if ep.SNI != "vps.example.net" || ep.Conns != 4 {
+		t.Fatalf("defaults %+v", ep)
+	}
+
+	bad := []struct{ name, link, want string }{
+		{"ip without sni", "tmn://" + psk + "@45.67.202.247:18443", "sni is required"},
+		{"no psk", "tmn://@45.67.202.247:18443?sni=a.example", "missing psk"},
+		{"short psk", "tmn://00112233@45.67.202.247:18443?sni=a.example", "psk"},
+		{"conns too big", "tmn://" + psk + "@45.67.202.247:18443?sni=a.example&conns=9", "conns"},
+		{"bad profile", "tmn://" + psk + "@45.67.202.247:18443?sni=a.example&profile=weird", "profile"},
+	}
+	for _, c := range bad {
+		_, err := ParseShareLink(c.link)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: got %v, want error containing %q", c.name, err, c.want)
+		}
+		if err != nil && strings.Contains(err.Error(), psk) {
+			t.Errorf("%s: error leaks the psk: %v", c.name, err)
+		}
 	}
 }

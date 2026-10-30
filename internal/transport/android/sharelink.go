@@ -16,6 +16,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/kshishtovsky/rupas/internal/config"
 )
 
 // Endpoint kinds and constants.
@@ -23,6 +25,10 @@ const (
 	KindVLESS     = "vless"
 	KindTrojan    = "trojan"
 	KindHysteria2 = "hysteria2"
+	// KindTMN is TMN/1: Rupas' own transport, carried in-process by the
+	// tuman client library (TLS 1.3 + mux + cover site + PSK auth). TCP
+	// streams only — the protocol has no UDP flows.
+	KindTMN = "tmn"
 
 	secNone    = "none"
 	secTLS     = "tls"
@@ -66,6 +72,11 @@ type Endpoint struct {
 	// browser-like.
 	MuxConns int
 
+	// PSK is the TMN/1 pre-shared key as 64 hex characters (KindTMN only).
+	PSK string
+	// Conns is the TMN/1 session pool size (1..8, default 4).
+	Conns int
+
 	Name string // fragment (#tag), logging only
 }
 
@@ -95,6 +106,13 @@ func (e Endpoint) NeedsXHTTP() bool {
 	return e.Kind == KindVLESS && e.Transport == transportXHTTP
 }
 
+// NeedsNative reports whether the endpoint is carried in-process instead of
+// by the sing-box relay: xhttp (sing-box has no XHTTP transport) and tmn
+// (its own protocol library).
+func (e Endpoint) NeedsNative() bool {
+	return e.NeedsXHTTP() || e.Kind == KindTMN
+}
+
 // ParseShareLink parses one share-link URI into an Endpoint.
 func ParseShareLink(raw string) (Endpoint, error) {
 	raw = strings.TrimSpace(raw)
@@ -105,9 +123,77 @@ func ParseShareLink(raw string) (Endpoint, error) {
 		return parseHysteria2Link(raw)
 	case strings.HasPrefix(raw, "trojan://"):
 		return parseTrojanLink(raw)
+	case strings.HasPrefix(raw, "tmn://"):
+		return parseTMNLink(raw)
 	default:
-		return Endpoint{}, fmt.Errorf("sharelink: unsupported scheme in %q (want vless://, hysteria2://, hy2:// or trojan://)", truncate(raw, 48))
+		return Endpoint{}, fmt.Errorf("sharelink: unsupported scheme in %q (want vless://, hysteria2://, hy2://, trojan:// or tmn://)", truncate(raw, 48))
 	}
+}
+
+// parseTMNLink parses:
+//
+//	tmn://<psk-hex64>@host:port?sni=<cover>&conns=4&profile=off&insecure=0#name
+//
+// The PSK rides the userinfo slot like a vless uuid. SNI is mandatory for an
+// IP host (the cover domain is what the server's certificate is issued for);
+// when the host is a domain it doubles as SNI. Every error message is
+// phrased without the key: a self-made transport's PSK in a log line is a
+// dead transport.
+func parseTMNLink(raw string) (Endpoint, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return Endpoint{}, fmt.Errorf("sharelink: tmn: %w", err)
+	}
+	if u.User == nil || u.User.Username() == "" {
+		return Endpoint{}, errors.New("sharelink: tmn: missing psk")
+	}
+	psk, err := config.NormalizePSK(u.User.Username())
+	if err != nil {
+		return Endpoint{}, fmt.Errorf("sharelink: tmn: %v", err)
+	}
+	host, portStr, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		return Endpoint{}, fmt.Errorf("sharelink: tmn: bad host:port %q", u.Host)
+	}
+	port, err := strconv.ParseUint(portStr, 10, 16)
+	if err != nil || port == 0 {
+		return Endpoint{}, fmt.Errorf("sharelink: tmn: bad port %q", portStr)
+	}
+	q := u.Query()
+	sni := q.Get("sni")
+	if sni == "" {
+		if net.ParseIP(host) != nil {
+			return Endpoint{}, errors.New("sharelink: tmn: sni is required when the host is an IP")
+		}
+		sni = host
+	}
+	conns := 4
+	if v := q.Get("conns"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > config.MaxTMNConns {
+			return Endpoint{}, fmt.Errorf("sharelink: tmn: conns %q: want 1..%d", v, config.MaxTMNConns)
+		}
+		conns = n
+	}
+	if p := q.Get("profile"); p != "" {
+		switch p {
+		case "off", "browse", "video", "bulk", "voice":
+		default:
+			return Endpoint{}, fmt.Errorf("sharelink: tmn: profile %q: want off|browse|video|bulk|voice", p)
+		}
+	}
+	return Endpoint{
+		Kind:      KindTMN,
+		Host:      host,
+		Port:      uint16(port),
+		PSK:       psk,
+		SNI:       sni,
+		Conns:     conns,
+		Insecure:  isTrue(q.Get("insecure")),
+		Security:  secTLS,
+		Transport: transportTCP,
+		Name:      u.Fragment,
+	}, nil
 }
 
 func parseVLESSLink(raw string) (Endpoint, error) {

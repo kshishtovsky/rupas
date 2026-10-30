@@ -6,6 +6,7 @@ package config
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -128,12 +129,21 @@ const (
 	KindVLESSReality = "vless_reality"
 	// KindHysteria2 is Hysteria2 over QUIC (UDP).
 	KindHysteria2 = "hysteria2"
+	// KindTMN is TMN/1 — Rupas' own TCP transport (TLS 1.3 + mux + cover
+	// site + PSK auth), carried by the in-package client (internal/tunnel
+	// tmn.go), not by sing-box. TCP streams only: the protocol has no UDP.
+	KindTMN = "tmn"
 )
 
 // EndpointKinds returns the supported tunnel endpoint kinds.
 func EndpointKinds() []string {
-	return []string{KindVLESSTCP, KindVLESSXHTTP, KindVLESSReality, KindHysteria2}
+	return []string{KindVLESSTCP, KindVLESSXHTTP, KindVLESSReality, KindHysteria2, KindTMN}
 }
+
+// MaxTMNConns caps the TMN/1 session pool: one TLS connection is capped by
+// its own TCP window, four reach the path bandwidth (measured 422 of 540
+// Mbit/s), more than eight only multiplies the connect footprint.
+const MaxTMNConns = 8
 
 // Endpoint describes one user-side tunnel exit (wave 5). Fields are shared
 // across kinds; Validate enforces the per-kind subset and applies defaults.
@@ -187,6 +197,14 @@ type Endpoint struct {
 	// count bounded, so the endpoint does not look like a connect storm.
 	// Range 1..8, default 1 (wave 6 behaviour). Ignored unless Mux == "on".
 	MuxConns int `yaml:"mux_conns,omitempty"`
+	// PSK authenticates a tmn endpoint: 32 bytes as 64 hex characters. The
+	// key is bound to the TLS exporter of every session (TMN/1 §4), so it
+	// never crosses the wire.
+	PSK string `yaml:"psk,omitempty"`
+	// Conns is the tmn session pool size (1..MaxTMNConns, default 4). The
+	// pool is what gives TMN/1 its bandwidth: streams are spread over
+	// independent TCP connections, a single one stalls at its own window.
+	Conns int `yaml:"conns,omitempty"`
 }
 
 // IsZero reports whether no meaningful field of the endpoint is set.
@@ -195,13 +213,20 @@ func (e Endpoint) IsZero() bool {
 		e.Password == "" && e.SNI == "" && len(e.ALPN) == 0 && e.Fingerprint == "" &&
 		e.Flow == "" && e.Path == "" && e.Mode == "" && e.XPadding == "" &&
 		e.HTTPHost == "" &&
-		e.RealityPBK == "" && e.RealitySID == "" && e.UDPMode == ""
+		e.RealityPBK == "" && e.RealitySID == "" && e.UDPMode == "" &&
+		e.PSK == "" && e.Conns == 0
 }
 
 // SingBoxKind reports whether the endpoint kind is carried by the embedded
-// sing-box engine (everything except vless_xhttp, which Rupas' own XHTTP
-// client carries).
-func (e Endpoint) SingBoxKind() bool { return e.Kind != KindVLESSXHTTP }
+// sing-box engine (everything except the two kinds Rupas carries itself:
+// vless_xhttp — sing-box has no XHTTP transport — and tmn).
+func (e Endpoint) SingBoxKind() bool {
+	switch e.Kind {
+	case KindVLESSXHTTP, KindTMN:
+		return false
+	}
+	return true
+}
 
 // SupportsUDP reports whether the kind can carry UDP flows (used to decide
 // whether the UDP fallback chain exists).
@@ -215,6 +240,22 @@ func (e Endpoint) SupportsUDP() bool {
 
 var endpointKinds = map[string]bool{
 	KindVLESSTCP: true, KindVLESSXHTTP: true, KindVLESSReality: true, KindHysteria2: true,
+	KindTMN: true,
+}
+
+// NormalizePSK validates a TMN/1 pre-shared key and returns it as lower-case
+// hex. Only the hex form is accepted on purpose: the raw-binary alternative
+// in tmnc's file loader cannot ride a YAML field or a share link, and two
+// spellings of one secret is how they drift apart.
+func NormalizePSK(s string) (string, error) {
+	s = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s), "0x")))
+	if len(s) != 64 {
+		return "", errors.New("psk: want 32 bytes as 64 hex characters")
+	}
+	if _, err := hex.DecodeString(s); err != nil {
+		return "", errors.New("psk: want 32 bytes as 64 hex characters")
+	}
+	return s, nil
 }
 
 var xhttpModes = map[string]bool{
@@ -246,6 +287,18 @@ func (e *Endpoint) Validate() error {
 		case "", "xtls-rprx-vision":
 		default:
 			return fmt.Errorf("tunnel endpoint: flow %q: only \"\" or \"xtls-rprx-vision\" are supported", e.Flow)
+		}
+	case KindTMN:
+		psk, err := NormalizePSK(e.PSK)
+		if err != nil {
+			return fmt.Errorf("tunnel endpoint: %v", err)
+		}
+		e.PSK = psk
+		if e.Conns == 0 {
+			e.Conns = 4
+		}
+		if e.Conns < 1 || e.Conns > MaxTMNConns {
+			return fmt.Errorf("tunnel endpoint: conns %d: want 1..%d", e.Conns, MaxTMNConns)
 		}
 	default: // hysteria2
 		if e.Password == "" {

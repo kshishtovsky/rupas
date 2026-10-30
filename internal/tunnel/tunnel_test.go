@@ -661,6 +661,7 @@ func TestValidatePlan(t *testing.T) {
 			Kind: kind, Host: "a", Port: 1, SNI: "s",
 			UUID:     "00000000-0000-0000-0000-000000000000",
 			Password: "p", RealityPBK: "k", Path: "/x",
+			PSK: strings.Repeat("0a", 32),
 		}
 	}
 	for _, kind := range config.EndpointKinds() {

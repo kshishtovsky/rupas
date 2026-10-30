@@ -64,6 +64,18 @@ const replayCap = 16 * 1024
 // A var so tests can shrink it.
 var carrierDialTimeout = 6 * time.Second
 
+// chainDialBudget bounds the WHOLE carrier sweep for one flow, not each hop.
+// With the per-carrier timeout alone, ten pasted profiles meant up to a 60 s
+// first byte whenever the access link was having a bad minute; the sweep now
+// costs the same at 3 profiles and at 30, while the head carrier keeps its
+// full carrierDialTimeout. A var so tests can shrink it.
+var chainDialBudget = 12 * time.Second
+
+// chainDialFloor: less remaining budget than this cannot complete a handshake,
+// so the sweep stops instead of starting a carrier that is certain to fail
+// (and paying for the failure).
+const chainDialFloor = 700 * time.Millisecond
+
 // carrierHealth is one carrier's failure cooldown deadline (unix nanos,
 // 0 = healthy) plus the consecutive-death counter for cooldown escalation.
 // Touches are atomic: dials happen on many goroutines.
@@ -243,6 +255,10 @@ func (e *Engine) buildCarriers(ctx context.Context) {
 		})
 	}
 	e.health = make([]carrierHealth, len(e.carriers))
+	// Health and stickiness are per-run: a restarted transport re-learns both.
+	e.mu.Lock()
+	e.sticky = nil
+	e.mu.Unlock()
 	if len(e.carriers) > 1 {
 		names := make([]string, len(e.carriers))
 		for i, c := range e.carriers {
@@ -310,12 +326,19 @@ func (e *Engine) dialChain(dst netip.AddrPort) (net.Conn, error) {
 		return nil, fmt.Errorf("android: no tunnel carriers available")
 	}
 	rc := &redialConn{
-		carriers:  e.carriers,
-		order:     e.carrierOrder(),
-		dst:       dst,
-		ctx:       context.Background(),
-		onFail:    e.markCarrierFail,
-		onSuccess: e.markCarrierSuccess,
+		carriers: e.carriers,
+		order:    e.carrierOrderFor(dst.Addr()),
+		dst:      dst,
+		ctx:      context.Background(),
+		onFail: func(idx int, cause error) {
+			e.markCarrierFail(idx, cause)
+			e.forgetSticky(dst.Addr(), idx)
+		},
+		onSuccess: func(idx int) {
+			e.markCarrierSuccess(idx)
+			e.markSticky(dst.Addr(), idx)
+		},
+		logf: func(line string) { e.logf("%s", line) },
 	}
 	rc.onDead = func(idx int, cause error) {
 		e.logf("tcp %s: carrier %s died after commit: %v", dst, e.carriers[idx].name, cause)
@@ -324,6 +347,91 @@ func (e *Engine) dialChain(dst netip.AddrPort) (net.Conn, error) {
 		return nil, err
 	}
 	return rc, nil
+}
+
+// stickyTTL: how long a destination IP remembers the carrier that worked for
+// it. Long enough to cover a client's reconnect storm (live 2026-10-30: 186
+// TLS handshakes to prod-game.archero2.com in 17 min, each re-guessing the
+// carrier), short enough to re-learn after a network change.
+const stickyTTL = 2 * time.Minute
+
+// stickyCap bounds the map: a game alone touches dozens of CloudFront IPs and
+// the map lives for the whole transport run.
+const stickyCap = 512
+
+type stickyEntry struct {
+	idx   int
+	until time.Time
+}
+
+// markSticky records that carrier idx delivered payload to addr. The direct
+// tail is never recorded: making "direct" sticky would keep a destination
+// off-tunnel for the whole TTL after one transient sweep failure.
+func (e *Engine) markSticky(addr netip.Addr, idx int) {
+	if !addr.IsValid() || idx < 0 || idx >= len(e.carriers) || e.carriers[idx].tail || len(e.carriers) < 2 {
+		return
+	}
+	now := time.Now()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.sticky == nil || len(e.sticky) >= stickyCap {
+		e.sticky = make(map[netip.Addr]stickyEntry, stickyCap)
+	}
+	e.sticky[addr] = stickyEntry{idx: idx, until: now.Add(stickyTTL)}
+}
+
+// stickyFor returns the remembered carrier for addr if it is still fresh and
+// not benched right now (a live cooldown means that carrier just failed — the
+// bench wins over the hint).
+func (e *Engine) stickyFor(addr netip.Addr) (int, bool) {
+	if !addr.IsValid() {
+		return 0, false
+	}
+	e.mu.Lock()
+	ent, ok := e.sticky[addr]
+	e.mu.Unlock()
+	if !ok || time.Now().After(ent.until) {
+		return 0, false
+	}
+	if ent.idx < len(e.health) && e.health[ent.idx].down.Load() > time.Now().UnixNano() {
+		return 0, false
+	}
+	return ent.idx, true
+}
+
+// forgetSticky drops the hint for addr when the remembered carrier failed:
+// re-trying it for this destination would waste a dial every cooldown cycle.
+func (e *Engine) forgetSticky(addr netip.Addr, idx int) {
+	e.mu.Lock()
+	if ent, ok := e.sticky[addr]; ok && ent.idx == idx {
+		delete(e.sticky, addr)
+	}
+	e.mu.Unlock()
+}
+
+// carrierOrderFor is carrierOrder with the sticky destination applied: the
+// carrier that last delivered payload to this IP is tried first. Everything
+// else keeps the health ranking, so a sticky miss costs exactly one dial.
+func (e *Engine) carrierOrderFor(dst netip.Addr) []int {
+	order := e.carrierOrder()
+	idx, ok := e.stickyFor(dst)
+	if !ok || len(order) < 2 || order[0] == idx {
+		return order
+	}
+	for i, v := range order {
+		if v == idx {
+			copy(order[1:i+1], order[:i])
+			order[0] = idx
+			break
+		}
+	}
+	// Evidence the hint actually steered a flow — at most one line per 5 s so
+	// the happy path stays silent and the log file stays small.
+	now := time.Now().UnixNano()
+	if now-e.stickyLogAt.Swap(now) > int64(5*time.Second) {
+		e.logf("tcp %s: sticky -> %s", dst, e.carriers[idx].name)
+	}
+	return order
 }
 
 // redialConn is the failover wrapper. See the file comment for the
@@ -352,6 +460,10 @@ type redialConn struct {
 	// received) dies: that case never reaches failover, so without this the
 	// log says nothing about a tunnel the DPI cut mid-stream.
 	onDead func(idx int, cause error)
+	// logf records the one-line sweep summary (nil-safe): a flow that had to
+	// skip carriers says which ones failed and how long each cost, so a log
+	// line exists exactly for the flows worth diagnosing.
+	logf func(string)
 
 	// deadlines captured before the carrier dials (net.Conn contract).
 	deadline      time.Time
@@ -360,9 +472,22 @@ type redialConn struct {
 }
 
 func (r *redialConn) dialCurrent() error {
+	// One budget per sweep, shared by every carrier: with a per-carrier budget
+	// ten pasted profiles meant a 60 s first byte. A mid-connection failover
+	// starts a fresh sweep (and so a fresh budget) by design.
+	budgetEnd := time.Now().Add(chainDialBudget)
+	var tried []string
 	for {
 		idx := r.order[r.pos]
-		dctx, cancel := context.WithTimeout(r.ctx, carrierDialTimeout)
+		budget := carrierDialTimeout
+		if rem := time.Until(budgetEnd); rem < budget {
+			budget = rem
+		}
+		if budget < chainDialFloor {
+			return r.sweepFailed(tried, fmt.Errorf("бюджет цепи исчерпан после %d канал(ов)", len(tried)))
+		}
+		t0 := time.Now()
+		dctx, cancel := context.WithTimeout(r.ctx, budget)
 		c, err := r.carriers[idx].dial(dctx, r.dst)
 		cancel() // the dialed conn does not inherit it (socks5/xhttp detach)
 		if err == nil {
@@ -370,28 +495,56 @@ func (r *redialConn) dialCurrent() error {
 			r.applyDeadlines()
 			if len(r.replay) > 0 {
 				if _, wErr := c.Write(r.replay); wErr != nil {
+					tried = append(tried, tryLine(r.carriers[idx].name, time.Since(t0), wErr))
 					if r.onFail != nil {
 						r.onFail(idx, wErr)
 					}
 					r.conn = nil
 					if r.pos+1 >= len(r.order) {
-						return fmt.Errorf("android: carrier %s lost replay: %w", r.carriers[idx].name, wErr)
+						return r.sweepFailed(tried, fmt.Errorf("android: carrier %s lost replay: %w", r.carriers[idx].name, wErr))
 					}
 					r.pos++
 					continue
 				}
 			}
+			// Only a flow that had to skip a carrier gets a line: the healthy
+			// path stays silent (no per-flow allocation on the hot path).
+			if len(tried) > 0 {
+				r.log("tcp %s: %s -> %s ok %s", r.dst, strings.Join(tried, "; "),
+					r.carriers[idx].name, time.Since(t0).Round(time.Millisecond))
+			}
 			return nil
 		}
+		tried = append(tried, tryLine(r.carriers[idx].name, time.Since(t0), err))
 		if r.onFail != nil {
 			r.onFail(idx, err)
 		}
 		if r.pos+1 >= len(r.order) {
-			return fmt.Errorf("android: all %d carriers failed (last %s: %w)",
-				len(r.order), r.carriers[idx].name, err)
+			return r.sweepFailed(tried, fmt.Errorf("android: all %d carriers failed (last %s: %w)",
+				len(r.order), r.carriers[idx].name, err))
 		}
 		r.pos++
 	}
+}
+
+// log is the nil-safe sweep log.
+func (r *redialConn) log(format string, args ...any) {
+	if r.logf != nil {
+		r.logf(fmt.Sprintf(format, args...))
+	}
+}
+
+// sweepFailed logs the whole sweep once and returns the error.
+func (r *redialConn) sweepFailed(tried []string, err error) error {
+	if len(tried) > 0 {
+		r.log("tcp %s: %v — %s", r.dst, err, strings.Join(tried, "; "))
+	}
+	return err
+}
+
+// tryLine renders one carrier attempt for the sweep summary.
+func tryLine(name string, elapsed time.Duration, err error) string {
+	return fmt.Sprintf("%s fail %s (%v)", name, elapsed.Round(time.Millisecond), err)
 }
 
 func (r *redialConn) failover(cause error) bool {

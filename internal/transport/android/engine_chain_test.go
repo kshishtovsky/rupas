@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -410,5 +411,116 @@ func TestRelayLogDedupSuppressesRefusalStorm(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(lines[2]), []byte("route(y)")) {
 		t.Fatalf("passthrough missing: %q", lines[2])
+	}
+}
+
+// TestChainDialBudgetIsShared: the sweep budget is per FLOW, not per carrier.
+// Ten pasted profiles used to cost 10×carrierDialTimeout before the first
+// byte; the sweep must stop at the budget instead.
+func TestChainDialBudgetIsShared(t *testing.T) {
+	oldTimeout, oldBudget := carrierDialTimeout, chainDialBudget
+	// Both above chainDialFloor: below it the sweep refuses to start at all.
+	carrierDialTimeout, chainDialBudget = 2*time.Second, 3*time.Second
+	t.Cleanup(func() { carrierDialTimeout, chainDialBudget = oldTimeout, oldBudget })
+
+	// A blackholed carrier: blocks until its own budget runs out.
+	var dials atomic.Int64
+	block := func(ctx context.Context, _ netip.AddrPort) (net.Conn, error) {
+		dials.Add(1)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	e := &Engine{logFn: func(string) {}}
+	for i := 0; i < 8; i++ {
+		e.carriers = append(e.carriers, tcpCarrier{name: "dead", dial: block})
+	}
+	e.health = make([]carrierHealth, len(e.carriers))
+
+	t0 := time.Now()
+	_, err := e.dialChain(dest())
+	elapsed := time.Since(t0)
+	if err == nil {
+		t.Fatal("8 dead carriers: want an error")
+	}
+	if n := dials.Load(); n < 2 {
+		t.Fatalf("sweep dialed %d time(s): the budget floor stopped it before it tried", n)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("sweep took %v: the budget is per carrier, not shared (want ~3s)", elapsed)
+	}
+	if !strings.Contains(err.Error(), "бюджет") {
+		t.Fatalf("error should name the exhausted budget, got: %v", err)
+	}
+}
+
+// TestStickyDestinationKeepsItsCarrier: a flow that found a working carrier
+// for a destination must start from it next time (live 2026-10-30: 186
+// handshakes to one game host, each re-guessing the carrier).
+func TestStickyDestinationKeepsItsCarrier(t *testing.T) {
+	var logs []string
+	e := stubEngine(t, &logs, refused(), ok("HTTP/1.1 200 OK\r\n\r\n"))
+	c, err := e.dialChain(dest())
+	if err != nil {
+		t.Fatalf("dialChain: %v", err)
+	}
+	defer c.Close()
+	// Sticky is recorded at commit (first payload byte), so read once first.
+	if _, err := c.Read(make([]byte, 16)); err != nil {
+		t.Fatalf("read after dial: %v", err)
+	}
+
+	// Isolate stickiness from the health ranking (the refusal benched carrier
+	// 0 and the payload proved carrier 1 — both already favour 1).
+	e.health[0].down.Store(0)
+	e.health[0].fails.Store(0)
+	e.health[1].proven.Store(false)
+	if got := e.carrierOrder(); got[0] != 0 {
+		t.Fatalf("baseline order = %v, want carrier 0 first", got)
+	}
+	if got := e.carrierOrderFor(dest().Addr()); got[0] != 1 {
+		t.Fatalf("sticky order = %v, want the winning carrier 1 first", got)
+	}
+	// Another destination has no hint and keeps the health order.
+	if got := e.carrierOrderFor(netip.MustParseAddr("1.1.1.1")); got[0] != 0 {
+		t.Fatalf("unrelated dst order = %v, want 0", got)
+	}
+	// A live bench outranks the hint.
+	e.health[1].down.Store(time.Now().Add(time.Minute).UnixNano())
+	if got := e.carrierOrderFor(dest().Addr()); got[0] != 0 {
+		t.Fatalf("benched sticky carrier still first: %v", got)
+	}
+	e.health[1].down.Store(0)
+	// The hint dies with its carrier: a failure forgets it.
+	e.forgetSticky(dest().Addr(), 1)
+	if got := e.carrierOrderFor(dest().Addr()); got[0] != 0 {
+		t.Fatalf("forgotten sticky still applied: %v", got)
+	}
+}
+
+// TestStickySkipsDirectTail: the escalation tail must never become sticky —
+// that would keep a destination off-tunnel for the whole TTL.
+func TestStickySkipsDirectTail(t *testing.T) {
+	e := &Engine{carriers: []tcpCarrier{{name: "tunnel"}, {name: "direct", tail: true}}}
+	e.health = make([]carrierHealth, 2)
+	e.markSticky(netip.MustParseAddr("1.1.1.1"), 1)
+	if _, ok := e.stickyFor(netip.MustParseAddr("1.1.1.1")); ok {
+		t.Fatal("direct tail must not be recorded as a sticky carrier")
+	}
+}
+
+// TestSweepLogsFailedCarriers: one line per flow that had to skip a carrier,
+// naming each failed attempt and its cost — the diagnostic the logs lacked.
+func TestSweepLogsFailedCarriers(t *testing.T) {
+	var logs []string
+	e := stubEngine(t, &logs, refused(), ok("HTTP/1.1 200 OK\r\n\r\n"))
+	c, err := e.dialChain(dest())
+	if err != nil {
+		t.Fatalf("dialChain: %v", err)
+	}
+	defer c.Close()
+
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "stub fail") || !strings.Contains(joined, "-> stub ok") {
+		t.Fatalf("sweep summary missing, logs:\n%s", joined)
 	}
 }

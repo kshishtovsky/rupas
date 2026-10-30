@@ -1,3 +1,9 @@
+## v0.8.4
+
+- chore(release): v0.8.4 (f7c6437)
+- fix(socks5): ответ CONNECT ограничен дедлайном вызывающего (1755a6a)
+- docs(changelog): v0.8.3 (4bbdc0d)
+
 ## v0.8.3
 
 - chore(release): v0.8.3 (5b3e220)

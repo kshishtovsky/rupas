@@ -80,6 +80,8 @@ desync:
 #                   stream-one, x_padding_bytes "min-max")
 #   vless_reality — VLESS+Reality (reality_public_key[, reality_short_id])
 #   hysteria2     — Hysteria2 over QUIC (password, alpn [h3])
+#   tmn           — TMN/1, Rupas' own transport (psk, conns, sni; TCP streams
+#                   only, no UDP — keep hysteria2 in `udp:` for voice/QUIC)
 #
 # BEHAVIOUR WHILE EMPTY (the default below): the tunnel branch is DISABLED
 # and every TUNNEL rule is escalated with an honest log line and a counter
@@ -142,6 +144,28 @@ desync:
 #     # adds a full dial-timeout penalty to every dial. Set the flag below
 #     # to put it back in the chain explicitly:
 #     # (top level, next to `tunnels:`) xhttp_fallback_in_chain: true
+#
+# TMN/1 instead of vless_tcp (the GUI writes exactly this block for a
+# tmn:// link, and adds `sni` + host/32 to `exclusions:` on save — the client
+# dials the endpoint itself and must not be captured by the tunnel):
+#
+# tunnels:
+#   tcp:
+#     kind: tmn
+#     host: 203.0.113.10          # VPS host or IP
+#     port: 18443
+#     sni: vps.example.net        # cover site (the server's certificate)
+#     psk: "0000000000000000000000000000000000000000000000000000000000000000"
+#                                 # 32 bytes hex; generated on the SERVER as
+#                                 # `openssl rand -hex 32` — never invent it
+#     conns: 4                    # session pool 1..8 (4 reaches path speed)
+#   udp:
+#     kind: hysteria2             # TMN/1 carries TCP streams only
+#     host: 203.0.113.10
+#     port: 53552
+#     password: "hy2-secret"
+#     sni: vps.example.net
+#     alpn: [h3]
 # ---------------------------------------------------------------------------
 tunnels: {}
 

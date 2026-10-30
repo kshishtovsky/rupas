@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -105,7 +107,7 @@ func (c *Controller) SaveLinks(blob string) ([]string, error) {
 	// exclusions and custom rules, and nil tunnels make every TUNNEL rule
 	// escalate to direct. Refuse before touching the file.
 	if tcp == nil && udp == nil && fb == nil {
-		return warnings, errors.New("нет рабочих ссылок: нужен vless (tcp/xhttp) или hysteria2 — trojan/ws десктоп-ядро не поддерживает")
+		return warnings, errors.New("нет рабочих ссылок: нужен vless (tcp/xhttp), hysteria2 или tmn — trojan/ws десктоп-ядро не поддерживает")
 	}
 	cfg := presetConfig(true)
 	// A link edit changes the channels, not the policy: keep the rules,
@@ -123,6 +125,21 @@ func (c *Controller) SaveLinks(blob string) ([]string, error) {
 		}
 	}
 	cfg.Tunnels = &config.TunnelConfig{TCP: tcp, UDP: udp, Fallback: fb}
+	// The TMN client dials its own endpoint (TLS to host:port with the cover
+	// SNI); WinDivert would capture that connection and, with the plan's
+	// TUNNEL default, loop it back into the tunnel that is not up yet —
+	// «туннель молчит» forever (docs/TMN_INTEGRATION.md §5).
+	for _, ep := range []*config.Endpoint{tcp, fb} {
+		if ep == nil || ep.Kind != config.KindTMN {
+			continue
+		}
+		if ep.SNI != "" {
+			cfg.Exclusions.Domains = appendUniq(cfg.Exclusions.Domains, ep.SNI)
+		}
+		if ip := net.ParseIP(ep.Host); ip != nil {
+			cfg.Exclusions.CIDRs = appendUniq(cfg.Exclusions.CIDRs, ip.String()+"/32")
+		}
+	}
 	// ErrDaemonDown means "written to disk, not confirmed": keep the file
 	// (design contract) but still surface it so the UI can say so.
 	err = c.writeConfig(cfg)
@@ -145,7 +162,7 @@ func (c *Controller) CheckLinks(blob string) ([]string, error) {
 		return warnings, err
 	}
 	if tcp == nil && udp == nil && fb == nil {
-		return append(warnings, "нет ссылок: нужен vless (tcp/xhttp) или hysteria2"), nil
+		return append(warnings, "нет ссылок: нужен vless (tcp/xhttp), hysteria2 или tmn"), nil
 	}
 	cfg := presetConfig(true)
 	cfg.Tunnels = &config.TunnelConfig{TCP: tcp, UDP: udp, Fallback: fb}
@@ -372,6 +389,17 @@ func (c *Controller) gateway() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.gatewayHost
+}
+
+// appendUniq adds v unless the list already holds it (case-insensitively —
+// exclusion domains are lower-cased on load, CIDRs have no case).
+func appendUniq(list []string, v string) []string {
+	for _, e := range list {
+		if strings.EqualFold(e, v) {
+			return list
+		}
+	}
+	return append(list, v)
 }
 
 // ---------- onboarding marker (GUI_DESIGN §5) ----------

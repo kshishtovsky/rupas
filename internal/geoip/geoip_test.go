@@ -1,11 +1,13 @@
 package geoip
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -170,5 +172,33 @@ func TestListBadCountryCode(t *testing.T) {
 		if _, err := List(Params{Dir: dir}, cc); err == nil {
 			t.Errorf("country code %q accepted", cc)
 		}
+	}
+}
+
+// TestRefreshRetriesAfterReset: one reset used to lose the country (the GUI's
+// «Обновить GeoIP» reported the raw wsarecv error on a single drop).
+func TestRefreshRetriesAfterReset(t *testing.T) {
+	var n int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&n, 1) == 1 {
+			c, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			c.Close()
+			return
+		}
+		_, _ = io.WriteString(w, sampleList)
+	}))
+	defer srv.Close()
+
+	p := Params{Dir: t.TempDir(), Mirrors: []string{srv.URL + "/{cc}.zone"}}
+	pfx, err := Refresh(p, "ru")
+	if err != nil {
+		t.Fatalf("Refresh after a reset: %v (attempts=%d)", err, atomic.LoadInt32(&n))
+	}
+	if len(pfx) != 3 {
+		t.Fatalf("got %d prefixes, want 3", len(pfx))
 	}
 }

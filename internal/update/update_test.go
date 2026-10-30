@@ -2,8 +2,10 @@ package update
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 )
 
@@ -98,5 +100,35 @@ func TestAssetMatchers(t *testing.T) {
 		if got := AndroidAsset(c.name); got != c.android {
 			t.Errorf("AndroidAsset(%q) = %v", c.name, got)
 		}
+	}
+}
+
+// TestLatestRetriesAfterReset: the link resets the first two attempts (the
+// GUI showed "не удалось проверить обновление" on a single such reset).
+func TestLatestRetriesAfterReset(t *testing.T) {
+	var n int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&n, 1) <= 2 {
+			c, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			c.Close() // peer reset with no response
+			return
+		}
+		_, _ = io.WriteString(w, `{"tag_name":"v9.9.9","assets":[]}`)
+	}))
+	defer srv.Close()
+	old := latestURL
+	latestURL = srv.URL
+	t.Cleanup(func() { latestURL = old })
+
+	rel, err := (&Client{}).Latest(context.Background())
+	if err != nil {
+		t.Fatalf("Latest after resets: %v (attempts=%d)", err, atomic.LoadInt32(&n))
+	}
+	if rel.TagName != "v9.9.9" {
+		t.Fatalf("tag = %q, want v9.9.9", rel.TagName)
 	}
 }

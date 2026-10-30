@@ -123,7 +123,20 @@ func download(p Params, cc, path string) error {
 	var errs []error
 	for _, tpl := range p.Mirrors {
 		url := strings.ReplaceAll(tpl, "{cc}", cc)
-		resp, err := client.Get(url) //nolint:gosec,noctx // url from trusted local config; startup path
+		// One reset must not lose the whole country: mirrors are reached
+		// through whatever policy the user routed them to, and an RST-prone
+		// link drops the first attempt often (live 2026-10-30: the GUI's
+		// «Обновить GeoIP» failed on ipdeny 51.15.12.186, retry was clean).
+		var resp *http.Response
+		var err error
+		for attempt := 0; attempt < 2; attempt++ {
+			if attempt > 0 {
+				time.Sleep(250 * time.Millisecond)
+			}
+			if resp, err = client.Get(url); err == nil { //nolint:gosec,noctx // url from trusted local config
+				break
+			}
+		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", url, err))
 			continue

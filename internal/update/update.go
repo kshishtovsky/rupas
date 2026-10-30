@@ -70,7 +70,19 @@ func (c *Client) Latest(ctx context.Context) (Release, error) {
 		req.Header.Set("If-None-Match", c.ETag)
 	}
 
-	resp, err := c.http().Do(req)
+	// The DNS/TLS path to api.github.com is reset intermittently on an
+	// RST-prone link (live 2026-10-30: wsarecv "forcibly closed" from the
+	// GUI on a healthy tunnel) and the manual button used to fail on the
+	// first reset. Browsers retry the same request; so do we.
+	var resp *http.Response
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 250 * time.Millisecond)
+		}
+		if resp, err = c.http().Do(req); err == nil {
+			break
+		}
+	}
 	if err != nil {
 		return Release{}, err
 	}

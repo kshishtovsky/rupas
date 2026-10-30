@@ -1,6 +1,6 @@
 // share.go — universal share-link channels for the GUI, mirroring the
 // Android W3 "universal config" (SettingsStore.links): a newline-separated
-// list of vless:// hysteria2:// hy2:// trojan:// links in dial order.
+// list of vless:// hysteria2:// hy2:// trojan:// tmn:// links in dial order.
 // Parsing is delegated to the core (internal/transport/android sharelink.go);
 // this file maps parsed endpoints onto the desktop config.Endpoint roles
 // (tunnels.tcp / tunnels.udp / tunnels.fallback).
@@ -56,6 +56,8 @@ func ParseChannels(blob string) ([]Channel, error) {
 // save time; here every channel gets its potential role.
 func classify(ep android.Endpoint) (kind, role, warning string) {
 	switch {
+	case ep.Kind == android.KindTMN:
+		return "tmn", "tcp", ""
 	case ep.Kind == android.KindHysteria2:
 		return "hysteria2", "udp", ""
 	case ep.Kind == android.KindTrojan:
@@ -79,6 +81,15 @@ func classify(ep android.Endpoint) (kind, role, warning string) {
 // endpointFor maps a channel back to a config.Endpoint (role must be tcp|udp|fallback).
 func endpointFor(ep android.Endpoint) (config.Endpoint, string) {
 	switch {
+	case ep.Kind == android.KindTMN:
+		return config.Endpoint{
+			Kind:  config.KindTMN,
+			Host:  ep.Host,
+			Port:  ep.Port,
+			SNI:   ep.SNI,
+			PSK:   ep.PSK,
+			Conns: ep.Conns,
+		}, "tcp"
 	case ep.Kind == android.KindHysteria2:
 		return config.Endpoint{
 			Kind:     "hysteria2",

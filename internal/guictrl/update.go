@@ -239,9 +239,21 @@ func fetchSum(ctx context.Context, url, assetName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
+	// A reset on the first try used to abort the whole update (2026-10-30:
+	// the updates/0.8.5 folder was left empty because SHA256SUMS.txt dropped
+	// mid-handshake). The asset host resets as often as any other.
+	var resp *http.Response
+	var derr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 250 * time.Millisecond)
+		}
+		if resp, derr = http.DefaultClient.Do(req); derr == nil {
+			break
+		}
+	}
+	if derr != nil {
+		return "", derr
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -258,6 +270,25 @@ func fetchSum(ctx context.Context, url, assetName string) (string, error) {
 }
 
 func download(ctx context.Context, url, dst string) error {
+	// The archive is 18 MB over the same reset-prone link: retry the transfer
+	// from scratch instead of surfacing one dropped connection.
+	var last error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+		}
+		if last = downloadOnce(ctx, url, dst); last == nil {
+			return nil
+		}
+		_ = os.Remove(dst)
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return last
+}
+
+func downloadOnce(ctx context.Context, url, dst string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err

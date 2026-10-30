@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -47,6 +48,12 @@ type Engine struct {
 	// health: per-carrier failure cooldowns, same length/order as carriers
 	// (engine_chain.go carrierHealth).
 	health []carrierHealth
+	// sticky: destination IP → the carrier that last delivered payload
+	// there (engine_chain.go stickyTTL). Guarded by mu.
+	sticky map[netip.Addr]stickyEntry
+	// stickyLogAt: last "sticky -> carrier" log line (unix nanos), so the
+	// evidence line is written at most once per 5 s.
+	stickyLogAt atomic.Int64
 	// activeIdx: dial-chain index of the carrier that delivered the last
 	// payload (markCarrierSuccess); surfaced to the UI via CarrierStates.
 	activeIdx atomic.Int64

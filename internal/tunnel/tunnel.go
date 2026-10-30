@@ -211,6 +211,9 @@ type tunnel struct {
 	// xudp fallback after HealthFailThreshold STUN failures).
 	tcpPaths []namedTCP
 	udpPaths []namedUDP
+	// tmnPaths are the in-process TMN/1 carriers built by Start; Stop closes
+	// their session pools.
+	tmnPaths []*lazyTMN
 
 	tcpLn    net.Listener
 	udpConn  *net.UDPConn
@@ -337,9 +340,11 @@ func (t *tunnel) Start(ctx context.Context) error {
 }
 
 // carrierTCP builds the TCP carrier for one endpoint: the sing-box SOCKS5
-// feeder for sing-box kinds, the in-package XHTTP client for vless_xhttp.
-// VLESS carriers are paced (one network connection per dial; the TSPU
-// quarantines the endpoint after ~3 rapid connections — wave 6).
+// feeder for sing-box kinds, the in-package XHTTP client for vless_xhttp and
+// the in-package TMN/1 client for tmn. VLESS carriers are paced (one network
+// connection per dial; the TSPU quarantines the endpoint after ~3 rapid
+// connections — wave 6); tmn is NOT: it pools a fixed set of long-lived
+// sessions, so pacing would only throttle throughput.
 func (t *tunnel) carrierTCP(ep *config.Endpoint) namedTCP {
 	name := endpointName(ep)
 	if ep.SingBoxKind() {
@@ -351,6 +356,11 @@ func (t *tunnel) carrierTCP(ep *config.Endpoint) namedTCP {
 		}
 		paced := ep.Kind == config.KindVLESSTCP || ep.Kind == config.KindVLESSReality
 		return namedTCP{name: name, c: socksPath{addr: addr}, paced: paced}
+	}
+	if ep.Kind == config.KindTMN {
+		l := &lazyTMN{ep: *ep, logger: t.logger}
+		t.tmnPaths = append(t.tmnPaths, l)
+		return namedTCP{name: name, c: l}
 	}
 	return namedTCP{name: name, c: &lazyXHTTP{ep: *ep, logger: t.logger}}
 }
@@ -481,6 +491,9 @@ func (t *tunnel) Stop() error {
 			err = errors.Join(err, t.udpConn.Close())
 		}
 		err = errors.Join(err, t.engineClose())
+		for _, c := range t.tmnPaths {
+			err = errors.Join(err, c.Close())
+		}
 		done := make(chan struct{})
 		go func() { t.wg.Wait(); close(done) }()
 		select {

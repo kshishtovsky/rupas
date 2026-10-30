@@ -19,6 +19,8 @@ func validEndpoint(kind string) Endpoint {
 		e.RealityPBK = "PUBKEYBASE64URL"
 	case KindHysteria2:
 		e.Password = "sekret"
+	case KindTMN:
+		e.PSK = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
 	}
 	return e
 }
@@ -88,6 +90,19 @@ func TestEndpointValidatePerKind(t *testing.T) {
 			e.Path = "/x"
 			e.XPadding = "1000-100"
 		}, "x_padding_bytes"},
+		{"tmn no psk", func(e *Endpoint) {
+			e.Kind = KindTMN
+			e.PSK = ""
+		}, "psk"},
+		{"tmn short psk", func(e *Endpoint) {
+			e.Kind = KindTMN
+			e.PSK = "0011"
+		}, "psk"},
+		{"tmn conns out of range", func(e *Endpoint) {
+			e.Kind = KindTMN
+			e.PSK = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+			e.Conns = 9
+		}, "conns"},
 	}
 	for _, c := range cases {
 		e := validEndpoint(KindVLESSTCP)
@@ -382,5 +397,28 @@ tunnels:
 	}
 	if cfg.Tunnels.TCP.Mux != "" {
 		t.Fatalf("mux включился сам: %q", cfg.Tunnels.TCP.Mux)
+	}
+}
+
+// TestTMNEndpointDefaults pins the TMN/1 endpoint contract: hex-normalized
+// PSK, pool size default, and "not carried by sing-box, no UDP" — the three
+// facts the tunnel/Android carriers rely on.
+func TestTMNEndpointDefaults(t *testing.T) {
+	e := validEndpoint(KindTMN)
+	e.PSK = strings.ToUpper(e.PSK)
+	if err := e.Validate(); err != nil {
+		t.Fatalf("valid tmn endpoint rejected: %v", err)
+	}
+	if e.Conns != 4 {
+		t.Errorf("conns default = %d, want 4", e.Conns)
+	}
+	if e.PSK != strings.ToLower(e.PSK) {
+		t.Errorf("psk not lower-cased: %q", e.PSK)
+	}
+	if e.SingBoxKind() {
+		t.Error("tmn must not be carried by sing-box")
+	}
+	if e.SupportsUDP() {
+		t.Error("tmn must report SupportsUDP=false (the protocol has no UDP flows)")
 	}
 }

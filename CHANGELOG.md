@@ -1,3 +1,9 @@
+## v0.9.0
+
+- chore(release): v0.9.0 (e6db240)
+- feat(android): общий бюджет перебора каналов и липкость по адресату (5b05658)
+- docs(changelog): v0.8.6 (3ce0794)
+
 ## v0.8.6
 
 - chore(release): v0.8.6 (eae8d45)

@@ -1,3 +1,9 @@
+## v0.8.5
+
+- chore(release): v0.8.5 (0eb89b4)
+- fix(gui): проверка обновлений и GeoIP переживают сброс соединения (6be3ad9)
+- docs(changelog): v0.8.4 (c1646e1)
+
 ## v0.8.4
 
 - chore(release): v0.8.4 (f7c6437)

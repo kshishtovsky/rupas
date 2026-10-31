@@ -427,11 +427,14 @@ func loadFakeTemplate(explicit string, cfg *config.Config) ([]byte, string, erro
 		if name := cfg.Desync.FakeTemplate; name != "" {
 			candidates = append(candidates,
 				filepath.Join("build", "desync", name),
+				// Portable-zip layout: templates sit in <exe dir>\desync.
+				filepath.Join("desync", name),
 				name,
 			)
 		}
 		candidates = append(candidates,
 			filepath.Join("build", "desync", "fake-chrome.bin"),
+			filepath.Join("desync", "fake-chrome.bin"),
 			"fake-chrome.bin",
 			filepath.Join("..", "build", "desync", "fake-chrome.bin"),
 			filepath.Join("..", "..", "build", "desync", "fake-chrome.bin"),

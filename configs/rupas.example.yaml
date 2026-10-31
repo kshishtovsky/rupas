@@ -62,7 +62,7 @@ rules:
 
 desync:
   strategy: fake
-  fake_template: chrome-124-pq.bin
+  fake_template: fake-chrome.bin
   ttl: 13                     # calibrated by the prober (§7.2)
   ttl_margin: 2
   repeats: 6

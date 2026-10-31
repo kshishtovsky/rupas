@@ -52,10 +52,13 @@ func (e *Engine) run(ctx context.Context, fd int) error {
 		}
 		defer e.relay.Close() //nolint:errcheck
 	}
-	// Build the TUNNEL dial chain (relay inbounds + own xhttp client).
+	// Build the TUNNEL dial chain (relay inbounds + own xhttp/tmn clients).
 	// Works even when the relay start failed: carriers may be empty and
 	// TUNNEL flows escalate honestly.
 	e.buildCarriers(ctx)
+	// The in-process carrier clients (TMN session pools) belong to this run:
+	// a leaked pool keeps its TLS sessions and goroutines across reconnects.
+	defer e.closeTMN()
 	// Honest state for the app: "direct" is the escalation tail, so a chain
 	// without a real carrier means the tunnel never came up. A config with no
 	// endpoint at all (zero enabled profiles) is "off", not "failed" — nothing

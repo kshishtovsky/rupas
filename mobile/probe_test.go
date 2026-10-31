@@ -119,6 +119,51 @@ func TestProbeUsesOwnClientForXHTTP(t *testing.T) {
 	}
 }
 
+// TMN-профиль, как и xhttp, проверяется своим клиентом: sing-box TMN/1 не
+// несёт вообще (relay не стартует), поэтому probe обязан идти через
+// client.New → DialContext того же клиента, что и канал.
+func TestProbeUsesClientForTMN(t *testing.T) {
+	const psk = "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+	link := "tmn://" + psk + "@vps.example.net:443?sni=cover.example.net&conns=2"
+	ep, err := android.ParseShareLink(link)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !ep.NeedsNative() || ep.Kind != android.KindTMN {
+		t.Fatal("эндпоинт должен требовать свой TMN-клиент")
+	}
+	// Диалер строится без сети: ошибка конфигурации вернулась бы здесь.
+	dial, closer, err := android.TMNDialer(ep, func(string) {})
+	if err != nil {
+		t.Fatalf("TMNDialer: %v", err)
+	}
+	if dial == nil || closer == nil {
+		t.Fatal("TMNDialer: нужен и диал, и закрытие пула сессий")
+	}
+	if err := closer.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+}
+
+// Psk не должен попасть в err ни на одной стадии: он уходит в redact как
+// секрет, наравне с uuid.
+func TestTestProfileTMNHidesPSK(t *testing.T) {
+	const psk = "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c"
+	// Порт 1 закрыт: падение гарантировано и происходит на dial, без сети.
+	link := "tmn://" + psk + "@127.0.0.1:1?sni=cover.example.net&conns=1&insecure=1"
+
+	r := decodeProbe(t, TestProfile(link, t.TempDir()))
+	if r.OK {
+		t.Fatalf("dead endpoint must not pass: %+v", r)
+	}
+	if r.Stage != "dial" && r.Stage != "start" {
+		t.Fatalf("stage: want start|dial, got %q", r.Stage)
+	}
+	if strings.Contains(r.Err, psk) {
+		t.Fatalf("psk leaked into err: %q", r.Err)
+	}
+}
+
 // Не-xhttp эндпоинт идёт через sing-box и не должен звать XHTTPDialer.
 func TestProbeUsesRelayForBoxKinds(t *testing.T) {
 	link := "vless://11111111-2222-3333-4444-555555555555@vps.example.net:443" +

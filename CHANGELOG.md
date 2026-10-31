@@ -1,3 +1,10 @@
+## v0.10.3
+
+- release: 0.10.3 (28c8eb5)
+- Merge pull request #2 from kshishtovsky/feat/detailed-logs (e5e6405)
+- logs: подробный ротируемый лог ядра + журнал и баннер сбоя в GUI (2edc2c6)
+- docs(changelog): v0.10.2 (8f438a2)
+
 ## v0.10.2
 
 - chore(release): v0.10.2 (0de78f7)

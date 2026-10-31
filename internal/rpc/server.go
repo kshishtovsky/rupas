@@ -64,6 +64,11 @@ type Deps struct {
 	Off    func() error
 	Probe  func() error
 	Reload func() error
+	// Shutdown stops the pipeline, releases the single-instance lock and
+	// exits the process: the elevated-restart path (WinDivert access denied)
+	// needs the old non-admin daemon gone before spawning the new one.
+	// Optional: when nil, "shutdown" answers with an error.
+	Shutdown func() error
 	// Logs returns the last n lifecycle events, oldest first.
 	Logs   func(n int) []string
 	Logger *log.Logger // optional
@@ -243,6 +248,8 @@ func (s *Server) dispatch(cmd string) Response {
 		return callDep("on", s.deps.On)
 	case "off":
 		return callDep("off", s.deps.Off)
+	case "shutdown":
+		return callDep("shutdown", s.deps.Shutdown)
 	case "probe":
 		return callDep("probe", s.deps.Probe)
 	case "reload":

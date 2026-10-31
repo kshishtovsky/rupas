@@ -42,6 +42,52 @@ func (c *Controller) Logs() ([]string, error) {
 	return CallLogs(c.opts.Pipe, 3*time.Second)
 }
 
+// maybeElevatedRestart fires the elevated restart at most once per GUI
+// session, asynchronously (poll must not block on UAC).
+func (c *Controller) maybeElevatedRestart() {
+	if !c.elevRestartOnce.CompareAndSwap(false, true) {
+		return
+	}
+	c.log.Printf("guictrl: WinDivert access denied — requesting elevated restart")
+	go func() {
+		if err := c.ElevatedRestart(); err != nil {
+			c.log.Printf("guictrl: elevated restart failed: %v", err)
+			// Allow a later retry from a fresh UI action.
+			c.elevRestartOnce.Store(false)
+		}
+	}()
+}
+
+// ElevatedRestart re-spawns rupasd with admin rights: stop → ask the live
+// daemon to exit (it holds the single-instance lock) → UAC relaunch of
+// ourselves with -startdaemon → wait for the pipe → turn back on.
+func (c *Controller) ElevatedRestart() error {
+	daemonPath, cfg, logPath, err := c.launchSpec()
+	if err != nil {
+		return err
+	}
+	_, _ = CallPipe(c.opts.Pipe, "off", 3*time.Second)
+	if _, err := CallPipe(c.opts.Pipe, "shutdown", 3*time.Second); err != nil {
+		c.log.Printf("guictrl: shutdown rpc: %v (spawning anyway)", err)
+	}
+	// Give the old process a moment to release the mutex.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := CallPipe(c.opts.Pipe, "status", time.Second); err != nil {
+			break
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	if err := c.elevatedStartDaemon(daemonPath, cfg, logPath); err != nil {
+		return err
+	}
+	if err := waitForPipe(c.opts.Pipe, 20*time.Second); err != nil {
+		return err
+	}
+	_, err = CallPipe(c.opts.Pipe, "on", 5*time.Second)
+	return err
+}
+
 // DetailedLogs returns the tail of the daemon's own log file — the verbose
 // stream (DEBUG flow gates, carrier dials, marker probes) that the lifecycle
 // ring never carries. Read in the GUI process, so it works even when the

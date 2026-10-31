@@ -9,7 +9,7 @@ import java.util.regex.Pattern;
  * Universal share-link intake for the W3 core (parity with the Go side).
  * The core's SetSettings accepts a "links" array of standard share links
  * in dial order: the first is the primary carrier, the rest are fallbacks.
- * Supported schemes: vless://, hysteria2://, hy2://, trojan://.
+ * Supported schemes: vless://, hysteria2://, hy2://, trojan://, tmn://.
  *
  * Java validates the shape loosely; the authoritative parse lives in Go
  * (internal/transport/android/sharelink.go) and its errors surface in the
@@ -19,7 +19,7 @@ import java.util.regex.Pattern;
 public final class ParseLink {
 
     private static final Pattern SCHEME_HOST_PORT = Pattern.compile(
-            "^(vless|hysteria2|hy2|trojan)://([^@\\s/]+)@(\\[[^\\]]+\\]|[^:/\\s]+):(\\d{1,5})([/?#].*)?$");
+            "^(vless|hysteria2|hy2|trojan|tmn)://([^@\\s/]+)@(\\[[^\\]]+\\]|[^:/\\s]+):(\\d{1,5})([/?#].*)?$");
 
     private ParseLink() {}
 
@@ -60,14 +60,14 @@ public final class ParseLink {
             out.add(token);
         }
         if (out.isEmpty()) {
-            throw new IllegalArgumentException("no share links found (want vless://, hysteria2:// or trojan://)");
+            throw new IllegalArgumentException("no share links found (want vless://, hysteria2://, trojan:// or tmn://)");
         }
         return out;
     }
 
     /**
      * Fills the legacy flat view from the first link (any scheme): vless
-     * links go through the full ParseVless parser; hysteria2/trojan fill
+     * links go through the full ParseVless parser; hysteria2/trojan/tmn fill
      * password/host/port (password lands in the uuid display field, the
      * authoritative value travels inside the link itself).
      */

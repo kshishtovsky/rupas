@@ -921,7 +921,7 @@ public class MainActivity extends AppCompatActivity {
             ClipData clip = clipboard.getPrimaryClip();
             if (clip != null && clip.getItemCount() > 0) {
                 CharSequence text = clip.getItemAt(0).getText();
-                if (text != null && text.toString().trim().matches("(?s)(vless|hysteria2|hy2|trojan)://.*")) {
+                if (text != null && text.toString().trim().matches("(?s)(vless|hysteria2|hy2|trojan|tmn)://.*")) {
                     input.setText(text.toString().trim());
                 }
             }

@@ -170,3 +170,27 @@ func TestDecidePreSkipsPeek(t *testing.T) {
 		t.Error("default-rule flow must not be final before the SNI peek")
 	}
 }
+
+// TestIsTelegramAddr: the direct tail must recognise every Telegram DC range,
+// including the v6 ones and a 4-in-6 mapped address. A miss here makes the
+// engine escalate a TG flow into the TSPU blackhole (6 s dead dial per flow).
+func TestIsTelegramAddr(t *testing.T) {
+	for _, c := range telegramCIDRs {
+		p := netip.MustParsePrefix(c)
+		addr := p.Addr()
+		if p.Bits() < addr.BitLen() {
+			addr = netip.PrefixFrom(p.Addr(), p.Bits()).Addr()
+		}
+		if !isTelegramAddr(addr) {
+			t.Errorf("%s (from %s) not recognised", addr, c)
+		}
+	}
+	if !isTelegramAddr(netip.MustParseAddr("::ffff:149.154.167.41")) {
+		t.Error("4-in-6 mapped TG address not recognised")
+	}
+	for _, a := range []string{"8.8.8.8", "93.184.216.34", "2001:4860:4860::8888"} {
+		if isTelegramAddr(netip.MustParseAddr(a)) {
+			t.Errorf("%s wrongly classified as Telegram", a)
+		}
+	}
+}

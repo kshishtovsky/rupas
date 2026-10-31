@@ -342,6 +342,11 @@ func newTMNCarrier(ep Endpoint, dialer *net.Dialer, logf func(string)) (func(ctx
 		Profile:  "off",
 		Dialer:   dialer, // the protecting dialer: without it the sockets loop into the TUN
 		Logger:   slog.New(logfHandler{fn: logf}),
+		// Телефон засыпает: Doze глушит радио, NAT забывает поток, и сессия
+		// умирает молча. 10 s x 2 = 20 s до детекта вместо 75 s — иначе
+		// приложение минуту показывает живой канал, которого уже нет.
+		PingEvery: 10 * time.Second,
+		PingMiss:  2,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("tmn: %w", err)
@@ -387,14 +392,20 @@ func newXHTTPCarrier(ep Endpoint, logf func(string)) (func(ctx context.Context, 
 }
 
 // logfHandler forwards slog records from an in-process carrier client to the
-// engine log callback (warnings and above only).
+// engine log callback. Warnings and above always go through; the session
+// lifecycle (пул TMN установил/потерял сессию) goes through at Info too: без
+// этих строк «Журнал» показывает только «carrier died», и в приложении не
+// видно, живы ли сессии и сколько их.
 type logfHandler struct{ fn func(string) }
 
 func (h logfHandler) Enabled(_ context.Context, level slog.Level) bool {
-	return level >= slog.LevelWarn
+	return level >= slog.LevelWarn || level == slog.LevelInfo
 }
 
 func (h logfHandler) Handle(_ context.Context, rec slog.Record) error {
+	if rec.Level < slog.LevelWarn && !strings.Contains(rec.Message, "сессия") {
+		return nil
+	}
 	h.fn(rec.Message)
 	return nil
 }

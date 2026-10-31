@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/tuman/client"
 )
 
 // Engine owns one TUN-backed transport session. It is created per Start and
@@ -42,9 +43,13 @@ type Engine struct {
 	// filter is off. adblockDetail carries the compile failure for Status().
 	adblock       *Adblock
 	adblockDetail string
-	// carriers: the TUNNEL dial chain (relay inbounds + own xhttp client),
-	// built after the relay starts (buildCarriers from engine_chain.go).
+	// carriers: the TUNNEL dial chain (relay inbounds + own xhttp/tmn
+	// clients), built after the relay starts (buildCarriers from
+	// engine_chain.go).
 	carriers []tcpCarrier
+	// tmn: the per-run TMN/1 session pools behind the tmn carriers. Their
+	// lifecycle is the transport run's: closeTMN on stop/restart.
+	tmn []*client.Client
 	// health: per-carrier failure cooldowns, same length/order as carriers
 	// (engine_chain.go carrierHealth).
 	health []carrierHealth

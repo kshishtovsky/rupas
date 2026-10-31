@@ -122,13 +122,16 @@ func (r *Relay) Start(ctx context.Context, protect ProtectFunc, filesDir string)
 
 	var boxEps []indexedEndpoint
 	for i, ep := range eps {
-		if !ep.NeedsXHTTP() {
+		// xhttp (no sing-box transport) and tmn (own protocol) ride Rupas'
+		// in-process clients — sing-box must never see them, and their host
+		// is resolved by the client/server, not pre-resolved below.
+		if !ep.NeedsNative() {
 			boxEps = append(boxEps, indexedEndpoint{idx: i, ep: ep})
 		}
 	}
 	if len(boxEps) == 0 {
 		if r.logFn != nil {
-			r.logFn("android: relay: all endpoints are xhttp — sing-box not started (own client carries them)")
+			r.logFn("android: relay: all endpoints are carried in-process (xhttp/tmn) — sing-box not started (own clients carry them)")
 		}
 		return nil
 	}
@@ -396,7 +399,8 @@ func relayOptions(boxEps []indexedEndpoint, servers []string, ports []uint16, pr
 
 // endpointOutbound builds one sing-box outbound from a parsed endpoint.
 // vless (tcp/ws/grpc/httpupgrade; tls/reality/none), trojan, hysteria2.
-// vless+xhttp never reaches this: the engine carries it via internal/tunnel.
+// xhttp and tmn never reach this: they are NeedsNative() and the relay
+// filters them out before building the box (engine carries them in-process).
 func endpointOutbound(e Endpoint, server, tag, protectPath string) option.Outbound {
 	dialer := option.DialerOptions{
 		AbstractDialerOptions: option.AbstractDialerOptions{

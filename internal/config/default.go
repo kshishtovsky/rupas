@@ -42,7 +42,7 @@ func Default() *Config {
 		},
 		Desync: DesyncParams{
 			Strategy:     "fake",
-			FakeTemplate: "chrome-124-pq.bin",
+			FakeTemplate: "fake-chrome.bin",
 			TTL:          13,
 			TTLMargin:    2,
 			Repeats:      6,

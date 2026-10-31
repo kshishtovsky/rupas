@@ -1,3 +1,9 @@
+## v0.10.6
+
+- release: 0.10.6 (4940124)
+- fix: вечный DEGRADED при WinDivert без прав — авто-перезапуск через UAC (065f596)
+- docs(changelog): v0.10.5 (9d82e4b)
+
 ## v0.10.5
 
 - chore(release): v0.10.5 (758d511)

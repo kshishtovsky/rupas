@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -71,9 +72,10 @@ func runProbe(link, filesDir string) (res probeResult) {
 	link = strings.TrimSpace(link)
 
 	// Parsed only for redaction: a bad link must fail in relay.Start below,
-	// which keeps a single failure path (stage "start").
+	// which keeps a single failure path (stage "start"). The PSK is a secret
+	// like a uuid.
 	ep, _ := android.ParseShareLink(link)
-	secrets := []string{ep.UUID, ep.PBK, ep.SID}
+	secrets := []string{ep.UUID, ep.PBK, ep.SID, ep.PSK}
 
 	// Own cache subdir: the live relay owns filesDir/cache.db, and two
 	// sing-boxes must not share it (§5.4).
@@ -102,20 +104,29 @@ func runProbe(link, filesDir string) (res probeResult) {
 		return probeResult{Stage: "start", Err: redact(err.Error(), link, secrets...)}
 	}
 
-	// xhttp endpoints have no sing-box inbound: our own client carries them,
-	// so the probe must dial through that same client. Before this, every
-	// xhttp profile answered "tunnel unavailable" while the tunnel itself
-	// worked — the profile card lied to the user.
+	// xhttp and tmn endpoints have no sing-box inbound: our own clients
+	// carry them, so the probe must dial through that same client. Before
+	// this, every such profile answered "tunnel unavailable" while the
+	// tunnel itself worked — the profile card lied to the user.
 	var dialOne func(context.Context, netip.AddrPort) (net.Conn, error)
-	if ep.NeedsXHTTP() {
+	switch {
+	case ep.NeedsXHTTP():
 		dialOne, err = android.XHTTPDialer(ep, rl.add)
-		if err != nil {
-			return probeResult{Stage: "start", Err: redact(err.Error(), link, secrets...)}
+	case ep.Kind == android.KindTMN:
+		var closer io.Closer
+		dialOne, closer, err = android.TMNDialer(ep, rl.add)
+		if closer != nil {
+			// The probe's own session pool: closed with the probe, not with
+			// the (absent) relay.
+			defer closer.Close() //nolint:errcheck
 		}
-	} else {
+	default:
 		dialOne = func(dctx context.Context, dst netip.AddrPort) (net.Conn, error) {
 			return relay.DialTCPIndex(0, dctx, dst)
 		}
+	}
+	if err != nil {
+		return probeResult{Stage: "start", Err: redact(err.Error(), link, secrets...)}
 	}
 	dctx, dcancel := context.WithTimeout(ctx, probeDial)
 	conn, err := dialOne(dctx, netip.MustParseAddrPort(probeAddr))

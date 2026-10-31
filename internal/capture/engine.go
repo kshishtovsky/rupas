@@ -55,6 +55,13 @@ type Options struct {
 	Desync       config.DesyncParams // desync profile for Engine.Actions
 	FakeTemplate []byte              // fake ClientHello template bytes
 	TProxyPort   uint16              // local tproxy port; must not be 443 or in [50000,65535]
+	// UDPRelay reports that the tunnel branch can actually carry UDP
+	// (hysteria2 endpoint, or an xUDP-capable TCP endpoint). Without it a
+	// UDP TUNNEL rule is a black hole: NAT forwards into a tproxy that has
+	// no UDP outbound, and the flow dies silently — Discord voice broke
+	// exactly this way on a TMN-only setup (field 2026-11-01) while the
+	// same network passed UDP fine without Rupas at all.
+	UDPRelay bool
 	TGCIDRs      []string            // Telegram CIDRs, widen the capture filter
 	// TermFilter443 declares that SNI-rule TUNNEL flows to :443 (YouTube/
 	// Discord, wave 7) will be served by the terminator: the factory relay
@@ -1023,6 +1030,13 @@ func (e *Engine) processUDP(pkt []byte, addr *windivert.Address, p *pktInfo) {
 	action := e.rules.MatchProc(v4mapped(p.dst4), "", p.dstPort, config.ProtoUDP, e.appOf(p, true))
 	switch action {
 	case config.ActionTunnel:
+		// No UDP-capable channel: forwarding into the tproxy is a black
+		// hole. Pass through — direct UDP beats a dead relay (and when the
+		// ISP really blocks UDP, the user needs a hy2 channel anyway).
+		if !e.opts.UDPRelay {
+			e.passVerdict(pkt, addr, core.VerdictPass)
+			return
+		}
 		f := e.flows.GetOrCreate(key)
 		f.State.Store(flowtable.FlowTunnel)
 		e.natOutbound(pkt, p, key, f, addr)

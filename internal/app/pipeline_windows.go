@@ -362,7 +362,15 @@ func (p *capturePipeline) startLocked(cfg *config.Config) error {
 		// terminator whenever it is installed (a live tunnel with a TCP
 		// dialer) — the 443 term-filter clause must then be on too.
 		TermFilter443: termFactory != nil,
-		CHLog:         chLogf,
+		// UDP relay exists only when the tunnel branch is live AND some
+		// endpoint carries UDP (hysteria2, or xUDP-capable TCP). A TMN-only
+		// plan passes UDP through instead: NAT→tproxy would black-hole it
+		// (Discord voice field report 2026-11-01).
+		UDPRelay: tun != nil && cfg.Tunnels != nil &&
+			(cfg.Tunnels.UDP != nil ||
+				(cfg.Tunnels.TCP != nil && cfg.Tunnels.TCP.SupportsUDP()) ||
+				(cfg.Tunnels.Fallback != nil && cfg.Tunnels.Fallback.SupportsUDP())),
+		CHLog: chLogf,
 	})
 	if err != nil {
 		if tun != nil {

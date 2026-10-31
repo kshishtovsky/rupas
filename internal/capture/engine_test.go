@@ -45,6 +45,9 @@ func newTestEngine(t *testing.T, rulesCfg *config.Config, params config.DesyncPa
 		Desync:       params,
 		FakeTemplate: testFakeTemplate,
 		TProxyPort:   testTProxyPort,
+		// Tests NAT-relay UDP TUNNEL flows; production wires this from the
+		// tunnel plan (pipeline_windows.go) — see UDPRelay docs.
+		UDPRelay: true,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

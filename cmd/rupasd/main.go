@@ -229,6 +229,13 @@ func flagWasSet(name string) bool {
 // loadConfig resolves the effective config: an explicit -config path must
 // load; the default path falls back to the built-in profile with a
 // warning when the file is absent.
+//
+// A missing EXPLICIT path also falls back, loudly: the GUI always passes
+// %ProgramData%\Rupas\rupas.yaml, which does not exist on a fresh install
+// until the onboarding wizard saves — dying here left the GUI with
+// «демон не отвечает» and zero diagnostics (v0.10.3 regression report).
+// The built-in default profile is the honest state: daemon up, pipe live,
+// config pending.
 func loadConfig(path string, logger *log.Logger) (*config.Config, error) {
 	if path == "" {
 		path = "config.yaml"
@@ -236,6 +243,10 @@ func loadConfig(path string, logger *log.Logger) (*config.Config, error) {
 			logger.Printf("no %s found, using the built-in default profile", path)
 			return config.Default(), nil
 		}
+	}
+	if _, err := os.Stat(path); err != nil {
+		logger.Printf("config %s: %v — using the built-in default profile (save settings in the GUI to write it)", path, err)
+		return config.Default(), nil
 	}
 	return config.Load(path)
 }

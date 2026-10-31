@@ -107,7 +107,17 @@ func (c *Controller) EnsureDaemon() error {
 			return fmt.Errorf("%w; elevated: %v", err, elevErr)
 		}
 	}
-	return waitForPipe(c.opts.Pipe, 15*time.Second)
+	if err := waitForPipe(c.opts.Pipe, 15*time.Second); err != nil {
+		// The spawn itself succeeds even when the daemon dies right after —
+		// the classic case is WinDivert driver install without admin (fresh
+		// machine, first launch). One UAC re-launch before giving up: the
+		// user expects the permission prompt anyway.
+		if elevErr := c.elevatedStartDaemon(daemonPath, cfg, logPath); elevErr != nil {
+			return err
+		}
+		return waitForPipe(c.opts.Pipe, 15*time.Second)
+	}
+	return nil
 }
 
 // launchSpec resolves everything needed to spawn the daemon: binary (next to the

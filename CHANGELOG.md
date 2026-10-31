@@ -1,3 +1,15 @@
+## v0.10.0
+
+- chore(release): v0.10.0 (f0c2dae)
+- docs(tmn): статус волны 1 — W1/W2/W3 приняты (ebc16b1)
+- feat(gui): tmn-ссылки в план туннелей и exclusions своего ендпоинта (0f12f63)
+- feat(tmn): TMN/1 как пятый транспорт — канал, probe и импорт tmn:// (0b13a36)
+- feat(tunnel): tmn как TCP-carrier в dial-chain (28d1aea)
+- chore(tmn): зависимость github.com/kshishtovsky/tuman v0.1.0 (345cd81)
+- feat(tmn): схема конфига и tmn:// в общем парсере ссылок (b4236e3)
+- docs(tmn): техтребования и декомпозиция интеграции TMN/1 (b393c35)
+- docs(changelog): v0.9.0 (1ecd7d2)
+
 ## v0.9.0
 
 - chore(release): v0.9.0 (e6db240)

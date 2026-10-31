@@ -27,6 +27,12 @@ rules:
     action: tunnel
   - sni: "*.discordapp.net"
     action: tunnel
+  - sni: discord.media         # voice handshake/media (c-xxx.discord.media)
+    action: tunnel
+  - sni: "*.discord.media"
+    action: tunnel
+  - sni: "*.discord.com"        # status.discord.com etc.
+    action: tunnel
   - cidr: 149.154.160.0/20    # Telegram: IP-blackholed → tunnel (§3.3)
     action: tunnel
   - cidr: 91.108.0.0/16

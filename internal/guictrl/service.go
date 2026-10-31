@@ -385,6 +385,13 @@ func presetConfig(dpi bool) config.Config {
 		sni("*.discordapp.com", config.ActionTunnel),
 		sni("discordapp.net", config.ActionTunnel),
 		sni("*.discordapp.net", config.ActionTunnel),
+		// Discord media/status subdomains (c-xxx.discord.media, latency,
+		// status): voice handshake and media fallback ride these — ECH CHs
+		// dropped direct (field log 2026-11-01), keep the whole zone tunnelled.
+		sni("discord.media", config.ActionTunnel),
+		sni("*.discord.media", config.ActionTunnel),
+		sni("*.discord.com", config.ActionTunnel),
+		sni("discordstatus.com", config.ActionTunnel),
 		// RU zones and RU services on foreign TLDs → direct.
 		sni("vk.com", config.ActionDirect),
 		sni("*.vk.com", config.ActionDirect),

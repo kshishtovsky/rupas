@@ -26,8 +26,13 @@ func Default() *Config {
 			// Wave 7: wider Discord/YouTube coverage. desync is the lab
 			// default here too — users on an unstable fake ISP switch
 			// these to `action: tunnel` (see configs/rupas.yaml).
-			{SNI: "*.discordapp.com", Action: ActionDesync},
+			{SNI: "discordapp.net", Action: ActionDesync},
 			{SNI: "media.discordapp.net", Action: ActionDesync},
+			{SNI: "*.discordapp.com", Action: ActionDesync},
+			// Voice handshake/media/status subdomains: dropped direct (TSPU).
+			{SNI: "discord.media", Action: ActionTunnel},
+			{SNI: "*.discord.media", Action: ActionTunnel},
+			{SNI: "*.discord.com", Action: ActionTunnel},
 			{SNI: "discord.gg", Action: ActionDesync},
 			{SNI: "*.discord.gg", Action: ActionDesync},
 			{SNI: "youtube.com", Action: ActionDesync},

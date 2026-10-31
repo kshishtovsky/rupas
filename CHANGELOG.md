@@ -1,3 +1,13 @@
+## v0.10.2
+
+- chore(release): v0.10.2 (0de78f7)
+- Merge pull request #1 from kshishtovsky/feat/tg-no-direct (b0a2157)
+- chore: merge master (v0.10.0) в feat/tg-no-direct (9c695da)
+- fix(android): пустой пул TMN падает сразу, а не через 6 с carrier timeout (b541340)
+- fix(android): liveness-конфиг TMN (10s x 2) и видимость жизненного цикла сессий (a2a7da3)
+- fix(android): не эскалировать TG-потоки в direct — там IP-блэкхол (8477bbb)
+- docs(changelog): v0.10.0 (d431b6b)
+
 ## v0.10.0
 
 - chore(release): v0.10.0 (f0c2dae)

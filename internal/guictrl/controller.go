@@ -12,7 +12,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kshishtovsky/rupas/internal/core"
@@ -63,6 +65,9 @@ type Controller struct {
 	prev ratePrev
 	// gatewayHost is the primary channel description (Home «Шлюз» line).
 	gatewayHost string
+	// elevRestartOnce guards the automatic WinDivert elevated restart: one
+	// attempt per GUI session (0 = not tried, 1 = in progress/succeeded).
+	elevRestartOnce atomic.Bool
 	// listeners are notified on every snapshot change.
 	listeners map[int]func(Snapshot)
 	nextHook  int
@@ -118,6 +123,13 @@ func (c *Controller) poll() Snapshot {
 	if err := decodeSnapshot(resp, &snap); err != nil {
 		c.log.Printf("guictrl: status decode: %v", err)
 		return Snapshot{Online: false}
+	}
+	// Fresh machine, first launch: WinDivertOpen needs admin, the daemon
+	// survives but cycles DEGRADED forever. One automatic elevated restart
+	// per GUI session — the UAC prompt is the permission dialog the user
+	// expects anyway.
+	if strings.Contains(snap.Counters.LastProbeNote, "WinDivertOpen: Access is denied") {
+		c.maybeElevatedRestart()
 	}
 	s := Snapshot{
 		Online: true,

@@ -9,7 +9,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -91,10 +90,12 @@ func main() {
 		os.Setenv("RUPAS_LOG_DEBUG", "1")
 	}
 	// The file sink outlives the console: the GUI is windowsgui and has no
-	// stderr, so without it everything below Warning is lost.
+	// stderr, so without it everything below Warning is lost. When the file
+	// is open it REPLACES stderr in the logger — the GUI redirects our stderr
+	// into the same file, and MultiWriter would double every line.
 	if f := openLogFile(*logPath, logger); f != nil {
 		defer f.Close()
-		logger.SetOutput(io.MultiWriter(os.Stderr, f))
+		logger.SetOutput(f)
 	}
 
 	cfg, err := loadConfig(*configPath, logger)
@@ -127,6 +128,15 @@ func main() {
 		On:     sup.On,
 		Off:    sup.Off,
 		Probe:  sup.ForceProbe,
+		// Elevated-restart path: the GUI re-spawns rupasd via UAC, so this
+		// instance must be gone — single-instance lock is held by this
+		// process and dies with it.
+		Shutdown: func() error {
+			_ = sup.Off()
+			logger.Printf("shutdown requested (elevated restart)")
+			os.Exit(0)
+			return nil
+		},
 		Reload: func() error {
 			c, err := loadConfig(*configPath, logger)
 			if err != nil {

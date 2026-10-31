@@ -6,6 +6,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -49,7 +50,7 @@ func main() {
 		cmd = flag.Arg(0)
 	}
 	switch cmd {
-	case "status", "on", "off", "probe", "reload", "logs", "debug", "tui", "start":
+	case "status", "on", "off", "probe", "reload", "logs", "debug", "tui", "start", "shutdown":
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -133,6 +134,11 @@ func run(pipePath string, timeout time.Duration, cmd string) error {
 	default:
 		line, err := rd.ReadBytes('\n')
 		if err != nil {
+			// shutdown exits the daemon before answering; EOF = success.
+			if cmd == "shutdown" && errors.Is(err, io.EOF) {
+				fmt.Println("shutdown: ok")
+				return nil
+			}
 			return fmt.Errorf("read: %w", err)
 		}
 		var r struct {

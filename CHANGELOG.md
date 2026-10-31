@@ -1,3 +1,9 @@
+## v0.10.8
+
+- release: 0.10.8 (d2163be)
+- fix(gui/config): discord.media и *.discord.com → tunnel (cb7a0bb)
+- docs(changelog): v0.10.7 (161ef0e)
+
 ## v0.10.7
 
 - release: 0.10.7 (296a2ec)

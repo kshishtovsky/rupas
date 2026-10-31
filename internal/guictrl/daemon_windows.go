@@ -58,7 +58,7 @@ func startDaemon(daemonPath, configPath, logPath string) error {
 		return fmt.Errorf("лог %s: %w", logPath, err)
 	}
 	defer logf.Close()
-	cmd := exec.Command(daemonPath, "-config", configPath)
+	cmd := exec.Command(daemonPath, "-config", configPath, "-log", logPath)
 	cmd.Stdout = logf
 	cmd.Stderr = logf
 	if wd := daemonWorkDir(configPath); wd != "" {
@@ -123,9 +123,20 @@ func (c *Controller) launchSpec() (daemonPath, cfg, logPath string, err error) {
 	}
 	logPath = c.opts.LogPath
 	if logPath == "" {
-		logPath = filepath.Join(os.TempDir(), "rupasd-gui.log")
+		logPath = DefaultLogPath()
 	}
 	return daemonPath, cfg, logPath, nil
+}
+
+// DefaultLogPath is where the GUI keeps the daemon log: %LocalAppData%\rupas\
+// logs\rupasd.log, the same rotating file rupasd writes on its own when it is
+// started without -log. The GUI reads it for the «Подробно» view.
+func DefaultLogPath() string {
+	dir := os.Getenv("LocalAppData")
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	return filepath.Join(dir, "rupas", "logs", "rupasd.log")
 }
 
 // waitForPipe polls status until the daemon answers or the deadline passes.

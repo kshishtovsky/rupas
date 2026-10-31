@@ -22,16 +22,20 @@ package android
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/kshishtovsky/rupas/internal/config"
 	"github.com/kshishtovsky/rupas/internal/tunnel"
+	"github.com/kshishtovsky/tuman/client"
 )
 
 // carrierCooldown is how long a carrier that failed a dial or died before
@@ -207,25 +211,44 @@ type tcpCarrier struct {
 }
 
 // buildCarriers assembles the dial chain after the relay start: one
-// carrier per endpoint (sing-box inbound for box kinds, the own XHTTP
-// client for xhttp). Called once per transport run.
+// carrier per endpoint in dial order — a sing-box inbound for box kinds,
+// Rupas' own client for xhttp and tmn. Called once per transport run.
 func (e *Engine) buildCarriers(ctx context.Context) {
 	e.carriers = nil
-	if e.relay == nil {
-		return
+	// A restart must not leave the previous run's TMN session pools (and
+	// their TLS sessions/goroutines) alive.
+	e.closeTMN()
+	// e.relay.endpoints is the started relay's own list; e.endpoints is the
+	// parsed settings. The latter keeps a native-only chain buildable when
+	// the relay is absent or never started at all.
+	eps := e.endpoints
+	if e.relay != nil && len(e.relay.endpoints) > 0 {
+		eps = e.relay.endpoints
 	}
-	eps := e.relay.endpoints
 	// socksAddrs is nil when the relay start failed before allocating the
 	// inbounds: never index it against the endpoint list shape blindly.
-	chainOK := len(e.relay.socksAddrs) == len(eps)
+	chainOK := e.relay != nil && len(e.relay.socksAddrs) == len(eps)
 	for i, ep := range eps {
-		if ep.NeedsXHTTP() {
-			c, err := newXHTTPCarrier(ep, func(line string) { e.logf("xhttp: %s", line) })
+		// Native carriers are built BEFORE any relay check: a profile whose
+		// only carrier is tmn has no relay at all (e.relay == nil), so a
+		// relay guard here would swallow its whole chain.
+		if ep.NeedsNative() {
+			var dial func(ctx context.Context, dst netip.AddrPort) (net.Conn, error)
+			var err error
+			if ep.Kind == KindTMN {
+				var cl *client.Client
+				dial, cl, err = newTMNCarrier(ep, e.dialer, func(line string) { e.logf("tmn: %s", line) })
+				if cl != nil {
+					e.tmn = append(e.tmn, cl)
+				}
+			} else {
+				dial, err = newXHTTPCarrier(ep, func(line string) { e.logf("xhttp: %s", line) })
+			}
 			if err != nil {
 				e.logf("carrier %d (%s): unavailable: %v", i, endpointName(ep), err)
 				continue
 			}
-			e.carriers = append(e.carriers, tcpCarrier{name: endpointName(ep), dial: c})
+			e.carriers = append(e.carriers, tcpCarrier{name: endpointName(ep), dial: dial})
 			continue
 		}
 		if !chainOK || e.relay.socksAddrs[i] == "" {
@@ -275,6 +298,60 @@ func XHTTPDialer(ep Endpoint, logf func(string)) (func(ctx context.Context, dst 
 	return newXHTTPCarrier(ep, logf)
 }
 
+// TMNDialer exposes the own TMN client as a dial function plus its closer
+// for callers outside the engine (the profile probe): the probe must tear
+// the session pool down, or it leaves TLS sessions behind for its lifetime.
+// dialer nil → the library's own default dialer.
+func TMNDialer(ep Endpoint, logf func(string)) (func(ctx context.Context, dst netip.AddrPort) (net.Conn, error), io.Closer, error) {
+	return newTMNCarrier(ep, nil, logf)
+}
+
+// newTMNCarrier maps a parsed tmn endpoint onto the tuman client (TLS 1.3 +
+// ALPN h2 + mux streams, PSK auth). The returned client is created ONCE per
+// transport run: its pool keeps up to Conns TLS sessions, and a leaked one
+// survives every reconnect.
+func newTMNCarrier(ep Endpoint, dialer *net.Dialer, logf func(string)) (func(ctx context.Context, dst netip.AddrPort) (net.Conn, error), *client.Client, error) {
+	if ep.Kind != KindTMN {
+		return nil, nil, fmt.Errorf("tmn: only tmn is supported")
+	}
+	psk, err := config.NormalizePSK(ep.PSK)
+	if err != nil {
+		return nil, nil, fmt.Errorf("tmn: %v", err)
+	}
+	key, err := hex.DecodeString(psk)
+	if err != nil { // NormalizePSK already validated; belt and braces
+		return nil, nil, fmt.Errorf("tmn: psk: %w", err)
+	}
+	if logf == nil {
+		logf = func(string) {}
+	}
+	c, err := client.New(client.Config{
+		Servers:  []client.Endpoint{{Addr: net.JoinHostPort(ep.Host, strconv.Itoa(int(ep.Port))), SNI: ep.SNI}},
+		PSK:      key,
+		SNI:      ep.SNI,
+		Insecure: ep.Insecure,
+		Conns:    ep.Conns,
+		Profile:  "off",
+		Dialer:   dialer, // the protecting dialer: without it the sockets loop into the TUN
+		Logger:   slog.New(logfHandler{fn: logf}),
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("tmn: %w", err)
+	}
+	return func(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
+		// The library resolves nothing: the server resolves the target.
+		return c.DialContext(ctx, "tcp", dst.String())
+	}, c, nil
+}
+
+// closeTMN tears the per-run TMN session pools down (engine stop/restart).
+func (e *Engine) closeTMN() {
+	for _, c := range e.tmn {
+		_ = c.Close()
+	}
+	e.tmn = nil
+}
+
 // newXHTTPCarrier maps a parsed endpoint onto the platform-neutral
 // internal/tunnel XHTTP client (packet-up, uTLS).
 func newXHTTPCarrier(ep Endpoint, logf func(string)) (func(ctx context.Context, dst netip.AddrPort) (net.Conn, error), error) {
@@ -298,25 +375,25 @@ func newXHTTPCarrier(ep Endpoint, logf func(string)) (func(ctx context.Context, 
 		Mode:        "packet-up",
 		XPadding:    "100-1000",
 	}
-	return tunnel.NewXHTTPDialer(cfgEp, slog.New(xhttpLogHandler{fn: logf}))
+	return tunnel.NewXHTTPDialer(cfgEp, slog.New(logfHandler{fn: logf}))
 }
 
-// xhttpLogHandler forwards slog records from the XHTTP client to the
+// logfHandler forwards slog records from an in-process carrier client to the
 // engine log callback (warnings and above only).
-type xhttpLogHandler struct{ fn func(string) }
+type logfHandler struct{ fn func(string) }
 
-func (h xhttpLogHandler) Enabled(_ context.Context, level slog.Level) bool {
+func (h logfHandler) Enabled(_ context.Context, level slog.Level) bool {
 	return level >= slog.LevelWarn
 }
 
-func (h xhttpLogHandler) Handle(_ context.Context, rec slog.Record) error {
+func (h logfHandler) Handle(_ context.Context, rec slog.Record) error {
 	h.fn(rec.Message)
 	return nil
 }
 
-func (h xhttpLogHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h logfHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
 
-func (h xhttpLogHandler) WithGroup(_ string) slog.Handler { return h }
+func (h logfHandler) WithGroup(_ string) slog.Handler { return h }
 
 // dialChain dials dst trying every carrier in health order; the returned
 // conn transparently re-dials through the remaining carriers when the

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -39,6 +40,47 @@ func (c *Controller) Off() error {
 // Logs returns the daemon lifecycle log tail (last N events).
 func (c *Controller) Logs() ([]string, error) {
 	return CallLogs(c.opts.Pipe, 3*time.Second)
+}
+
+// DetailedLogs returns the tail of the daemon's own log file — the verbose
+// stream (DEBUG flow gates, carrier dials, marker probes) that the lifecycle
+// ring never carries. Read in the GUI process, so it works even when the
+// daemon is wedged and cannot answer RPC: that is exactly the case the owner
+// is left guessing about otherwise.
+// shortcut: reads the whole file up to tailBytes on every call, fine for a
+// 10 MiB rotated log; switch to a tracked offset if the poll gets hot.
+func (c *Controller) DetailedLogs(limit int) ([]string, error) {
+	path := c.opts.LogPath
+	if path == "" {
+		path = DefaultLogPath()
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+	const tailBytes = 512 << 10
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if off := st.Size() - tailBytes; off > 0 {
+		if _, err := f.Seek(off, io.SeekStart); err != nil {
+			return nil, err
+		}
+	}
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	if limit > 0 && len(lines) > limit {
+		lines = lines[len(lines)-limit:]
+	}
+	return lines, nil
 }
 
 // ParseChannels parses the multi-line links blob for the Settings priority

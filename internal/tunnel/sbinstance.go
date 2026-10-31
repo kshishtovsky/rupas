@@ -49,7 +49,11 @@ func startSingbox(ctx context.Context, logger *slog.Logger, opts option.Options,
 		return nil, fmt.Errorf("box.Start: %w", err)
 	}
 	if jsonCfg, err := marshalBoxOptions(boxCtx, opts); err == nil {
-		logger.Debug("sing-box config", slog.String("json", string(jsonCfg)))
+		// The marshalled config carries the channel secrets in clear text
+		// (hysteria2 password, vless uuid, reality pbk). The log is meant to be
+		// copied into a chat, so redact them: the shape stays diagnosable, the
+		// credentials do not leak.
+		logger.Debug("sing-box config", slog.String("json", redactSecrets(jsonCfg)))
 	}
 	return &singbox{box: engine, ports: ports}, nil
 }

@@ -1,3 +1,9 @@
+## v0.10.5
+
+- chore(release): v0.10.5 (758d511)
+- fix: fake template not found на свежей установке (2be7ebf)
+- docs(changelog): v0.10.4 (8ae30e4)
+
 ## v0.10.4
 
 - release: 0.10.4 (4ea4d2b)

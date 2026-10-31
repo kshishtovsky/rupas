@@ -73,7 +73,30 @@ function render(s) {
     : s.healthFails > 0
       ? `<span class="chip warn">Сбоев: ${s.healthFails}</span>`
       : '<span class="chip accent">Потерь нет</span>';
+  renderAlert(s);
 }
+
+// renderAlert says WHY traffic is not flowing. A chip reading «Сбой» left the
+// owner guessing; the tunnel state is already in the snapshot, so name the
+// failing part (daemon, tunnel, channel) instead.
+function renderAlert(s) {
+  const bar = $("alertBar");
+  let msg = "";
+  if (!s.online) {
+    msg = "Демон не отвечает — Rupas не управляет трафиком. Нажмите кнопку питания, чтобы запустить.";
+  } else if (s.state === "DEGRADED") {
+    msg = "Сбой перехвата: " + (s.note || "демон сообщил о деградации") + ".";
+  } else if (s.tunnelMode === "tunnel" && !s.tunnelHealthy) {
+    msg = s.tunnelHeld
+      ? "Туннель не отвечает: новые потоки к заблокированным адресам отбрасываются, Telegram и часть сайтов не работают. Проверьте канал в настройках."
+      : "Туннель нездоров: маркер не проходит, трафик идёт в обход.";
+  } else if (s.tunnelMode === "escalated") {
+    msg = "Канал не настроен: заблокированные адреса идут напрямую (Telegram работать не будет).";
+  }
+  bar.style.display = msg ? "flex" : "none";
+  if (msg) $("alertText").textContent = msg;
+}
+$("alertMore").addEventListener("click", () => showPage("logs"));
 
 // ---------- custom caption buttons (frameless window) ----------
 $("btnMinimize").addEventListener("click", () => { try { Window.Minimise(); } catch (_) {} });
@@ -105,20 +128,29 @@ function showPage(name) {
 }
 document.querySelectorAll(".nav-item").forEach((b) => b.addEventListener("click", () => showPage(b.dataset.page)));
 let logsTimer = null;
+// detail: show the daemon's verbose log file instead of the lifecycle ring.
+let logsDetail = false;
 
 // ---------- logs ----------
 async function loadLogs() {
   try {
-    const lines = await call("Logs");
+    const lines = logsDetail ? await call("DetailedLogs", 1500) : await call("Logs");
     const box = $("logBox");
     box.innerHTML = "";
     if (!lines || !lines.length) {
-      box.innerHTML = '<div class="log-empty">Пусто. Включите Rupas.</div>';
+      box.innerHTML = logsDetail
+        ? '<div class="log-empty">Подробный лог пуст: демон ещё не писал файл.</div>'
+        : '<div class="log-empty">Пусто. Включите Rupas.</div>';
     } else {
-      for (const l of lines.slice(-300)) {
+      for (const l of lines.slice(-800)) {
         const d = document.createElement("div");
         d.className = "log-line";
         d.textContent = l;
+        // Levels drive the colouring: the verbose file is mostly DEBUG, and a
+        // warning/error among it must be visible without reading every line.
+        if (/\b(ERROR|ERR |panic|FATAL)/.test(l)) d.classList.add("err");
+        else if (/\b(WARN|UNHEALTHY|fail|failed|timeout|refused|HOLD)/i.test(l)) d.classList.add("warn");
+        else if (/\bDEBUG\b/.test(l)) d.classList.add("dbg");
         if (l.includes("verdict=")) d.classList.add("hl");
         box.appendChild(d);
       }
@@ -129,9 +161,15 @@ async function loadLogs() {
     $("logBox").innerHTML = '<div class="log-empty">Демон недоступен</div>';
   }
 }
+$("btnLogsDetail").addEventListener("click", () => {
+  logsDetail = !logsDetail;
+  $("btnLogsDetail").classList.toggle("active", logsDetail);
+  $("btnLogsDetail").textContent = logsDetail ? "События" : "Подробно";
+  loadLogs();
+});
 $("btnLogsRefresh").addEventListener("click", loadLogs);
 $("btnLogsCopy").addEventListener("click", async () => {
-  const lines = await call("Logs").catch(() => []);
+  const lines = logsDetail ? await call("DetailedLogs", 100000).catch(() => []) : await call("Logs").catch(() => []);
   await navigator.clipboard.writeText((lines || []).join("\n"));
   $("btnLogsCopy").textContent = "Скопировано";
   setTimeout(() => ($("btnLogsCopy").textContent = "Копировать"), 1200);

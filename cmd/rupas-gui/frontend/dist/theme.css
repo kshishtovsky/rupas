@@ -272,7 +272,21 @@ html, body {
 .log-line { color: var(--log-text); white-space: pre-wrap; word-break: break-all; }
 .log-line .t { color: var(--log-meta); }
 .log-line .hl { color: var(--log-accent); }
+/* Levels: the verbose log is mostly DEBUG, so warnings and errors must pop. */
+.log-line.dbg { color: var(--log-meta); opacity: .72; }
+.log-line.warn { color: var(--warn); }
+.log-line.err { color: var(--danger); font-weight: 600; }
 .log-empty { color: var(--ink-soft); padding: var(--space-m); }
+
+/* Alert bar: names the failing part instead of a bare «Сбой» chip. */
+.alert-bar {
+  display: flex; align-items: center; gap: var(--space-s);
+  margin: var(--space-m) 0 0; padding: var(--space-s) var(--space-m);
+  background: var(--danger-soft); color: var(--danger);
+  border: 1px solid var(--danger); border-radius: var(--radius-panel);
+  font-size: 12.5px; line-height: 1.45;
+}
+.alert-bar .alert-text { flex: 1; }
 
 /* ---------- Wizard ---------- */
 .wizard { display: flex; flex-direction: column; height: 100%; }

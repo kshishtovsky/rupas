@@ -9,6 +9,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/kshishtovsky/rupas/internal/app"
 	"github.com/kshishtovsky/rupas/internal/config"
+	"github.com/kshishtovsky/rupas/internal/daemonlog"
 	"github.com/kshishtovsky/rupas/internal/rpc"
 	"github.com/kshishtovsky/rupas/internal/version"
 )
@@ -50,7 +52,9 @@ func main() {
 	configPath := flag.String("config", "", "path to the rupas YAML config (default: ./config.yaml, falling back to the built-in profile)")
 	pipePath := flag.String("pipe", rpc.DefaultPipe, "control named pipe path")
 	tunnel := flag.String("tunnel", "on", "tunnel branch: on = NAT-redirect TUNNEL-rule flows (TG CIDRs, UDP relay, ECH) to the loopback tproxy and relay them through the configured VLESS+Reality endpoint (empty endpoint: TUNNEL rules escalate to sni→desync / cidr,port→direct, logged and counted); off = demote TUNNEL rules to direct, no NAT")
-	verbose := flag.Bool("verbose", false, "chatty logging on stderr")
+	verbose := flag.Bool("verbose", false, "chatty logging on stderr (adds file:line)")
+	debug := flag.Bool("debug", true, "detailed logging: DEBUG level for the tunnel (flow gates, carrier dials, marker probes); -debug=false keeps warnings only")
+	logPath := flag.String("log", "", "log file with size rotation (default: %LOCALAPPDATA%\\rupas\\logs\\rupasd.log; empty string disables the file)")
 	chlog := flag.Bool("chlog", true, "log every ClientHello decision (sni/ech/dst/verdict) — TSPU-shape diagnostics; TEMPORARY verbose mode, default ON for the debugging phase (pass -chlog=false to silence the hot path)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -78,6 +82,19 @@ func main() {
 	}
 	if *verbose {
 		logger.SetFlags(log.LstdFlags | log.Lmicroseconds | log.Lshortfile)
+	}
+
+	// Detailed logging is the default: a live incident cannot be diagnosed
+	// after the fact from warnings alone. RUPAS_LOG_DEBUG is the env knob the
+	// tunnel reads; set it before app.New builds the slog bridge.
+	if *debug {
+		os.Setenv("RUPAS_LOG_DEBUG", "1")
+	}
+	// The file sink outlives the console: the GUI is windowsgui and has no
+	// stderr, so without it everything below Warning is lost.
+	if f := openLogFile(*logPath, logger); f != nil {
+		defer f.Close()
+		logger.SetOutput(io.MultiWriter(os.Stderr, f))
 	}
 
 	cfg, err := loadConfig(*configPath, logger)
@@ -170,6 +187,43 @@ func main() {
 		logger.Printf("supervisor close: %v", err)
 	}
 	logger.Printf("rupasd stopped")
+}
+
+// openLogFile opens the rotating daemon log. An empty explicit path ("-log=")
+// disables the file; a default path that cannot be created is reported but
+// never fatal — logging must not keep the daemon from starting.
+func openLogFile(explicit string, logger *log.Logger) *daemonlog.Writer {
+	path := explicit
+	if path == "" {
+		dir := os.Getenv("LocalAppData")
+		if dir == "" {
+			dir = os.TempDir()
+		}
+		path = filepath.Join(dir, "rupas", "logs", "rupasd.log")
+		if explicit == "" && flagWasSet("log") {
+			return nil // "-log=" disables the file sink
+		}
+	}
+	w, err := daemonlog.New(path, 10<<20, 5)
+	if err != nil {
+		logger.Printf("log file %s: %v (continuing with stderr only)", path, err)
+		return nil
+	}
+	logger.Printf("rupasd log: %s (10 MiB x 5, rotated)", path)
+	return w
+}
+
+// flagWasSet reports whether the named flag was given on the command line:
+// an explicit empty -log= must mean "no file", while an absent -log means
+// "default path".
+func flagWasSet(name string) bool {
+	set := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
 }
 
 // loadConfig resolves the effective config: an explicit -config path must

@@ -123,6 +123,9 @@ func (c *Controller) poll() Snapshot {
 		Online: true,
 		State:  snap.State,
 		Since:  snap.Since.Format(time.RFC3339),
+		// The last probe/degradation note is the only reason string the daemon
+		// hands out, and the alert bar needs it: «Сбой» alone says nothing.
+		Note: snap.Counters.LastProbeNote,
 	}
 	if snap.Tunnel != nil {
 		s.TunnelMode = snap.Tunnel.Mode

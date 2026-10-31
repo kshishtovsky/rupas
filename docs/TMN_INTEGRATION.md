@@ -166,6 +166,9 @@ tmn://<psk-hex64>@host:port?sni=<прикрытие>&conns=4&profile=off&insecur
 | — | C. схема: `KindTMN` в config, `tmn://` в sharelink, спека | `internal/config/config.go`, `internal/transport/android/sharelink.go`, `docs/` |
 | 1 | W1. десктоп-ядро: `tmnPath`, `carrierTCP`, `Stop` | `internal/tunnel/*` |
 | 1 | W2. Android-ядро: carrier с protect, relay, probe, Java-парсер | `internal/transport/android/{engine_chain,relay,settings}.go`, `mobile/`, `android/app/…/ParseLink.java` |
-| 1 | W3. GUI и конфиг: роли, exclusions, примеры, тексты | `internal/guictrl/*`, `configs/`, `build/rupas.example.yaml` |
+| 1 | W3. GUI и конфиг: ✅ `classify`/`endpointFor` → kind `tmn`, роль `tcp` (tmn-ссылка становится `tunnels.tcp`, hysteria2 рядом остаётся `udp`); `SaveLinks` добавляет SNI ендпоинта в `exclusions.domains` и литеральный IP как `/32` в `exclusions.cidrs` (merge с конфигом, без дублей, домены без учёта регистра); tmn в текстах «нужен vless…»; пример блока в `configs/rupas.example.yaml`; тесты `TestParseTMNChannel`, `TestTMNPlanOrdering`, `TestSaveLinksTMNExclusion` | `internal/guictrl/share.go`, `internal/guictrl/service.go`, `internal/guictrl/tmn_test.go`, `configs/rupas.example.yaml` |
 
 Волна 1 стартует только после тега `v0.1.0` и `go get github.com/kshishtovsky/tuman@v0.1.0`.
+
+Примечание по `build/rupas.example.yaml`: в репозитории этого файла нет — `scripts/make-dist.ps1`
+копирует туда `configs/rupas.example.yaml`, поэтому пример tmn-блока живёт только в `configs/`.

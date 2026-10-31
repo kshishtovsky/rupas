@@ -139,6 +139,12 @@ type Supervisor struct {
 
 	snap atomic.Pointer[core.Snapshot]
 
+	// degradedNoteMu guards degradedNoteMsg: the reason string of the latest
+	// DEGRADED entry, surfaced in the snapshot for the GUI alert bar and the
+	// WinDivert elevated-restart trigger.
+	degradedNoteMu  sync.Mutex
+	degradedNoteMsg string
+
 	ctx       context.Context
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
@@ -209,6 +215,20 @@ func (s *Supervisor) Snapshot() core.Snapshot {
 
 // DroppedEvents reports events discarded because the queue was full.
 func (s *Supervisor) DroppedEvents() uint64 { return s.dropped.Load() }
+
+// setDegradedNote records the reason of the latest DEGRADED entry.
+func (s *Supervisor) setDegradedNote(note string) {
+	s.degradedNoteMu.Lock()
+	s.degradedNoteMsg = note
+	s.degradedNoteMu.Unlock()
+}
+
+// degradedNote returns the recorded degradation reason ("" when none).
+func (s *Supervisor) degradedNote() string {
+	s.degradedNoteMu.Lock()
+	defer s.degradedNoteMu.Unlock()
+	return s.degradedNoteMsg
+}
 
 // On turns the supervisor on (RPC "on").
 func (s *Supervisor) On() error { return s.send(event{kind: evCmdOn}) }
@@ -362,11 +382,19 @@ func (s *Supervisor) run() {
 		if lastOC.ProfileID != "" {
 			profile = lastOC.ProfileID
 		}
+		// The degradation note must reach the GUI: the elevated-restart
+		// trigger matches «WinDivertOpen: Access is denied» in it, and the
+		// alert bar shows it as the reason. Cleared once out of DEGRADED.
+		note := s.degradedNote()
+		if m.state != StateDegraded {
+			note = ""
+		}
 		s.snap.Store(&core.Snapshot{
 			State:         string(m.state),
 			Since:         m.enteredAt,
 			ProfileID:     profile,
 			TunnelHealthy: lastOC.OK && lastOC.TunnelOK,
+			Note:          note,
 			Flows:         map[string]int64{},
 			Counters: core.Counters{
 				LastProbeAt:   lastOCAt,
@@ -603,6 +631,9 @@ func (s *Supervisor) run() {
 				note := ev.note
 				if note == "" {
 					note = ev.kind.String()
+				}
+				if m.state == StateDegraded {
+					s.setDegradedNote(note)
 				}
 				s.logf("%s -> %s (%s)", prev, m.state, note)
 				s.evlog.Append(fmt.Sprintf("state %s -> %s (%s)", prev, m.state, note))

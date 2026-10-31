@@ -127,17 +127,22 @@ func (c *Controller) poll() Snapshot {
 	// Fresh machine, first launch: WinDivertOpen needs admin, the daemon
 	// survives but cycles DEGRADED forever. One automatic elevated restart
 	// per GUI session — the UAC prompt is the permission dialog the user
-	// expects anyway.
-	if strings.Contains(snap.Counters.LastProbeNote, "WinDivertOpen: Access is denied") {
+	// expects anyway. Match both sources: the degradation note (snapshot
+	// Note) and the last probe note.
+	note := snap.Note
+	if note == "" {
+		note = snap.Counters.LastProbeNote
+	}
+	if strings.Contains(note, "WinDivertOpen: Access is denied") {
 		c.maybeElevatedRestart()
 	}
 	s := Snapshot{
 		Online: true,
 		State:  snap.State,
 		Since:  snap.Since.Format(time.RFC3339),
-		// The last probe/degradation note is the only reason string the daemon
-		// hands out, and the alert bar needs it: «Сбой» alone says nothing.
-		Note: snap.Counters.LastProbeNote,
+		// The degradation note is the only reason string the daemon hands
+		// out, and the alert bar needs it: «Сбой» alone says nothing.
+		Note: note,
 	}
 	if snap.Tunnel != nil {
 		s.TunnelMode = snap.Tunnel.Mode

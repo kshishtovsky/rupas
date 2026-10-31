@@ -351,9 +351,22 @@ func newTMNCarrier(ep Endpoint, dialer *net.Dialer, logf func(string)) (func(ctx
 	if err != nil {
 		return nil, nil, fmt.Errorf("tmn: %w", err)
 	}
+	// The pool redials in the background, but DialContext blocks waiting for a
+	// session and would burn the carrier timeout (6 s) on every flow while the
+	// pool is empty — that is the "tmn fail 6.001s" blackhole after Doze. Once
+	// the pool has been live in this run, an empty pool fails fast and the
+	// chain moves on immediately.
+	var everLive atomic.Bool
 	return func(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
+		if everLive.Load() && !c.Healthy() {
+			return nil, fmt.Errorf("tmn: pool empty (reconnecting)")
+		}
 		// The library resolves nothing: the server resolves the target.
-		return c.DialContext(ctx, "tcp", dst.String())
+		conn, err := c.DialContext(ctx, "tcp", dst.String())
+		if err == nil {
+			everLive.Store(true)
+		}
+		return conn, err
 	}, c, nil
 }
 

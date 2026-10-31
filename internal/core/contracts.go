@@ -22,6 +22,9 @@ type Snapshot struct {
 	Since         time.Time
 	ProfileID     string
 	TunnelHealthy bool
+	// Note is the reason of the latest DEGRADED entry ("" otherwise): the
+	// GUI alert bar and the WinDivert elevated-restart trigger read it.
+	Note string
 	// Tunnel is the live tunnel-branch status rendered by `rupasctl
 	// status` (nil when the tunnel branch is not assembled).
 	Tunnel   *TunnelStatus

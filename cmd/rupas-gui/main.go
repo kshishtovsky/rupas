@@ -17,6 +17,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 
+	"github.com/kshishtovsky/rupas/internal/daemonlog"
 	"github.com/kshishtovsky/rupas/internal/guictrl"
 	"github.com/kshishtovsky/rupas/internal/version"
 )
@@ -168,21 +169,19 @@ func main() {
 	}
 }
 
-// redirectLogs sends the default logger to %LocalAppData%\rupas\gui.log
-// (windowsgui builds have no stderr).
+// redirectLogs sends the default logger to %LocalAppData%\rupas\logs\gui.log
+// (windowsgui builds have no stderr). Rotated: a GUI that runs for weeks must
+// not grow one file without a bound.
 func redirectLogs() {
 	dir := os.Getenv("LocalAppData")
 	if dir == "" {
 		dir = os.TempDir()
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "rupas"), 0o700); err != nil {
-		return
-	}
-	f, err := os.OpenFile(filepath.Join(dir, "rupas", "gui.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	w, err := daemonlog.New(filepath.Join(dir, "rupas", "logs", "gui.log"), 4<<20, 3)
 	if err != nil {
 		return
 	}
-	log.SetOutput(f)
+	log.SetOutput(w)
 }
 
 // tray is the live system tray (label updated from the snapshot poller).

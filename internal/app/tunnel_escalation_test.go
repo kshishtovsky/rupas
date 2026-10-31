@@ -39,8 +39,8 @@ func TestPipelineTunnelEscalationNoEndpoint(t *testing.T) {
 	if st.TunnelMode != tunnelModeEscalated {
 		t.Fatalf("mode = %q, want escalated", st.TunnelMode)
 	}
-	if st.TunnelEscalated != 4 { // 3 TG CIDRs + UDP relay ports
-		t.Fatalf("escalated rules = %d, want 4", st.TunnelEscalated)
+	if st.TunnelEscalated != 6 { // 5 TG CIDRs (incl. Wave 7 DC5 ranges) + UDP relay ports
+		t.Fatalf("escalated rules = %d, want 6", st.TunnelEscalated)
 	}
 	if st.Tunnel != nil {
 		t.Fatal("no live tunnel stats may exist in escalated mode")

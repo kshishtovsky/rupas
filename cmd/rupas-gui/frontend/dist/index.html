@@ -50,6 +50,12 @@
     </div>
 
     <div class="main">
+      <!-- ALERT: why the tunnel is not carrying traffic (§7 «сбой»: the owner
+           was left guessing with only a chip saying «Сбой») -->
+      <div class="alert-bar" id="alertBar" style="display:none">
+        <div class="alert-text" id="alertText"></div>
+        <button class="btn ghost small" id="alertMore" type="button">Журнал</button>
+      </div>
       <!-- HOME -->
       <div class="page active" id="page-home">
         <div class="power-stage">
@@ -76,6 +82,7 @@
       <!-- LOGS -->
       <div class="page" id="page-logs">
         <div class="log-toolbar">
+          <button class="btn ghost small" id="btnLogsDetail">Подробно</button>
           <button class="btn ghost small" id="btnLogsRefresh">Обновить</button>
           <button class="btn ghost small" id="btnLogsCopy">Копировать</button>
           <span class="chip" id="chipLogsCount">0</span>

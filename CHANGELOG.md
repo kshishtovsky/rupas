@@ -1,3 +1,9 @@
+## v0.10.9
+
+- release: 0.10.9 (1f15d3c)
+- fix: UDP TUNNEL без UDP-канала — pass, не чёрная дыра (802f1c1)
+- docs(changelog): v0.10.8 (6c7bc38)
+
 ## v0.10.8
 
 - release: 0.10.8 (d2163be)

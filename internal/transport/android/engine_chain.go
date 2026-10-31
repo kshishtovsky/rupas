@@ -271,6 +271,14 @@ func (e *Engine) buildCarriers(ctx context.Context) {
 			name: "direct",
 			tail: true,
 			dial: func(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
+				// Telegram DCs are IP-blackholed by the TSPU: escalating there
+				// is a guaranteed 6 s dead dial that also looks like a live
+				// path to the client, so a TG flow that could just retry in
+				// the tunnel instead waits out the blackhole. Hold it (desktop
+				// parity: "TG flows HELD, not escalated to direct").
+				if isTelegramAddr(dst.Addr()) {
+					return nil, fmt.Errorf("android: direct held for %s (Telegram is IP-blackholed)", dst)
+				}
 				e.counters.TunnelEscalate()
 				e.logf("tcp %s: ESCALATED tunnel->direct (carrier chain exhausted)", dst)
 				return e.dialer.DialContext(ctx, "tcp", dst.String())
@@ -334,13 +342,31 @@ func newTMNCarrier(ep Endpoint, dialer *net.Dialer, logf func(string)) (func(ctx
 		Profile:  "off",
 		Dialer:   dialer, // the protecting dialer: without it the sockets loop into the TUN
 		Logger:   slog.New(logfHandler{fn: logf}),
+		// Телефон засыпает: Doze глушит радио, NAT забывает поток, и сессия
+		// умирает молча. 10 s x 2 = 20 s до детекта вместо 75 s — иначе
+		// приложение минуту показывает живой канал, которого уже нет.
+		PingEvery: 10 * time.Second,
+		PingMiss:  2,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("tmn: %w", err)
 	}
+	// The pool redials in the background, but DialContext blocks waiting for a
+	// session and would burn the carrier timeout (6 s) on every flow while the
+	// pool is empty — that is the "tmn fail 6.001s" blackhole after Doze. Once
+	// the pool has been live in this run, an empty pool fails fast and the
+	// chain moves on immediately.
+	var everLive atomic.Bool
 	return func(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
+		if everLive.Load() && !c.Healthy() {
+			return nil, fmt.Errorf("tmn: pool empty (reconnecting)")
+		}
 		// The library resolves nothing: the server resolves the target.
-		return c.DialContext(ctx, "tcp", dst.String())
+		conn, err := c.DialContext(ctx, "tcp", dst.String())
+		if err == nil {
+			everLive.Store(true)
+		}
+		return conn, err
 	}, c, nil
 }
 
@@ -379,14 +405,20 @@ func newXHTTPCarrier(ep Endpoint, logf func(string)) (func(ctx context.Context, 
 }
 
 // logfHandler forwards slog records from an in-process carrier client to the
-// engine log callback (warnings and above only).
+// engine log callback. Warnings and above always go through; the session
+// lifecycle (пул TMN установил/потерял сессию) goes through at Info too: без
+// этих строк «Журнал» показывает только «carrier died», и в приложении не
+// видно, живы ли сессии и сколько их.
 type logfHandler struct{ fn func(string) }
 
 func (h logfHandler) Enabled(_ context.Context, level slog.Level) bool {
-	return level >= slog.LevelWarn
+	return level >= slog.LevelWarn || level == slog.LevelInfo
 }
 
 func (h logfHandler) Handle(_ context.Context, rec slog.Record) error {
+	if rec.Level < slog.LevelWarn && !strings.Contains(rec.Message, "сессия") {
+		return nil
+	}
 	h.fn(rec.Message)
 	return nil
 }

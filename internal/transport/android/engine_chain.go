@@ -271,6 +271,14 @@ func (e *Engine) buildCarriers(ctx context.Context) {
 			name: "direct",
 			tail: true,
 			dial: func(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
+				// Telegram DCs are IP-blackholed by the TSPU: escalating there
+				// is a guaranteed 6 s dead dial that also looks like a live
+				// path to the client, so a TG flow that could just retry in
+				// the tunnel instead waits out the blackhole. Hold it (desktop
+				// parity: "TG flows HELD, not escalated to direct").
+				if isTelegramAddr(dst.Addr()) {
+					return nil, fmt.Errorf("android: direct held for %s (Telegram is IP-blackholed)", dst)
+				}
 				e.counters.TunnelEscalate()
 				e.logf("tcp %s: ESCALATED tunnel->direct (carrier chain exhausted)", dst)
 				return e.dialer.DialContext(ctx, "tcp", dst.String())

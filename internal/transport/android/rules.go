@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/kshishtovsky/rupas/internal/config"
 	"github.com/kshishtovsky/rupas/internal/geoip"
@@ -97,6 +98,30 @@ var telegramCIDRs = []string{
 	"2001:b28:f23f::/48",
 	"2a0a:f280:203::/48",
 }
+
+// isTelegramAddr reports whether addr is one of the Telegram DC ranges the
+// RU TSPU blackholes (parsed once; a bad literal is skipped, never fatal).
+func isTelegramAddr(addr netip.Addr) bool {
+	telegramOnce.Do(func() {
+		for _, c := range telegramCIDRs {
+			if p, err := netip.ParsePrefix(c); err == nil {
+				telegramPrefixes = append(telegramPrefixes, p.Masked())
+			}
+		}
+	})
+	addr = addr.Unmap()
+	for _, p := range telegramPrefixes {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	telegramOnce     sync.Once
+	telegramPrefixes []netip.Prefix
+)
 
 // LAN prefixes (v4+v6) that must never leave the device.
 var lanCIDRs = []string{

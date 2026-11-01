@@ -16,16 +16,24 @@ import (
 
 // Channel is one parsed share link with its desktop role and warnings.
 type Channel struct {
-	Link    string `json:"link"`
-	Name    string `json:"name"` // #fragment or host:port
-	Kind    string `json:"kind"` // vless-reality | vless-tls | vless-xhttp | hysteria2 | trojan | …
-	Host    string `json:"host"`
-	Port    int    `json:"port"`
-	Role    string `json:"role"`              // tcp | udp | fallback | unsupported
-	Warning string `json:"warning,omitempty"` // human-readable, non-fatal
+	Link     string `json:"link"`
+	Name     string `json:"name"` // #fragment or host:port
+	Kind     string `json:"kind"` // vless-reality | vless-tls | vless-xhttp | hysteria2 | trojan | …
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	Role     string `json:"role"`              // tcp | udp | fallback | unsupported
+	Warning  string `json:"warning,omitempty"` // human-readable, non-fatal
+	Disabled bool   `json:"disabled"`          // line is '#'-prefixed: kept, not dialed
 }
 
+// disabledMark prefixes a channel line the user switched off. It lives in the
+// blob itself (links.json + textarea), so no sidecar state has to be kept in
+// sync: a disabled channel survives restarts, edits and saves by construction.
+const disabledMark = "#"
+
 // ParseChannels parses the links blob (one link per line) in dial order.
+// '#'-prefixed lines are returned as Disabled channels instead of being
+// dropped, so the GUI can render their switch in the off position.
 func ParseChannels(blob string) ([]Channel, error) {
 	var chans []Channel
 	for _, raw := range strings.Split(blob, "\n") {
@@ -33,15 +41,24 @@ func ParseChannels(blob string) ([]Channel, error) {
 		if raw == "" {
 			continue
 		}
+		off := false
+		if strings.HasPrefix(raw, disabledMark) {
+			off = true
+			raw = strings.TrimSpace(strings.TrimPrefix(raw, disabledMark))
+			if raw == "" {
+				continue
+			}
+		}
 		ep, err := android.ParseShareLink(raw)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", short(raw), err)
 		}
 		c := Channel{
-			Link: raw,
-			Name: ep.Name,
-			Host: ep.Host,
-			Port: int(ep.Port),
+			Link:     raw,
+			Name:     ep.Name,
+			Host:     ep.Host,
+			Port:     int(ep.Port),
+			Disabled: off,
 		}
 		if c.Name == "" {
 			c.Name = fmt.Sprintf("%s:%d", ep.Host, ep.Port)
@@ -145,6 +162,9 @@ func channelsToPlan(blob string) (tcp, udp, fallback *config.Endpoint, warnings 
 		return nil, nil, nil, nil, perr
 	}
 	for _, ch := range chans {
+		if ch.Disabled {
+			continue // switched off in the GUI: kept in the blob, never dialed
+		}
 		if ch.Warning != "" {
 			warnings = append(warnings, fmt.Sprintf("%s: %s", ch.Name, ch.Warning))
 		}

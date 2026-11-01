@@ -160,22 +160,25 @@
             <svg class="rt-chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
           </button>
         </div>
-        <div class="section">
-          <div class="section-title">Каналы (ссылки)</div>
-          <div class="field">
-            <label>vless:// hysteria2:// — по одной в строке, порядок = порядок перебора</label>
-            <textarea class="textarea" id="setLinks" placeholder="vless://uuid@host:443?security=reality&pbk=…&sni=…#канал 1&#10;hysteria2://pass@host:53552?sni=…#канал 2" spellcheck="false"></textarea>
-            <div class="hint" id="linksHint"></div>
+        <div class="section" id="channelsSection">
+          <div class="section-title">Каналы</div>
+          <div class="chan-add">
+            <input class="input" id="chanInput" placeholder="Вставь ссылку vless:// hysteria2:// tmn://" spellcheck="false" autocomplete="off">
+            <button class="btn" id="btnChanAdd" type="button">Добавить</button>
           </div>
-          <div style="display:flex;gap:var(--space-s)">
-            <button class="btn ghost small" id="btnLinksParse">Разобрать</button>
-            <button class="btn ghost small" id="btnLinksCheck">Проверить</button>
+          <div class="hint warn" id="channelsEmpty"></div>
+          <div id="channelList" class="chan-list"></div>
+          <button class="disclose" id="btnShowRaw" type="button">Ссылки вручную</button>
+          <div id="rawWrap" hidden>
+            <div class="field" style="margin-top:var(--space-xs)">
+              <label>По одной в строке, порядок = порядок перебора. «#» в начале — канал выключен.</label>
+              <textarea class="textarea mono" id="setLinks" wrap="off" spellcheck="false" placeholder="vless://uuid@host:443?security=reality&pbk=…&sni=…#канал 1&#10;hysteria2://pass@host:53552?sni=…#канал 2"></textarea>
+              <div class="hint" id="linksHint"></div>
+            </div>
+            <div class="chan-acts">
+              <button class="btn ghost small" id="btnLinksParse" type="button">Разобрать</button>
+            </div>
           </div>
-        </div>
-        <div class="section" id="channelsSection" style="display:none">
-          <div class="section-title">Приоритеты каналов</div>
-          <div class="hint" style="margin-bottom:8px">Трафик идёт через первый рабочий канал: vless-tcp → основной, hysteria2 → голос, xhttp → резерв.</div>
-          <div id="channelList"></div>
         </div>
         <div class="section">
           <div class="section-title">Обход блокировок (DPI)</div>

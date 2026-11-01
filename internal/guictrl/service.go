@@ -213,6 +213,21 @@ func (c *Controller) SaveLinks(blob string) ([]string, error) {
 		}
 	}
 	cfg.Tunnels = &config.TunnelConfig{TCP: tcp, UDP: udp, Fallback: fb}
+	// A stale links.json (or a pasted link with a masked secret) must never
+	// overwrite the credential that is actually dialing today: same
+	// kind+host+port means the same server, so the live config wins and the
+	// swap is reported, never silent.
+	if cur, cerr := c.loadConfigForRules(); cerr == nil && cur.Tunnels != nil {
+		for _, pair := range [][2]**config.Endpoint{
+			{&cfg.Tunnels.TCP, &cur.Tunnels.TCP},
+			{&cfg.Tunnels.UDP, &cur.Tunnels.UDP},
+			{&cfg.Tunnels.Fallback, &cur.Tunnels.Fallback},
+		} {
+			if w := keepLiveSecret(*pair[0], *pair[1]); w != "" {
+				warnings = append(warnings, w)
+			}
+		}
+	}
 	// The TMN client dials its own endpoint (TLS to host:port with the cover
 	// SNI); WinDivert would capture that connection and, with the plan's
 	// TUNNEL default, loop it back into the tunnel that is not up yet —
@@ -239,6 +254,38 @@ func (c *Controller) SaveLinks(blob string) ([]string, error) {
 	}
 	c.setGateway(tcp, udp)
 	return warnings, err
+}
+
+// keepLiveSecret copies the credential fields from the endpoint the daemon is
+// actually dialing onto the freshly parsed one when both name the same server
+// (kind+host+port). Returns a warning naming the channel when anything changed.
+func keepLiveSecret(parsed, live *config.Endpoint) string {
+	if parsed == nil || live == nil {
+		return ""
+	}
+	if parsed.Kind != live.Kind || parsed.Host != live.Host || parsed.Port != live.Port {
+		return ""
+	}
+	var changed []string
+	for _, f := range []struct {
+		name string
+		dst  *string
+		src  string
+	}{
+		{"uuid", &parsed.UUID, live.UUID},
+		{"password", &parsed.Password, live.Password},
+		{"psk", &parsed.PSK, live.PSK},
+		{"reality_public_key", &parsed.RealityPBK, live.RealityPBK},
+	} {
+		if f.src != "" && *f.dst != f.src {
+			*f.dst = f.src
+			changed = append(changed, f.name)
+		}
+	}
+	if len(changed) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s: секрет из ссылки не совпал с рабочим конфигом — оставлен рабочий (%s)", parsed.Host, strings.Join(changed, ", "))
 }
 
 // CheckLinks runs the same plan + engine validation as SaveLinks but on a

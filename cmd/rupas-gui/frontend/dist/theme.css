@@ -156,19 +156,62 @@ html, body {
 .power-sub { margin-top: var(--space-xxs); font-size: 12px; color: var(--ink-soft); min-height: 16px; }
 .session { margin-top: var(--space-xs); font-size: 13px; color: var(--ink-soft); font-variant-numeric: tabular-nums; min-height: 18px; }
 
-/* ---------- Channel rows (Settings priorities) ---------- */
-.channel-row {
-  display: flex; align-items: center; justify-content: space-between; gap: var(--space-s);
-  padding: var(--space-s) 0;
-  border-bottom: 1px solid var(--rule);
+/* ---------- Channels (Settings) — one card per channel, phone parity ---------- */
+.chan-add { display: flex; gap: var(--space-xs); margin-bottom: var(--space-s); }
+.chan-add .input { flex: 1; min-width: 0; font-size: 13px; padding: 0 var(--space-s); }
+.chan-add .btn { flex-shrink: 0; padding: 0 var(--space-m); font-size: 14px; }
+
+.chan-list { display: flex; flex-direction: column; gap: var(--space-xs); }
+.chan {
+  display: grid; gap: 2px;
+  padding: var(--space-s) var(--space-s) var(--space-xs);
+  background: var(--paper-2); border: 1px solid var(--rule);
+  border-radius: var(--radius-input);
 }
-.channel-row:last-child { border-bottom: none; }
-.ch-name { font-size: 14px; color: var(--ink); margin-bottom: 4px; }
-.ch-info { min-width: 0; }
-.ch-btns { display: flex; gap: 2px; flex-shrink: 0; }
-.ch-btns .cap-btn:disabled { opacity: 0.3; cursor: default; }
-.ch-btns .cap-btn:disabled:hover { background: none; color: var(--ink-soft); }
-.ch-btns .cap-btn.ch-del:hover { color: var(--danger); }
+/* Switched off: still listed and reorderable, visibly out of play. */
+.chan.off { background: transparent; border-style: dashed; }
+.chan-head { display: flex; align-items: center; gap: var(--space-xs); min-width: 0; }
+.chan-name {
+  flex: 1; min-width: 0; font-size: 14px; font-weight: 600; color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chan.off .chan-name { font-weight: 400; color: var(--ink-soft); }
+.chan-meta {
+  font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chan-status { font-size: 12px; line-height: 1.45; }
+.chan-status.ok { color: var(--accent-deep); }
+.chan-status.err { color: var(--danger); }
+.chan-status.warn { color: var(--warn); }
+.chan-acts { display: flex; align-items: center; gap: var(--space-xxs); margin-top: var(--space-xxs); }
+.chan-acts .btn { height: 34px; font-size: 12.5px; padding: 0 var(--space-s); }
+.chan-acts .grow { flex: 1; }
+.chan-ico {
+  width: 34px; height: 34px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: none; border-radius: 8px; background: none; cursor: pointer;
+  color: var(--ink-soft); transition: background .15s, color .15s;
+}
+.chan-ico svg { width: 13px; height: 13px; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; fill: none; }
+.chan-ico:hover { background: var(--paper-3); color: var(--ink); }
+.chan-ico:disabled { opacity: .3; cursor: default; background: none; }
+.chan-ico.del { margin-left: auto; }
+.chan-ico.del:hover { background: var(--danger-soft); color: var(--danger); }
+
+/* Disclosure for the raw links blob: the list is the interface, the text is a fallback. */
+.disclose {
+  display: flex; align-items: center; gap: var(--space-xxs); width: 100%;
+  margin-top: var(--space-m); padding: var(--space-xs) 0;
+  border: none; background: none; cursor: pointer;
+  color: var(--ink-soft); font-size: 12px;
+}
+.disclose::before { content: "›"; font-size: 15px; line-height: 1; transition: transform .15s; }
+.disclose.open::before { transform: rotate(90deg); }
+.disclose:hover { color: var(--ink); }
+/* Hairline between sibling rows: rhythm without inventing another card. */
+.row + .row { border-top: 1px solid var(--rule); }
+.hint.warn { color: var(--warn); }
 
 /* ---------- Cards ---------- */
 .cards { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-s); margin-top: var(--space-s); }
@@ -198,7 +241,7 @@ html, body {
 .nav {
   display: flex; justify-content: space-around; align-items: center;
   margin: var(--space-m) var(--space-l) var(--space-m);
-  padding: var(--space-xs) 0;
+  padding: var(--space-xs) var(--space-xxs);
   background: var(--paper-2);
   border: 1px solid var(--rule);
   border-radius: var(--radius-panel);
@@ -226,6 +269,15 @@ html, body {
   font-size: 14px; color: var(--ink);
 }
 .textarea { height: 96px; padding: var(--space-s) var(--space-m); resize: none; user-select: text; }
+/* Long share links must never wrap mid-token: the blob is one URL per line. */
+.textarea.mono { font-family: var(--font-mono); font-size: 12px; line-height: 1.5; }
+
+/* Native scrollbars are the loudest non-theme element on screen — thin them down. */
+* { scrollbar-width: thin; scrollbar-color: var(--rule-strong) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--rule-strong); border-radius: var(--radius-pill); }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-faint); }
 .input:focus, .textarea:focus { border-color: var(--focus); }
 .input::placeholder, .textarea::placeholder { color: var(--ink-soft); }
 

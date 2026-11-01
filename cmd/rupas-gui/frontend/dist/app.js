@@ -218,6 +218,16 @@ sysTheme.addEventListener("change", () => { if (themeMode === -1) themeApply(); 
 // ---------- settings: links + channel priorities (Android W3 parity) ----------
 let channels = [];
 let linksInitialized = false; // populate from storage once; never clobber unsaved edits
+let testingIndex = -1;        // one live probe at a time (the Go side is serialised too)
+
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// syncLinks writes the list back into the textarea. A switched-off channel
+// keeps its line, prefixed with '#': the blob itself is the whole state, so
+// links.json, the textarea and the runtime config never disagree.
+function syncLinks() {
+  $("setLinks").value = channels.map((c) => (c.disabled ? "#" : "") + c.link).join("\n");
+}
 
 async function loadSettings() {
   try {
@@ -236,12 +246,16 @@ async function parseLinks() {
   const blob = $("setLinks").value.trim();
   if (!blob) {
     channels = [];
-    $("channelsSection").style.display = "none";
     $("linksHint").textContent = "";
+    renderChannels();
     return;
   }
   try {
-    channels = await call("ParseChannels", blob);
+    const prev = new Map(channels.map((c) => [c.link, c])); // keep test verdicts
+    channels = (await call("ParseChannels", blob)).map((ch) => {
+      const old = prev.get(ch.link);
+      return old && old.msg ? { ...ch, msg: old.msg, ok: old.ok } : ch;
+    });
     $("linksHint").textContent = "";
   } catch (e) {
     channels = [];
@@ -250,73 +264,129 @@ async function parseLinks() {
   renderChannels();
 }
 
+const ROLES = { tcp: "основной", udp: "голос/UDP", fallback: "резерв" };
+
 function renderChannels() {
-  const sec = $("channelsSection");
   const list = $("channelList");
   list.innerHTML = "";
-  if (!channels.length) { sec.style.display = "none"; return; }
-  sec.style.display = "block";
+  const enabled = channels.filter((c) => !c.disabled).length;
+  $("channelsEmpty").textContent =
+    channels.length && !enabled ? "⚠ все каналы выключены — туннель не поднимется" : "";
   channels.forEach((ch, i) => {
-    const row = document.createElement("div");
-    row.className = "channel-row";
-    const roleChip =
-      ch.role === "unsupported"
-        ? `<span class="chip danger">${ch.kind}</span>`
-        : `<span class="chip accent">${ch.kind} → ${ch.role === "tcp" ? "основной" : ch.role === "udp" ? "голос/UDP" : "резерв"}</span>`;
-    const warn = ch.warning ? `<div class="hint" style="color:var(--warn)">⚠ ${ch.warning}</div>` : "";
-    row.innerHTML = `
-      <div class="ch-info">
-        <div class="ch-name">${ch.name}</div>
-        ${roleChip}${warn}
-      </div>
-      <div class="ch-btns">
-        <button class="cap-btn" data-act="up" title="Поднять" ${i === 0 ? "disabled" : ""}>
-          <svg viewBox="0 0 12 12"><path d="M2 8l4-4 4 4"/></svg>
-        </button>
-        <button class="cap-btn" data-act="down" title="Опустить" ${i === channels.length - 1 ? "disabled" : ""}>
-          <svg viewBox="0 0 12 12"><path d="M2 4l4 4 4-4"/></svg>
-        </button>
-        <button class="cap-btn ch-del" data-act="del" title="Удалить" aria-label="Удалить канал">
+    const card = document.createElement("div");
+    card.className = "chan" + (ch.disabled ? " off" : "");
+    const role = ROLES[ch.role] || "не поддерживается";
+    const status = ch.msg
+      ? `<div class="chan-status ${ch.ok ? "ok" : "err"}">${esc(ch.msg)}</div>`
+      : ch.warning
+        ? `<div class="chan-status warn">${esc(ch.warning)}</div>`
+        : "";
+    card.innerHTML = `
+      <div class="chan-head">
+        <label class="switch" title="${ch.disabled ? "Включить канал" : "Выключить канал"}">
+          <input type="checkbox" data-act="toggle" ${ch.disabled ? "" : "checked"} aria-label="Канал включён">
+          <span class="track"></span>
+        </label>
+        <div class="chan-name">${esc(ch.name)}</div>
+        <button class="chan-ico del" data-act="del" title="Удалить" aria-label="Удалить канал">
           <svg viewBox="0 0 12 12"><path d="M2 2l8 8M10 2l-8 8"/></svg>
         </button>
+      </div>
+      <div class="chan-meta">${esc(ch.host)}:${ch.port} · ${esc(ch.kind)} · ${role}</div>
+      ${status}
+      <div class="chan-acts">
+        <button class="btn ghost small" data-act="test" ${ch.busy || ch.role === "unsupported" ? "disabled" : ""}>${ch.busy ? "Проверяю…" : "Проверить"}</button>
+        <span class="grow"></span>
+        <button class="chan-ico" data-act="up" title="Выше в приоритете" aria-label="Поднять канал" ${i === 0 ? "disabled" : ""}>
+          <svg viewBox="0 0 12 12"><path d="M2 8l4-4 4 4"/></svg>
+        </button>
+        <button class="chan-ico" data-act="down" title="Ниже в приоритете" aria-label="Опустить канал" ${i === channels.length - 1 ? "disabled" : ""}>
+          <svg viewBox="0 0 12 12"><path d="M2 4l4 4 4-4"/></svg>
+        </button>
       </div>`;
-    row.querySelectorAll("button[data-act]").forEach((b) =>
-      b.addEventListener("click", () => {
-        if (b.dataset.act === "del") {
-          channels.splice(i, 1);            // textarea only; the disk write stays in SaveLinks
-        } else {
-          const j = b.dataset.act === "up" ? i - 1 : i + 1;
+    card.querySelectorAll("[data-act]").forEach((el) =>
+      el.addEventListener(el.dataset.act === "toggle" ? "change" : "click", () => {
+        const act = el.dataset.act;
+        if (act === "toggle") {
+          ch.disabled = !el.checked;
+        } else if (act === "del") {
+          channels.splice(i, 1); // textarea only; the disk write stays in SaveLinks
+        } else if (act === "up" || act === "down") {
+          const j = act === "up" ? i - 1 : i + 1;
           [channels[i], channels[j]] = [channels[j], channels[i]];
+        } else if (act === "test") {
+          testChannel(i);
+          return;
         }
-        $("setLinks").value = channels.map((c) => c.link).join("\n");
-        renderChannels();
+        syncLinks();
+        parseLinks(); // roles depend on which channels are on, so re-derive them
       })
     );
-    list.appendChild(row);
+    list.appendChild(card);
   });
 }
 
-$("btnLinksParse").addEventListener("click", parseLinks);
-// Dry run: CheckLinks parses + validates on a temp file, nothing is written.
-$("btnLinksCheck").addEventListener("click", async () => {
-  const hint = $("linksHint"), btn = $("btnLinksCheck");
-  const blob = $("setLinks").value.trim();
-  if (!blob) {
-    hint.textContent = "нет ссылок";
-    return;
-  }
-  btn.disabled = true;
-  btn.textContent = "Проверяю…";
+// testChannel runs the per-channel probe (Go: CheckChannel) and shows the
+// verdict on the card itself — Android parity.
+async function testChannel(i) {
+  const ch = channels[i];
+  if (!ch || testingIndex !== -1) return;
+  testingIndex = i;
+  ch.busy = true;
+  ch.msg = "";
+  renderChannels();
   try {
-    const warnings = (await call("CheckLinks", blob)) || [];
-    const list = warnings.filter(Boolean);
-    hint.textContent = list.length ? list.join("; ") : "ссылки разбираются, ошибок нет";
+    const r = await call("CheckChannel", ch.link);
+    ch.ok = !!r.ok;
+    ch.msg = r.ok
+      ? `канал отвечает · ${r.ms} мс`
+      : `не работает (${r.stage}): ${r.err || "нет ответа"}`;
   } catch (e) {
-    hint.textContent = "⚠ " + (e.message || e);
+    ch.ok = false;
+    ch.msg = "не работает: " + (e.message || e);
   }
-  btn.disabled = false;
-  btn.textContent = "Проверить";
+  ch.busy = false;
+  testingIndex = -1;
+  renderChannels();
+}
+
+
+$("btnLinksParse").addEventListener("click", parseLinks);
+// Hand edits to the blob flow back into the list, so a manual paste is not lost
+// when the user then flips a switch.
+$("setLinks").addEventListener("change", parseLinks);
+
+// The list is the interface; the blob is a fallback for power users.
+$("btnShowRaw").addEventListener("click", () => {
+  const wrap = $("rawWrap");
+  wrap.hidden = !wrap.hidden;
+  $("btnShowRaw").classList.toggle("open", !wrap.hidden);
 });
+
+// Paste one link, press Добавить: validation is the same parser SaveLinks uses,
+// so a typo is reported here instead of silently dropping a channel on save.
+$("btnChanAdd").addEventListener("click", addChannel);
+$("chanInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") addChannel();
+});
+
+async function addChannel() {
+  const input = $("chanInput");
+  const link = input.value.trim();
+  if (!link) return;
+  try {
+    const parsed = await call("ParseChannels", link);
+    if (!parsed.length) throw new Error("пустая ссылка");
+    channels.push({ ...parsed[0], disabled: false });
+    input.value = "";
+    $("linksHint").textContent = "";
+    syncLinks();
+    renderChannels(); // no re-parse: the link is already validated
+  } catch (e) {
+    $("linksHint").textContent = "⚠ " + (e.message || e);
+    $("btnShowRaw").classList.add("open");
+  }
+}
 
 $("setAutostart").addEventListener("change", async (e) => {
   try {

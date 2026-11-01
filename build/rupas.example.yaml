@@ -1,0 +1,180 @@
+# Rupas example configuration (copy to config.yaml next to rupasd).
+# Unknown fields are rejected; see internal/config/config.go for the schema
+# and docs/SYSTEM_DESIGN.md §4.2-4.3, §5, §6 for the semantics.
+profile: isp-home-2025-10-25
+
+rules:
+  # Resolution order is fixed: cidr → sni → ports → default (§4.2).
+  - sni: www.youtube.com      # SNI-blackholed by the TSPU
+    action: desync
+  - sni: "*.googlevideo.com"
+    action: desync
+  - sni: discord.com
+    action: tunnel
+  - sni: updates.discord.com
+    action: tunnel
+  - sni: gateway.discord.gg
+    action: tunnel
+  - sni: discord.gg
+    action: tunnel
+  - sni: "*.discord.gg"
+    action: tunnel
+  - sni: discordapp.com
+    action: tunnel
+  - sni: "*.discordapp.com"
+    action: tunnel
+  - sni: discordapp.net
+    action: tunnel
+  - sni: "*.discordapp.net"
+    action: tunnel
+  - sni: discord.media         # voice handshake/media (c-xxx.discord.media)
+    action: tunnel
+  - sni: "*.discord.media"
+    action: tunnel
+  - sni: "*.discord.com"        # status.discord.com etc.
+    action: tunnel
+  - cidr: 149.154.160.0/20    # Telegram: IP-blackholed → tunnel (§3.3)
+    action: tunnel
+  - cidr: 91.108.0.0/16
+    action: tunnel
+  - cidr: 91.105.192.0/23     # Telegram media servers → tunnel
+    action: tunnel
+  - cidr: 185.76.151.0/24     # Telegram media servers → tunnel
+    action: tunnel
+  - cidr: 95.161.76.100/32
+    action: tunnel
+  # Country CIDR table (`geoip: <cc>`): auto-downloaded at startup into
+  # geoip.dir, refreshed every geoip.refresh_days; no manual asset work.
+  # Routes every RU-hosted destination (incl. CDNs on .net/.com domains)
+  # without hand-listing domains. Keep AFTER narrower CIDR rules — on a
+  # shared prefix the first rule wins.
+  - geoip: ru
+    action: direct
+  - ports: 50000-65535        # Discord voice UDP is dead → tunnel (XUDP)
+    action: tunnel
+  # QUIC: TSPU blackholes googlevideo with 420s residual censorship — force browsers to TCP (PRD §5)
+  - ports: 443
+    proto: udp
+    action: block
+  - action: direct            # default rule (at most one)
+
+# Country-table download/cache settings (optional — these are the defaults).
+# geoip:
+#   dir: build                # cache directory for geoip-<cc>.txt
+#   refresh_days: 30          # re-download when the cached list is older
+#   mirrors:                  # tried in order; {cc} = country code
+#     - https://www.ipdeny.com/ipblocks/data/countries/{cc}.zone
+#     - https://raw.githubusercontent.com/ipverse/{cc}/ip/aggregated.zone
+
+desync:
+  strategy: fake
+  fake_template: fake-chrome.bin
+  ttl: 13                     # calibrated by the prober (§7.2)
+  ttl_margin: 2
+  repeats: 6
+
+# ---------------------------------------------------------------------------
+# Tunnel plan (§6, wave 5): TCP streams (Telegram) ride `tcp`, UDP
+# pseudo-sessions (Discord voice) ride `udp`, and `fallback` is the backup
+# TCP path tried when the primary TCP dial fails. UDP falls back to XUDP
+# over the TCP endpoint after 3 failed STUN probes (stun.cloudflare.com).
+#
+# kinds:
+#   vless_tcp     — VLESS over TCP+TLS (uuid, sni, alpn, fingerprint; no flow
+#                   unless you set one — plain links have none)
+#   vless_xhttp   — VLESS over XHTTP (path, mode packet-up|stream-up|
+#                   stream-one, x_padding_bytes "min-max")
+#   vless_reality — VLESS+Reality (reality_public_key[, reality_short_id])
+#   hysteria2     — Hysteria2 over QUIC (password, alpn [h3])
+#   tmn           — TMN/1, Rupas' own transport (psk, conns, sni; TCP streams
+#                   only, no UDP — keep hysteria2 in `udp:` for voice/QUIC)
+#
+# BEHAVIOUR WHILE EMPTY (the default below): the tunnel branch is DISABLED
+# and every TUNNEL rule is escalated with an honest log line and a counter
+# visible in `rupasctl status` (tunnel mode: escalated):
+#   - sni rules       → action desync  (the DESYNC fallback)
+#   - cidr/port rules → action direct  (an IP-blackholed CIDR will not
+#                       pass, but flows are never silently black-holed at
+#                       a dead loopback port either)
+# Fill every field of each endpoint you use — partial endpoints fail
+# validation. A legacy single-endpoint `tunnel:` section (wave ≤4,
+# vless+reality) is still accepted and migrated automatically.
+#
+# While a live tunnel runs but its health marker fails 3×30 s, TG flows
+# are HELD (dropped with a counter), NOT escalated to direct — the TSPU
+# blackholes those CIDRs; recovery resumes the relay automatically.
+#
+# Example (three endpoints on one VPS):
+#
+# tunnels:
+#   tcp:
+#     kind: vless_tcp
+#     host: 203.0.113.10          # VPS host or IP
+#     port: 12341
+#     uuid: 0f4e1c2d-...          # VLESS user UUID
+#     sni: vps.example.net
+#     alpn: [h2, http/1.1]
+#     fingerprint: chrome         # uTLS client fingerprint
+#     # mux: on                   # sing-mux (one long-lived TLS connection).
+#                                 # Opt-in: needs a sing-box SERVER; xray
+#                                 # does not demux sing-mux (live-verified
+#                                 # wave 6 — every stream dies with EOF).
+#                                 # mux_padding: true adds anti-length
+#                                 # padding when the server supports it.
+#   udp:
+#     kind: hysteria2
+#     host: 203.0.113.10
+#     port: 53552                 # UDP
+#     password: "hy2-secret"
+#     sni: vps.example.net
+#     alpn: [h3]
+#     # NOTE (wave 6): when the TCP fallback below is absent or is
+#     # vless_xhttp, this hysteria2 endpoint AUTOMATICALLY doubles as the
+#     # TCP fallback carrier (hy2 carries TCP streams). Live-verified:
+#     # TG-DC TCP through hy2 answers in ~120-160 ms, and CIDR-rule
+#     # destinations dial the fallback FIRST (relaying them through
+#     # vless_tcp triggers a ~5-min TSPU quarantine of the primary).
+#   fallback:
+#     kind: vless_xhttp
+#     host: 203.0.113.10
+#     port: 4443
+#     uuid: 0f4e1c2d-...
+#     sni: vps.example.net
+#     path: /xhttp-path
+#     mode: packet-up
+#     x_padding_bytes: 100-1000
+#     # vless_xhttp is NOT part of the automatic dial chain anymore
+#     # (default chain: tcp → hysteria2-tcp). On TSPU networks the XHTTP
+#     # port is commonly blackholed outright (live finding F3: ClientHello
+#     # to :4443 dropped, i/o timeout on the VPS side) and a dead fallback
+#     # adds a full dial-timeout penalty to every dial. Set the flag below
+#     # to put it back in the chain explicitly:
+#     # (top level, next to `tunnels:`) xhttp_fallback_in_chain: true
+#
+# TMN/1 instead of vless_tcp (the GUI writes exactly this block for a
+# tmn:// link, and adds `sni` + host/32 to `exclusions:` on save — the client
+# dials the endpoint itself and must not be captured by the tunnel):
+#
+# tunnels:
+#   tcp:
+#     kind: tmn
+#     host: 203.0.113.10          # VPS host or IP
+#     port: 18443
+#     sni: vps.example.net        # cover site (the server's certificate)
+#     psk: "0000000000000000000000000000000000000000000000000000000000000000"
+#                                 # 32 bytes hex; generated on the SERVER as
+#                                 # `openssl rand -hex 32` — never invent it
+#     conns: 4                    # session pool 1..8 (4 reaches path speed)
+#   udp:
+#     kind: hysteria2             # TMN/1 carries TCP streams only
+#     host: 203.0.113.10
+#     port: 53552
+#     password: "hy2-secret"
+#     sni: vps.example.net
+#     alpn: [h3]
+# ---------------------------------------------------------------------------
+tunnels: {}
+
+exclusions:
+  cidrs: []                   # always-DIRECT destinations (the VPS itself
+  domains: []                 # belongs here in production)

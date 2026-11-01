@@ -232,6 +232,39 @@
   </div>
 </div>
 
+<div class="modal" id="editModal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="editTitle">
+    <div class="modal-title" id="editTitle">Канал</div>
+    <div class="field">
+      <label for="editName">Имя</label>
+      <input class="input" id="editName" spellcheck="false" autocomplete="off">
+    </div>
+    <div class="modal-grid">
+      <div class="field">
+        <label for="editHost">Сервер</label>
+        <input class="input" id="editHost" spellcheck="false" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="editPort">Порт</label>
+        <input class="input" id="editPort" inputmode="numeric" autocomplete="off">
+      </div>
+    </div>
+    <div class="field">
+      <label for="editSecret" id="editSecretLabel">Секрет</label>
+      <input class="input mono" id="editSecret" spellcheck="false" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="editSni">SNI</label>
+      <input class="input" id="editSni" spellcheck="false" autocomplete="off">
+    </div>
+    <div class="hint warn" id="editErr"></div>
+    <div class="modal-acts">
+      <button class="btn ghost" id="editCancel" type="button">Отмена</button>
+      <button class="btn" id="editSave" type="button">Сохранить</button>
+    </div>
+  </div>
+</div>
+
 <script type="module" src="/app.js"></script>
 </body>
 </html>

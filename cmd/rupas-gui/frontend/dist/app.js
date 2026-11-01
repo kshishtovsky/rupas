@@ -288,6 +288,9 @@ function renderChannels() {
           <span class="track"></span>
         </label>
         <div class="chan-name">${esc(ch.name)}</div>
+        <button class="chan-ico" data-act="edit" title="Изменить" aria-label="Изменить канал">
+          <svg viewBox="0 0 12 12"><path d="M8.4 1.6l2 2L4.6 9.4l-2.6.6.6-2.6z"/></svg>
+        </button>
         <button class="chan-ico del" data-act="del" title="Удалить" aria-label="Удалить канал">
           <svg viewBox="0 0 12 12"><path d="M2 2l8 8M10 2l-8 8"/></svg>
         </button>
@@ -316,6 +319,9 @@ function renderChannels() {
           [channels[i], channels[j]] = [channels[j], channels[i]];
         } else if (act === "test") {
           testChannel(i);
+          return;
+        } else if (act === "edit") {
+          openEdit(i);
           return;
         }
         syncLinks();
@@ -350,6 +356,70 @@ async function testChannel(i) {
   renderChannels();
 }
 
+
+// One dialog for every kind: the link is edited through its own URL parts, so
+// unknown params (pbk, fp, conns, profile…) survive untouched — no link builder.
+const SECRET_LABELS = { tmn: "PSK (64 hex)", hysteria2: "Пароль" };
+let editIndex = -1;
+
+function openEdit(i) {
+  const ch = channels[i];
+  if (!ch) return;
+  const u = new URL(ch.link);
+  editIndex = i;
+  $("editName").value = ch.name;
+  $("editHost").value = u.hostname;
+  $("editPort").value = u.port;
+  $("editSecretLabel").textContent = SECRET_LABELS[ch.kind] || "UUID";
+  try {
+    $("editSecret").value = decodeURIComponent(u.username); // URL.username is %-encoded
+  } catch {
+    $("editSecret").value = u.username;
+  }
+  $("editSni").value = u.searchParams.get("sni") || "";
+  $("editErr").textContent = "";
+  $("editModal").hidden = false;
+  $("editHost").focus();
+}
+
+function closeEdit() {
+  $("editModal").hidden = true;
+  editIndex = -1;
+}
+
+async function saveEdit() {
+  const ch = channels[editIndex];
+  if (!ch) return;
+  const u = new URL(ch.link);
+  u.username = $("editSecret").value.trim();
+  u.hostname = $("editHost").value.trim();
+  u.port = $("editPort").value.trim();
+  const sni = $("editSni").value.trim();
+  if (sni) u.searchParams.set("sni", sni);
+  else u.searchParams.delete("sni");
+  // Name stays a raw fragment: «#%D0%BC…» in the blob is unreadable.
+  const name = $("editName").value.trim();
+  const link = u.href.split("#")[0] + (name ? "#" + name : "");
+  try {
+    const parsed = await call("ParseChannels", link); // same validator as save
+    channels[editIndex] = { ...parsed[0], disabled: ch.disabled };
+  } catch (e) {
+    $("editErr").textContent = "⚠ " + (e.message || e); // dialog stays open
+    return;
+  }
+  closeEdit();
+  syncLinks();
+  renderChannels();
+}
+
+$("editCancel").addEventListener("click", closeEdit);
+$("editSave").addEventListener("click", saveEdit);
+$("editModal").addEventListener("click", (e) => {
+  if (e.target.id === "editModal") closeEdit();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("editModal").hidden) closeEdit();
+});
 
 $("btnLinksParse").addEventListener("click", parseLinks);
 // Hand edits to the blob flow back into the list, so a manual paste is not lost

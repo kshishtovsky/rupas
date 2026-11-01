@@ -156,6 +156,28 @@ html, body {
 .power-sub { margin-top: var(--space-xxs); font-size: 12px; color: var(--ink-soft); min-height: 16px; }
 .session { margin-top: var(--space-xs); font-size: 13px; color: var(--ink-soft); font-variant-numeric: tabular-nums; min-height: 18px; }
 
+/* ---------- Edit dialog ---------- */
+/* Colour comes from a token (theme.css header rule): ink at 45% over the page. */
+.modal {
+  position: fixed; inset: 0; z-index: 40;
+  display: flex; align-items: center; justify-content: center; padding: var(--space-m);
+  background: color-mix(in srgb, var(--ink) 45%, transparent);
+}
+.modal[hidden] { display: none; }
+.modal-card {
+  width: 100%; max-width: 340px;
+  display: flex; flex-direction: column; gap: var(--space-s);
+  padding: var(--space-m);
+  background: var(--paper-2); border: 1px solid var(--rule);
+  border-radius: var(--radius-panel); box-shadow: var(--shadow-lift);
+}
+.modal-title { font-size: 15px; font-weight: 600; color: var(--ink); }
+.modal-card .field { margin-bottom: 0; }
+.modal-card .input { height: 40px; font-size: 13px; }
+.modal-grid { display: grid; grid-template-columns: 1fr 84px; gap: var(--space-xs); }
+.modal-acts { display: flex; justify-content: flex-end; gap: var(--space-xs); margin-top: var(--space-xxs); }
+.modal-acts .btn { height: 40px; padding: 0 var(--space-m); }
+
 /* ---------- Channels (Settings) — one card per channel, phone parity ---------- */
 .chan-add { display: flex; gap: var(--space-xs); margin-bottom: var(--space-s); }
 .chan-add .input { flex: 1; min-width: 0; font-size: 13px; padding: 0 var(--space-s); }

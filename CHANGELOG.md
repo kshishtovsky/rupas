@@ -1,3 +1,9 @@
+## v0.12.0
+
+- chore(release): v0.12.0 (e5d67c0)
+- feat(gui): редактирование канала в диалоге — без перевставки ссылки (321fce0)
+- docs(changelog): v0.11.0 (ab5a25f)
+
 ## v0.11.0
 
 - chore(release): v0.11.0 (2f9698e)

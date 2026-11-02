@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -95,13 +96,6 @@ func main() {
 		},
 	})
 
-	// Snapshot stream: poller → Wails event → frontend (GUI_DESIGN §6.2),
-	// mirrored into the tray label.
-	ctrl.StartPoller(func(s guictrl.Snapshot) {
-		app.Event.Emit("rupas:snapshot", s)
-		updateTrayLabel(s)
-	})
-
 	win := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            "Rupas",
 		Width:            420,
@@ -111,6 +105,12 @@ func main() {
 		Frameless:        true,                                    // custom caption buttons (frontend header)
 		BackgroundColour: application.NewRGBA(247, 243, 236, 255), // paper #F7F3EC
 		URL:              "/",
+		// Камера нужна только для импорта конфига из QR (Settings →
+		// «Перенос настроек»). Без явного разрешения WebView2 молча отклоняет
+		// getUserMedia, и сканер выглядел бы сломанным.
+		Permissions: map[application.PermissionType]application.Permission{
+			application.PermissionCamera: application.PermissionAllow,
+		},
 	})
 
 	// Window background only shows until the webview paints its first frame, and
@@ -162,7 +162,28 @@ func main() {
 			app.Quit()
 		}),
 	))
-	tray.Run()
+
+	// Snapshot stream: poller → Wails event → frontend (GUI_DESIGN §6.2),
+	// mirrored into the tray label. Started once win and tray exist: the tray
+	// is live even while the window is hidden, the webview is not — sending a
+	// snapshot there only costs a JSON marshal through the bridge, so the last
+	// one is parked and replayed by the show hook below.
+	ctrl.StartPoller(func(s guictrl.Snapshot) {
+		updateTrayLabel(s)
+		if !win.IsVisible() {
+			hiddenSnap.Store(&s)
+			return
+		}
+		app.Event.Emit("rupas:snapshot", s)
+	})
+	// Common.WindowShow is not emitted on Windows (only Common.WindowClosing
+	// has an explicit emit, webview_window.go:1257); the Windows WM_SHOWWINDOW
+	// event is (webview_window_windows.go:1819), so that is the one hooked.
+	win.RegisterHook(events.Windows.WindowShow, func(*application.WindowEvent) {
+		if s := hiddenSnap.Swap(nil); s != nil {
+			app.Event.Emit("rupas:snapshot", *s)
+		}
+	})
 
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
@@ -205,22 +226,39 @@ func toggle(on bool) error {
 // liveCtrl is the controller for tray callbacks.
 var liveCtrl *guictrl.Controller
 
+// hiddenSnap is the newest snapshot while the window sits in the tray: the
+// poller skips the event there (nothing to paint) and stores it for the show
+// hook to replay.
+var hiddenSnap atomic.Pointer[guictrl.Snapshot]
+
+// lastTrayLabel is the label currently on the tray icon: SetLabel is a Win32
+// Shell_NotifyIcon(NIM_MODIFY) call and the string rarely changes.
+var lastTrayLabel string
+
+// trayLabel maps a snapshot to the tray caption (pure: testable without a tray).
+func trayLabel(s guictrl.Snapshot) string {
+	switch {
+	case !s.Online:
+		return "Rupas — демон не запущен"
+	case s.State == "ACTIVE":
+		return "Rupas — работает"
+	case s.State == "ACTIVE_TUNNEL_ONLY":
+		return "Rupas — работает (туннель)"
+	case s.State == "PROBING":
+		return "Rupas — пробинг…"
+	case s.State == "DEGRADED":
+		return "Rupas — сбой"
+	default:
+		return "Rupas — выключено"
+	}
+}
+
 func updateTrayLabel(s guictrl.Snapshot) {
 	if tray == nil {
 		return
 	}
-	switch {
-	case !s.Online:
-		tray.SetLabel("Rupas — демон не запущен")
-	case s.State == "ACTIVE":
-		tray.SetLabel("Rupas — работает")
-	case s.State == "ACTIVE_TUNNEL_ONLY":
-		tray.SetLabel("Rupas — работает (туннель)")
-	case s.State == "PROBING":
-		tray.SetLabel("Rupas — пробинг…")
-	case s.State == "DEGRADED":
-		tray.SetLabel("Rupas — сбой")
-	default:
-		tray.SetLabel("Rupas — выключено")
+	if l := trayLabel(s); l != lastTrayLabel {
+		lastTrayLabel = l
+		tray.SetLabel(l)
 	}
 }

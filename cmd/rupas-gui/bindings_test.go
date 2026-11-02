@@ -23,3 +23,25 @@ func TestFrontendBoundFQN(t *testing.T) {
 		t.Fatalf("app.js FQN does not match the bound service %q", want)
 	}
 }
+
+// TestTrayLabel pins the snapshot → tray caption mapping: the label is the
+// only status a user sees while the window is in the tray.
+func TestTrayLabel(t *testing.T) {
+	cases := []struct {
+		name string
+		snap guictrl.Snapshot
+		want string
+	}{
+		{"daemon down", guictrl.Snapshot{Online: false, State: "ACTIVE"}, "Rupas — демон не запущен"},
+		{"active", guictrl.Snapshot{Online: true, State: "ACTIVE"}, "Rupas — работает"},
+		{"tunnel only", guictrl.Snapshot{Online: true, State: "ACTIVE_TUNNEL_ONLY"}, "Rupas — работает (туннель)"},
+		{"probing", guictrl.Snapshot{Online: true, State: "PROBING"}, "Rupas — пробинг…"},
+		{"degraded", guictrl.Snapshot{Online: true, State: "DEGRADED"}, "Rupas — сбой"},
+		{"other", guictrl.Snapshot{Online: true, State: "OFF"}, "Rupas — выключено"},
+	}
+	for _, c := range cases {
+		if got := trayLabel(c.snap); got != c.want {
+			t.Errorf("%s: trayLabel = %q, want %q", c.name, got, c.want)
+		}
+	}
+}

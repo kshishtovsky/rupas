@@ -1,3 +1,9 @@
+## v0.16.0
+
+- chore(release): v0.16.0 (b7e3f13)
+- feat(tmn): форма трафика включена по умолчанию (9de9feb)
+- docs(changelog): v0.15.0 (98822d2)
+
 ## v0.15.0
 
 - chore(release): v0.15.0 (43609d9)

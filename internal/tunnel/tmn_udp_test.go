@@ -3,9 +3,15 @@ package tunnel
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
 	"net/netip"
 	"testing"
 	"time"
+
+	"github.com/kshishtovsky/rupas/internal/config"
 )
 
 // recv ждёт датаграмму с таймаутом: receive() блокирующий, а тест не должен
@@ -132,5 +138,55 @@ func TestTMNUDPClose(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("receive после close висит")
+	}
+}
+
+// Сквозной путь движка: датаграмма от приложения → tproxy-порт → сессия →
+// tmn-каретка → mux-поток → сервер и обратно. Проверяет не релей сам по себе, а
+// то, что tmn-каретка действительно выбрана UDP-путём и что ответ вернулся
+// клиенту с правильного источника.
+func TestTMNUDPThroughEngine(t *testing.T) {
+	s := newTMNServer(t)
+	l := tmnCarrier(t, s)
+
+	provider := newMapProvider()
+	tproxy := freePort(t)
+	ep := s.endpoint()
+	tun := NewTunnel(config.TunnelConfig{TCP: &ep}, tproxy, Options{
+		OriginalDstProvider: provider,
+		Logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}).(*tunnel)
+	// UDP-путь — та же tmn-каретка, что и TCP: ровно то, что строит Start.
+	// tr не подменяем: он подменил бы и UDP-цепочку фейком.
+	tun.udpPaths = []namedUDP{{name: "tmn", c: l}}
+	t.Cleanup(func() { tun.Stop() })
+	if err := tun.startCore(); err != nil {
+		t.Fatalf("startCore: %v", err)
+	}
+
+	c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	dst := netip.MustParseAddrPort("1.1.1.1:53")
+	provider.add(netip.MustParseAddrPort(c.LocalAddr().String()), dst)
+
+	if _, err := c.WriteToUDPAddrPort([]byte("engine-payload"), netip.MustParseAddrPort(fmt.Sprintf("127.0.0.1:%d", tproxy))); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	buf := make([]byte, 1024)
+	c.SetReadDeadline(time.Now().Add(5 * time.Second)) //nolint:errcheck
+	n, _, err := c.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("ответ через tmn-каретку не пришёл: %v", err)
+	}
+	// Сервер в тесте эхом возвращает кадр, поэтому payload совпадает.
+	if string(buf[:n]) != "engine-payload" {
+		t.Fatalf("ответ %q", buf[:n])
+	}
+	// Цель, в которую ушёл поток, — та, что дал NAT-провайдер.
+	if got := s.lastTarget(); got != dst.String() {
+		t.Fatalf("сервер принял поток на %q, ждали %q", got, dst.String())
 	}
 }

@@ -37,6 +37,9 @@ const (
 	// tmnUDPIdle closes a destination the app stopped using: the exit holds a
 	// real socket (and a conntrack entry) for every one of them.
 	tmnUDPIdle = 60 * time.Second
+	// tmnUDPDialTimeout bounds opening one destination stream (a cold pool
+	// dials a session, which is a full TLS handshake behind a cover request).
+	tmnUDPDialTimeout = 20 * time.Second
 	// tmnUDPReap is how often the reaper looks for idle destinations.
 	tmnUDPReap = 15 * time.Second
 	// tmnUDPQueue is the receive queue: datagrams from every destination land
@@ -66,7 +69,10 @@ func (p *tmnPath) udpAssociate(ctx context.Context) (packetRelay, error) {
 		in:   make(chan dgram, tmnUDPQueue),
 		dest: make(map[netip.AddrPort]*tmnDest),
 	}
-	r.ctx, r.cancel = context.WithCancel(ctx)
+	// ctx here is dial-scoped: the engine cancels it right after the call
+	// returns (tunnel/udp.go), so inheriting it would kill the association
+	// before the first datagram. The relay lives until close().
+	r.ctx, r.cancel = context.WithCancel(context.WithoutCancel(ctx))
 	go r.reap()
 	return r, nil
 }
@@ -139,8 +145,12 @@ func (r *tmnRelay) destFor(dst netip.AddrPort) (*tmnDest, error) {
 	}
 	r.mu.Unlock()
 
-	// Open outside the lock: a cold pool blocks here for seconds.
-	st, err := r.c.OpenUDP(r.ctx, dst.Addr().Unmap().String(), strconv.Itoa(int(dst.Port())))
+	// Open outside the lock: a cold pool blocks here for seconds, so the
+	// caller's send is not held by the mutex. The deadline is per stream: a
+	// dead endpoint must fail this destination, not the whole association.
+	openCtx, cancel := context.WithTimeout(r.ctx, tmnUDPDialTimeout)
+	st, err := r.c.OpenUDP(openCtx, dst.Addr().Unmap().String(), strconv.Itoa(int(dst.Port())))
+	cancel()
 	if err != nil {
 		return nil, fmt.Errorf("tmn: udp open: %w", err)
 	}
@@ -233,9 +243,18 @@ func (r *tmnRelay) reap() {
 
 // receive returns the next datagram; payload aliases buf.
 func (r *tmnRelay) receive(buf []byte) (netip.AddrPort, []byte, error) {
+	// A datagram may already sit in the queue when close() lands: delivering
+	// it after teardown would let a closed session look alive for one packet,
+	// so the closed flag wins over the queue.
 	for {
+		if r.closed.Load() {
+			return netip.AddrPort{}, nil, errTMNClosed
+		}
 		select {
 		case d := <-r.in:
+			if r.closed.Load() {
+				return netip.AddrPort{}, nil, errTMNClosed
+			}
 			n := copy(buf, d.data)
 			return d.src, buf[:n], nil
 		case <-r.ctx.Done():

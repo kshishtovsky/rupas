@@ -348,6 +348,9 @@ func (p *capturePipeline) startLocked(cfg *config.Config) error {
 		}
 		return fmt.Errorf("app: %w", err)
 	}
+	// The effective plan, not the raw `tunnels:` section: a legacy single
+	// `tunnel:` config leaves cfg.Tunnels nil and would silently lose UDP.
+	plan := cfg.TunnelPlan()
 	// Wave 7 CH diagnostics apply in every mode (off/escalated/live) —
 	// the whole point is seeing what the rules DO to each ClientHello;
 	// nil when disabled (silent hot path).
@@ -366,10 +369,10 @@ func (p *capturePipeline) startLocked(cfg *config.Config) error {
 		// endpoint carries UDP (hysteria2, or xUDP-capable TCP). A TMN-only
 		// plan passes UDP through instead: NAT→tproxy would black-hole it
 		// (Discord voice field report 2026-11-01).
-		UDPRelay: tun != nil && cfg.Tunnels != nil &&
-			(cfg.Tunnels.UDP != nil ||
-				(cfg.Tunnels.TCP != nil && cfg.Tunnels.TCP.SupportsUDP()) ||
-				(cfg.Tunnels.Fallback != nil && cfg.Tunnels.Fallback.SupportsUDP())),
+		UDPRelay: tun != nil &&
+			(plan.UDP != nil ||
+				(plan.TCP != nil && plan.TCP.SupportsUDP()) ||
+				(plan.Fallback != nil && plan.Fallback.SupportsUDP())),
 		CHLog: chLogf,
 	})
 	if err != nil {

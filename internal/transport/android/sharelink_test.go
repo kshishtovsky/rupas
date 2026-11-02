@@ -278,7 +278,9 @@ func TestParseTMNLink(t *testing.T) {
 	if ep.Kind != KindTMN || ep.Host != "203.0.113.10" || ep.Port != 18443 {
 		t.Fatalf("parsed %+v", ep)
 	}
-	if ep.PSK != psk || ep.SNI != "camo.example.org" || ep.Conns != 6 || !ep.Insecure || ep.Name != "tuman" {
+	// conns=6 в ссылке ужимается до потолка одного ендпоинта, а не отвергается:
+	// пул задаёт только ширину разветвления.
+	if ep.PSK != psk || ep.SNI != "camo.example.org" || ep.Conns != 2 || !ep.Insecure || ep.Name != "tuman" {
 		t.Fatalf("fields %+v", ep)
 	}
 	if !ep.NeedsNative() || ep.NeedsXHTTP() {
@@ -290,7 +292,7 @@ func TestParseTMNLink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("domain link rejected: %v", err)
 	}
-	if ep.SNI != "vps.example.net" || ep.Conns != 4 {
+	if ep.SNI != "vps.example.net" || ep.Conns != 2 {
 		t.Fatalf("defaults %+v", ep)
 	}
 
@@ -316,7 +318,7 @@ func TestParseTMNLink(t *testing.T) {
 		{"no psk", "tmn://@203.0.113.10:18443?sni=a.example", "missing psk"},
 		{"short psk", "tmn://00112233@203.0.113.10:18443?sni=a.example", "psk"},
 		{"bad fp", "tmn://" + psk + "@203.0.113.10:18443?sni=a.example&fp=curl", "fp"},
-		{"conns too big", "tmn://" + psk + "@203.0.113.10:18443?sni=a.example&conns=9", "conns"},
+		{"conns zero", "tmn://" + psk + "@203.0.113.10:18443?sni=a.example&conns=0", "conns"},
 		{"bad profile", "tmn://" + psk + "@203.0.113.10:18443?sni=a.example&profile=weird", "profile"},
 	}
 	for _, c := range bad {

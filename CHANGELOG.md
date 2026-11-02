@@ -1,3 +1,15 @@
+## v0.19.0
+
+- chore(release): v0.19.0 (1f93eac)
+- Merge branch 'master' of github.com:kshishtovsky/rupas (5b87336)
+- Merge branch 'fix/audit-throughput': окно терминатора, GUI и QR-перенос конфига (6731711)
+- feat(qr): экспорт и импорт всей конфигурации через QR (30836be)
+- fix(reload): сохранение без изменений больше не рвёт живой туннель (6c9c962)
+- fix(gui): лаги — подпись трея, поток снимков, опрос логов, двойной Status (a382a80)
+- perf(guictrl): DetailedLogs читает лог инкрементально, а не 512 КиБ каждые 2 с (03b8003)
+- fix(tunnel): приёмное окно терминатора масштабируется — 64 КиБ запирали upload (5dae8ec)
+- docs(changelog): v0.18.2 (60154bf)
+
 ## v0.18.2
 
 - chore(release): v0.18.2 (0764c1e)

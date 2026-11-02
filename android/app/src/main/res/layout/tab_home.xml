@@ -106,13 +106,14 @@
 
             <FrameLayout
                 android:layout_width="@dimen/power_button_tray"
-                android:layout_height="@dimen/power_button_tray">
+                android:layout_height="@dimen/power_button_tray"
+                android:background="@drawable/bg_power_outer_ring">
 
-                <View
+                <!-- кольцо отклика: дуга «подключаюсь» / контур «защищено» -->
+                <ru.rupas.android.PowerRingView
                     android:id="@+id/powerOuterRing"
                     android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:background="@drawable/bg_power_outer_ring" />
+                    android:layout_height="match_parent" />
 
                 <com.google.android.material.card.MaterialCardView
                     android:id="@+id/btnPower"

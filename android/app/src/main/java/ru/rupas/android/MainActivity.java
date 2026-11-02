@@ -11,7 +11,10 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.LayoutInflater;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.animation.DecelerateInterpolator;
+import android.view.animation.OvershootInterpolator;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.ImageView;
@@ -73,6 +76,7 @@ public class MainActivity extends AppCompatActivity {
 
     // Home Tab Elements
     private MaterialCardView btnPower;
+    private PowerRingView powerRing;
     private ImageView ivPowerIcon;
     private TextView tvPowerLabel;
     private View statusDot;
@@ -136,6 +140,11 @@ public class MainActivity extends AppCompatActivity {
     private long prevPollTimeMs = 0;
     private long sessionStartTimeMs = 0;
     private Boolean lastRenderedVpnState;
+    // Мгновенный отклик: статус из сервиса приходит через секунды, поэтому
+    // «подключаюсь» рисуем по факту нажатия, а не по опросу (таймаут — страховка).
+    private long connectRequestedAtMs;
+    private static final long CONNECT_OPTIMISM_MS = 15000;
+    private boolean lastRenderedBusy;
     private volatile boolean resumed;
     private volatile boolean logsVisible;
     private final AtomicBoolean logRenderPending = new AtomicBoolean();
@@ -256,6 +265,7 @@ public class MainActivity extends AppCompatActivity {
 
         // Home
         btnPower = findViewById(R.id.btnPower);
+        powerRing = findViewById(R.id.powerOuterRing);
         ivPowerIcon = findViewById(R.id.ivPowerIcon);
         tvPowerLabel = findViewById(R.id.tvPowerLabel);
         statusDot = findViewById(R.id.statusDot);
@@ -364,6 +374,24 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupHomeTab() {
         btnPower.setOnClickListener(v -> toggleVpn());
+        // Палец должен видеть отклик в тот же кадр: нажали — клавиша просела,
+        // отпустили — вернулась с лёгким перелётом.
+        btnPower.setOnTouchListener((v, e) -> {
+            switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    v.animate().scaleX(0.94f).scaleY(0.94f).setDuration(90)
+                            .setInterpolator(new DecelerateInterpolator()).start();
+                    break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(300)
+                            .setInterpolator(new OvershootInterpolator(1.4f)).start();
+                    break;
+                default:
+                    break;
+            }
+            return false; // клик обрабатывает OnClickListener
+        });
     }
 
     private void setupSettingsTab() {
@@ -512,6 +540,11 @@ public class MainActivity extends AppCompatActivity {
             }
         } catch (Throwable ignored) {
         }
+        // «Подключаюсь» показываем сразу по тапу: иначе между нажатием и
+        // статусом из сервиса проходит 1–3 с полной тишины.
+        connectRequestedAtMs = System.currentTimeMillis();
+        lastRenderedVpnState = null;
+        refreshUI();
         Intent prepare = VpnService.prepare(this);
         if (prepare != null) {
             startActivityForResult(prepare, VPN_REQUEST_CODE);
@@ -527,6 +560,9 @@ public class MainActivity extends AppCompatActivity {
             if (resultCode == RESULT_OK) {
                 startVpnService();
             } else {
+                connectRequestedAtMs = 0;
+                lastRenderedVpnState = null;
+                refreshUI();
                 Toast.makeText(this, R.string.vpn_permission_denied, Toast.LENGTH_SHORT).show();
             }
         }
@@ -545,8 +581,19 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         boolean active = vpnActive();
-        if (lastRenderedVpnState != null && lastRenderedVpnState == active) return;
+        if (active) {
+            connectRequestedAtMs = 0;
+        } else if (connectRequestedAtMs > 0
+                && System.currentTimeMillis() - connectRequestedAtMs > CONNECT_OPTIMISM_MS) {
+            connectRequestedAtMs = 0; // сервис так и не поднялся — возвращаем клавишу в покой
+        }
+        boolean busy = !active && connectRequestedAtMs > 0;
+        if (lastRenderedVpnState != null && lastRenderedVpnState == active
+                && lastRenderedBusy == busy) {
+            return;
+        }
         lastRenderedVpnState = active;
+        lastRenderedBusy = busy;
         prevPollTimeMs = 0;
 
         int accent = ContextCompat.getColor(this, R.color.accent);
@@ -557,8 +604,11 @@ public class MainActivity extends AppCompatActivity {
         int inkSoft = ContextCompat.getColor(this, R.color.ink_soft);
         int inkFaint = ContextCompat.getColor(this, R.color.ink_faint);
         int inkSecond = ContextCompat.getColor(this, R.color.ink_2);
+        int warn = ContextCompat.getColor(this, R.color.warn);
+        int warnSoft = ContextCompat.getColor(this, R.color.warn_soft);
 
         if (active) {
+            powerRing.setMode(PowerRingView.ACTIVE);
             btnPower.setStrokeColor(accent);
             btnPower.setCardBackgroundColor(ColorStateList.valueOf(surfaceActive));
             ivPowerIcon.setImageTintList(ColorStateList.valueOf(accent));
@@ -573,7 +623,20 @@ public class MainActivity extends AppCompatActivity {
                 sessionStartTimeMs = System.currentTimeMillis();
             }
             tvDuration.setVisibility(View.VISIBLE);
+        } else if (busy) {
+            powerRing.setMode(PowerRingView.BUSY);
+            btnPower.setStrokeColor(warn);
+            btnPower.setCardBackgroundColor(ColorStateList.valueOf(warnSoft));
+            ivPowerIcon.setImageTintList(ColorStateList.valueOf(warn));
+            tvPowerLabel.setText(R.string.status_connecting);
+            tvPowerLabel.setTextColor(warn);
+
+            statusDot.setBackgroundTintList(ColorStateList.valueOf(warn));
+            statusText.setText(R.string.status_connecting);
+            statusText.setTextColor(warn);
+            tvDuration.setVisibility(View.INVISIBLE);
         } else {
+            powerRing.setMode(PowerRingView.IDLE);
             btnPower.setStrokeColor(rule);
             btnPower.setCardBackgroundColor(ColorStateList.valueOf(surfaceIdle));
             ivPowerIcon.setImageTintList(ColorStateList.valueOf(inkSoft));

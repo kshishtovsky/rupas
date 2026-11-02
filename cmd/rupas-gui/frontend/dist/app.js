@@ -44,9 +44,31 @@ function fmtSession(sec) {
   return `${h}:${m}:${s}`;
 }
 
+// Статус идёт от демона секундами; нажатие рисуем сразу, снимок догоняет.
+let busyFrom = null;
+let busyTimer = null;
+function setBusy(on, caption) {
+  document.querySelector(".power-stage").classList.toggle("busy", on);
+  clearTimeout(busyTimer);
+  busyTimer = null;
+  if (on) {
+    $("powerCaption").textContent = caption;
+    busyTimer = setTimeout(() => setBusy(false), 8000); // демон молчит — снимаем дугу
+  } else {
+    busyFrom = null;
+  }
+}
+
 function render(s) {
   snap = s;
   const st = uiState(s);
+  // Пока ждём первое состояние после нажатия, снимок ещё «отключено»: дугу не гасим.
+  if (busyFrom !== null) {
+    if (st === busyFrom) return;
+    setBusy(false);
+  }
+  const stage = document.querySelector(".power-stage");
+  stage.className = "power-stage" + (st === "off" ? "" : " " + st);
   const disc = $("powerDisc");
   disc.className = "power-disc " + (st === "off" ? "" : st);
   $("powerCaption").textContent =
@@ -105,13 +127,15 @@ $("btnClose").addEventListener("click", () => { try { Window.Hide(); } catch (_)
 // ---------- power button ----------
 $("powerDisc").addEventListener("click", async () => {
   const st = uiState(snap);
+  busyFrom = st;
+  setBusy(true, st === "on" ? "Отключаюсь…" : "Подключаюсь…");
   try {
     if (st === "on") { await call("Off"); }
     else {
       await call("EnsureDaemon");
       await call("On");
     }
-  } catch (e) { alert("Ошибка: " + (e.message || e)); }
+  } catch (e) { setBusy(false); alert("Ошибка: " + (e.message || e)); }
   refreshSoon();
 });
 

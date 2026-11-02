@@ -130,10 +130,21 @@ html, body {
   display: flex; align-items: center; justify-content: center;
 }
 .power-ring {
+  position: relative;
   width: 184px; height: 184px; border-radius: var(--radius-circle);
   border: 1.5px solid var(--rule-strong);
   display: flex; align-items: center; justify-content: center;
+  transition: border-color .35s ease, box-shadow .35s ease;
 }
+/* Дуга отклика: стартует по нажатию, живёт до прихода состояния с демона. */
+.power-ring::after {
+  content: ""; position: absolute; inset: -2px; border-radius: 50%;
+  border: 2px solid transparent; border-top-color: var(--warn); border-right-color: var(--warn);
+  opacity: 0;
+}
+.power-stage.busy .power-ring::after { opacity: 1; animation: ring-spin .9s linear infinite; }
+.power-stage.on .power-ring { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+@keyframes ring-spin { to { transform: rotate(360deg); } }
 .power-disc {
   width: var(--power-button); height: var(--power-button);
   border-radius: var(--radius-circle);
@@ -142,9 +153,9 @@ html, body {
   box-shadow: var(--shadow-soft);
   cursor: pointer;
   display: flex; align-items: center; justify-content: center;
-  transition: background .25s, border-color .25s, box-shadow .25s, transform .1s;
+  transition: background .25s, border-color .25s, box-shadow .25s, transform .12s cubic-bezier(.4, 0, .2, 1);
 }
-.power-disc:active { transform: scale(.97); }
+.power-disc:active { transform: scale(.94); }
 .power-disc svg { width: 44px; height: 44px; stroke: var(--ink-2); }
 .power-disc.on { background: var(--accent); border-color: var(--accent-deep); }
 .power-disc.on svg { stroke: var(--accent-ink); }

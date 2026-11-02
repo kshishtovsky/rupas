@@ -1,3 +1,10 @@
+## v0.13.1
+
+- chore(release): v0.13.1 (e63b590)
+- Merge pull request #4 from kshishtovsky/feat/tmn-v020 (8818783)
+- docs(changelog): v0.13.0 (a6b39b5)
+- fix(tmn): ассоциация UDP живёт до close, а не до конца dial-контекста (8d998e8)
+
 ## v0.13.0
 
 - chore(release): v0.13.0 (1ec2402)

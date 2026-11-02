@@ -71,6 +71,11 @@ type Controller struct {
 	// listeners are notified on every snapshot change.
 	listeners map[int]func(Snapshot)
 	nextHook  int
+
+	// logTail is the incremental cache behind DetailedLogs: the «Подробно»
+	// panel polls it every 2 s, and re-reading 512 KiB + splitting 10 000
+	// lines each time was the panel's jank.
+	logTail logTail
 }
 
 // ErrDaemonDown is returned when the control pipe does not answer and the

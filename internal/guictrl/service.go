@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -93,12 +94,41 @@ func (c *Controller) ElevatedRestart() error {
 // ring never carries. Read in the GUI process, so it works even when the
 // daemon is wedged and cannot answer RPC: that is exactly the case the owner
 // is left guessing about otherwise.
-// shortcut: reads the whole file up to tailBytes on every call, fine for a
-// 10 MiB rotated log; switch to a tracked offset if the poll gets hot.
+//
+// The «Подробно» panel polls this every 2 s, so the read is incremental: only
+// the bytes appended since the last call are parsed (see logTail).
 func (c *Controller) DetailedLogs(limit int) ([]string, error) {
 	path := c.opts.LogPath
 	if path == "" {
 		path = DefaultLogPath()
+	}
+	return c.logTail.tail(path, limit)
+}
+
+// maxTailLines bounds the retained tail: 10 000 lines is what the panel ever
+// shows (and what the old 512 KiB window held).
+const maxTailLines = 10_000
+
+// maxTailBytes is how much of an already-big log the first call reads: the
+// verbose file reached 129 MiB in the field, and the panel shows one screen.
+const maxTailBytes = 512 << 10
+
+// logTail is an append-only cache of the daemon log's tail.
+type logTail struct {
+	mu    sync.Mutex
+	path  string
+	off   int64    // file offset already parsed into lines
+	lines []string // complete lines (≤ maxTailLines)
+	part  string   // read but not yet newline-terminated: shown, not committed
+}
+
+// tail returns the last limit lines of path, reading only what was appended
+// since the previous call.
+func (t *logTail) tail(path string, limit int) ([]string, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if path != t.path { // another log (daemon restarted with -log): start over
+		t.path, t.off, t.lines, t.part = path, 0, nil, ""
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -108,25 +138,61 @@ func (c *Controller) DetailedLogs(limit int) ([]string, error) {
 		return nil, err
 	}
 	defer f.Close()
-	const tailBytes = 512 << 10
 	st, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
-	if off := st.Size() - tailBytes; off > 0 {
-		if _, err := f.Seek(off, io.SeekStart); err != nil {
+	size := st.Size()
+	if size < t.off { // rotated or truncated: the cache describes a dead file
+		t.off, t.lines, t.part = 0, nil, ""
+	}
+	if size > t.off {
+		// A fresh cache on a big log starts at the tail, like the old code did:
+		// the daemon's verbose file reaches hundreds of MiB and the panel shows
+		// the last screenful anyway.
+		start, skipLine := t.off, false
+		if start == 0 && size > maxTailBytes {
+			start, skipLine = size-maxTailBytes, true
+		}
+		if _, err := f.Seek(start, io.SeekStart); err != nil {
 			return nil, err
 		}
+		b, err := io.ReadAll(io.LimitReader(f, size-start))
+		if err != nil {
+			return nil, err
+		}
+		t.off = start + int64(len(b))
+		chunk := string(b)
+		if skipLine { // started mid-line: drop the fragment
+			if i := strings.IndexByte(chunk, '\n'); i >= 0 {
+				chunk = chunk[i+1:]
+			} else {
+				chunk = ""
+			}
+		}
+		chunk = t.part + chunk
+		// The last element is a partial line while the daemon is mid-write:
+		// it must not be committed, or the next call would duplicate it.
+		if i := strings.LastIndexByte(chunk, '\n'); i >= 0 {
+			for _, l := range strings.Split(chunk[:i], "\n") {
+				t.lines = append(t.lines, strings.TrimSuffix(l, "\r"))
+			}
+			t.part = chunk[i+1:]
+		} else {
+			t.part = chunk
+		}
+		if n := len(t.lines); n > maxTailLines { // keep memory bounded
+			t.lines = append(t.lines[:0], t.lines[n-maxTailLines:]...)
+		}
 	}
-	b, err := io.ReadAll(f)
-	if err != nil {
-		return nil, err
+	out := t.lines
+	if t.part != "" {
+		out = append(out[:len(out):len(out)], t.part) // copy: caller must not see the cache
 	}
-	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
-	if limit > 0 && len(lines) > limit {
-		lines = lines[len(lines)-limit:]
+	if limit > 0 && len(out) > limit {
+		out = out[len(out)-limit:]
 	}
-	return lines, nil
+	return out, nil
 }
 
 // ParseChannels parses the multi-line links blob for the Settings priority

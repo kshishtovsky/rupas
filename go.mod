@@ -17,6 +17,8 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
+require github.com/quic-go/quic-go v0.64.1 // indirect
+
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/RyuaNerin/go-krypto v1.3.0 // indirect
@@ -84,7 +86,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/koron/go-ssdp v0.0.4 // indirect
 	github.com/kr/fs v0.1.0 // indirect
-	github.com/kshishtovsky/tuman v0.1.1
+	github.com/kshishtovsky/tuman v0.2.0
 	github.com/libdns/acmedns v0.5.0 // indirect
 	github.com/libdns/alidns v1.0.6 // indirect
 	github.com/libdns/cloudflare v0.2.2 // indirect

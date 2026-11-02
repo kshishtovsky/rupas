@@ -211,6 +211,9 @@ type tunnel struct {
 	// xudp fallback after HealthFailThreshold STUN failures).
 	tcpPaths []namedTCP
 	udpPaths []namedUDP
+	// tmnByEp shares one TMN/1 carrier between the TCP and the UDP path of
+	// the same endpoint (they are two views of one session pool).
+	tmnByEp map[string]*lazyTMN
 	// tmnPaths are the in-process TMN/1 carriers built by Start; Stop closes
 	// their session pools.
 	tmnPaths []*lazyTMN
@@ -320,6 +323,14 @@ func (t *tunnel) Start(ctx context.Context) error {
 			c:    socksPath{addr: t.sb.mainAddr()},
 		})
 	}
+	// TMN datagrams ride the exit as their own mux stream (FlagUDP): the same
+	// session pool as the TCP path, so nothing extra is dialed.
+	if plan.udp != nil && plan.udp.Kind == config.KindTMN {
+		t.udpPaths = append(t.udpPaths, namedUDP{
+			name: endpointName(plan.udp),
+			c:    t.tmnCarrier(plan.udp),
+		})
+	}
 	if ports.UDPFB != 0 {
 		t.udpPaths = append(t.udpPaths, namedUDP{
 			name: endpointName(plan.tcp) + "+xudp",
@@ -358,11 +369,27 @@ func (t *tunnel) carrierTCP(ep *config.Endpoint) namedTCP {
 		return namedTCP{name: name, c: socksPath{addr: addr}, paced: paced}
 	}
 	if ep.Kind == config.KindTMN {
-		l := &lazyTMN{ep: *ep, logger: t.logger}
-		t.tmnPaths = append(t.tmnPaths, l)
-		return namedTCP{name: name, c: l}
+		return namedTCP{name: name, c: t.tmnCarrier(ep)}
 	}
 	return namedTCP{name: name, c: &lazyXHTTP{ep: *ep, logger: t.logger}}
+}
+
+// tmnCarrier returns the TMN/1 carrier for an endpoint, creating it once. TCP
+// and UDP share it: the sessions are expensive (a TLS handshake and a cover
+// request each) and one pool carries both, so a stream for a datagram does not
+// cost a second set of connections to the same server.
+func (t *tunnel) tmnCarrier(ep *config.Endpoint) *lazyTMN {
+	name := endpointName(ep)
+	if l, ok := t.tmnByEp[name]; ok {
+		return l
+	}
+	l := &lazyTMN{ep: *ep, logger: t.logger}
+	if t.tmnByEp == nil {
+		t.tmnByEp = make(map[string]*lazyTMN, 2)
+	}
+	t.tmnByEp[name] = l
+	t.tmnPaths = append(t.tmnPaths, l)
+	return l
 }
 
 // endpointName renders a human-readable endpoint label.

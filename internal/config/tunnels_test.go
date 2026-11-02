@@ -418,7 +418,36 @@ func TestTMNEndpointDefaults(t *testing.T) {
 	if e.SingBoxKind() {
 		t.Error("tmn must not be carried by sing-box")
 	}
-	if e.SupportsUDP() {
-		t.Error("tmn must report SupportsUDP=false (the protocol has no UDP flows)")
+	if !e.SupportsUDP() {
+		t.Error("tmn must report SupportsUDP=true: tuman v0.2.0 carries datagrams (FlagUDP)")
+	}
+}
+
+// quic — носитель tmn, а не отдельный вид ендпоинта: на vless он означал бы
+// «я хочу UDP», а транспорт остался бы TCP, и оператор узнал бы об этом из
+// логов, а не из ошибки.
+func TestEndpointQUICOnlyTMN(t *testing.T) {
+	tmn := validEndpoint(KindTMN)
+	tmn.QUIC = true
+	if err := tmn.Validate(); err != nil {
+		t.Fatalf("tmn с quic отвергнут: %v", err)
+	}
+	for _, kind := range EndpointKinds() {
+		if kind == KindTMN {
+			continue
+		}
+		e := validEndpoint(kind)
+		e.QUIC = true
+		if err := e.Validate(); err == nil {
+			t.Fatalf("kind %s принял quic", kind)
+		}
+	}
+	// IsZero видит новые поля: иначе «пустой» ендпоинт с quic считался бы
+	// незаданным и молча терялся при мерже конфигов.
+	if (Endpoint{QUIC: true}).IsZero() {
+		t.Fatal("Endpoint{QUIC:true}.IsZero() == true")
+	}
+	if (Endpoint{Insecure: true}).IsZero() {
+		t.Fatal("Endpoint{Insecure:true}.IsZero() == true")
 	}
 }

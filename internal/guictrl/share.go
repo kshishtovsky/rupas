@@ -100,12 +100,15 @@ func endpointFor(ep android.Endpoint) (config.Endpoint, string) {
 	switch {
 	case ep.Kind == android.KindTMN:
 		return config.Endpoint{
-			Kind:  config.KindTMN,
-			Host:  ep.Host,
-			Port:  ep.Port,
-			SNI:   ep.SNI,
-			PSK:   ep.PSK,
-			Conns: ep.Conns,
+			Kind:        config.KindTMN,
+			Host:        ep.Host,
+			Port:        ep.Port,
+			SNI:         ep.SNI,
+			PSK:         ep.PSK,
+			Conns:       ep.Conns,
+			Fingerprint: orDefault(ep.Fingerprint, "chrome"),
+			QUIC:        ep.QUIC,
+			Insecure:    ep.Insecure,
 		}, "tcp"
 	case ep.Kind == android.KindHysteria2:
 		return config.Endpoint{

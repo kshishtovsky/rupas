@@ -314,6 +314,16 @@ func TMNDialer(ep Endpoint, logf func(string)) (func(ctx context.Context, dst ne
 	return newTMNCarrier(ep, nil, logf)
 }
 
+// tmnFP picks the ClientHello shape: a browser one by default, so a passive
+// classifier sees Chrome and not a Go TLS stack. AUTH v2 is on, which is what
+// makes uTLS possible at all (it exposes no TLS exporter).
+func tmnFP(fp string) string {
+	if fp == "" {
+		return "chrome"
+	}
+	return fp
+}
+
 // newTMNCarrier maps a parsed tmn endpoint onto the tuman client (TLS 1.3 +
 // ALPN h2 + mux streams, PSK auth). The returned client is created ONCE per
 // transport run: its pool keeps up to Conns TLS sessions, and a leaked one
@@ -334,12 +344,18 @@ func newTMNCarrier(ep Endpoint, dialer *net.Dialer, logf func(string)) (func(ctx
 		logf = func(string) {}
 	}
 	c, err := client.New(client.Config{
-		Servers:  []client.Endpoint{{Addr: net.JoinHostPort(ep.Host, strconv.Itoa(int(ep.Port))), SNI: ep.SNI}},
-		PSK:      key,
-		SNI:      ep.SNI,
-		Insecure: ep.Insecure,
-		Conns:    ep.Conns,
-		Profile:  "off",
+		Servers: []client.Endpoint{{
+			Addr: net.JoinHostPort(ep.Host, strconv.Itoa(int(ep.Port))),
+			SNI:  ep.SNI,
+			QUIC: ep.QUIC,
+		}},
+		PSK:         key,
+		SNI:         ep.SNI,
+		Insecure:    ep.Insecure,
+		Conns:       ep.Conns,
+		Profile:     "off",
+		AuthV2:      true, // MAC of the server key: a MITM CA cannot answer AUTH_OK
+		Fingerprint: tmnFP(ep.Fingerprint),
 		Dialer:   dialer, // the protecting dialer: without it the sockets loop into the TUN
 		Logger:   slog.New(logfHandler{fn: logf}),
 		// Телефон засыпает: Doze глушит радио, NAT забывает поток, и сессия

@@ -52,18 +52,32 @@ func newTMNPath(ep config.Endpoint, logger *slog.Logger) (*tmnPath, error) {
 		Servers: []client.Endpoint{{
 			Addr: net.JoinHostPort(ep.Host, strconv.Itoa(int(ep.Port))),
 			SNI:  ep.SNI,
+			QUIC: ep.QUIC,
 		}},
-		PSK:     key,
-		SNI:     ep.SNI,
-		Conns:   ep.Conns, // 0 → the library default (4)
-		Profile: "off",    // the shaper stays off by default
+		PSK:      key,
+		SNI:      ep.SNI,
+		Insecure: ep.Insecure,
+		Conns:    ep.Conns, // 0 → the library default (4)
+		Profile:  "off",    // the shaper stays off by default
 		// Cooldown 0 → the library default (30 s).
-		Logger: prefixLogger(logger, "tmn: "),
+		Logger:      prefixLogger(logger, "tmn: "),
+		AuthV2:      true, // MAC of the server key: a MITM CA cannot answer AUTH_OK
+		Fingerprint: tmnFingerprint(ep),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("tmn: %w", err)
 	}
 	return &tmnPath{c: c, dialTO: tmnDialTimeout}, nil
+}
+
+// tmnFingerprint picks the ClientHello shape. A browser fingerprint (the
+// default) needs AUTH v2 — uTLS does not expose the TLS exporter — and makes
+// the handshake indistinguishable from Chrome to a passive classifier.
+func tmnFingerprint(ep config.Endpoint) string {
+	if ep.Fingerprint != "" {
+		return ep.Fingerprint
+	}
+	return "chrome"
 }
 
 func (p *tmnPath) dial(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
@@ -120,6 +134,15 @@ func (l *lazyTMN) path() (*tmnPath, error) {
 		return p, nil
 	}
 	return nil, l.err
+}
+
+// udpAssociate makes lazyTMN a udpCarrier: datagrams over the same pool.
+func (l *lazyTMN) udpAssociate(ctx context.Context) (packetRelay, error) {
+	p, err := l.path()
+	if err != nil {
+		return nil, err
+	}
+	return p.udpAssociate(ctx)
 }
 
 func (l *lazyTMN) dial(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {

@@ -1,20 +1,23 @@
 // qr.go — «Поделиться конфигом» и импорт из QR. Уезжает ВЕСЬ конфиг: правила
 // маршрутизации, desync-параметры, каналы, исключения, geoip — то же, что
-// лежит в rupas.yaml. Формат намеренно тупой и версионированный:
+// лежит в rupas.yaml.
 //
-//	RUPAS1:<base64url без padding(gzip(yaml))>
+// На проводе — переносимый JSON, а не YAML: тот же payload обязан понимать
+// Android, у которого из коробки есть org.json, но нет YAML-парсера. Формат
+// файла на диске при этом не меняется, JSON живёт только внутри QR:
 //
-// Версия в префиксе нужна, чтобы будущий Android-клиент (или старый десктоп)
-// отказался от чужой раскладки вслух, а не импортировал мусор молча.
-// Раскладка QR целиком — забота GUI (`qrcode-generator` рисует, `jsQR` читает):
-// Go отдаёт только текст, поэтому провязка не зависит от камеры и от того,
-// есть ли в системе декодер.
+//	RUPAS1:<base64url без padding(gzip(json))>
+//
+// Версия в префиксе нужна, чтобы другая сборка отказалась от чужой раскладки
+// вслух, а не импортировала мусор молча. Раскладка QR целиком — забота GUI
+// (`qrcode-generator` рисует, `jsQR` читает): Go отдаёт только текст.
 package guictrl
 
 import (
 	"bytes"
 	"compress/gzip"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -38,60 +41,241 @@ const (
 type QRBundle struct {
 	Text    string `json:"text"`    // RUPAS1:… — и для QR, и для буфера обмена
 	Summary string `json:"summary"` // «17 правил · 1 канал · 4 исключения · 1.1 КБ»
-	Bytes   int    `json:"bytes"`   // размер yaml до сжатия
+	Bytes   int    `json:"bytes"`   // размер конфига до сжатия
 	TooBig  bool   `json:"tooBig"`  // в один QR не влезает: только текстом
+}
+
+// qrDoc — переносимый конфиг. Поля общие для десктопа и Android; android-only
+// (adblock, apps) десктоп терпит и не теряет: они возвращаются в QR как есть.
+type qrDoc struct {
+	V          int         `json:"v"`
+	Profile    string      `json:"profile,omitempty"`
+	Rules      []qrRule    `json:"rules,omitempty"`
+	Links      []string    `json:"links,omitempty"`
+	Desync     *qrDesync   `json:"desync,omitempty"`
+	Exclusions *qrExcl     `json:"exclusions,omitempty"`
+	Adblock    *qrAdblock  `json:"adblock,omitempty"`
+	Apps       []qrAppRule `json:"apps,omitempty"`
+}
+
+type qrRule struct {
+	App    string `json:"app,omitempty"`
+	CIDR   string `json:"cidr,omitempty"`
+	SNI    string `json:"sni,omitempty"`
+	Ports  string `json:"ports,omitempty"`
+	GeoIP  string `json:"geoip,omitempty"`
+	Proto  string `json:"proto,omitempty"`
+	Action string `json:"action"`
+}
+
+type qrDesync struct {
+	Strategy string `json:"strategy,omitempty"`
+	TTL      int    `json:"ttl,omitempty"`
+	Repeats  int    `json:"repeats,omitempty"`
+}
+
+type qrExcl struct {
+	CIDRs   []string `json:"cidrs,omitempty"`
+	Domains []string `json:"domains,omitempty"`
+}
+
+type qrAdblock struct {
+	Ads      bool `json:"ads"`
+	Trackers bool `json:"trackers"`
+}
+
+type qrAppRule struct {
+	Pkg    string `json:"pkg"`
+	Action string `json:"action"`
 }
 
 // ExportQR собирает payload из живого конфига. Файл, а не память демона:
 // GUI пишет конфиг сам (writeConfig), так что файл — единственный источник,
-// который видят и демон, и следующий запуск.
+// который видят и демон, и следующий запуск. Каналы берутся из links.json —
+// это тот же blob, что правит экран настроек, поэтому порядок перебора и
+// выключенные каналы (префикс '#') доезжают как есть.
 func (c *Controller) ExportQR() (QRBundle, error) {
 	path := c.configPath()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return QRBundle{}, fmt.Errorf("конфиг не прочитан: %w", err)
 	}
-	text, err := encodeQRPayload(data)
-	if err != nil {
-		return QRBundle{}, err
-	}
 	cfg, err := config.Unmarshal(data)
 	if err != nil {
 		return QRBundle{}, err // битый конфиг не отдаём наружу как «готовый»
 	}
+	doc := qrDoc{V: 1, Profile: cfg.Profile}
+	for _, r := range cfg.Rules {
+		doc.Rules = append(doc.Rules, qrRule{
+			App: r.App, CIDR: r.CIDR, SNI: r.SNI, Ports: r.Ports,
+			GeoIP: r.GeoIP, Proto: r.Proto, Action: strings.ToLower(r.Action.String()),
+		})
+	}
+	if blob, err := loadLinksFile(); err == nil && strings.TrimSpace(blob) != "" {
+		for _, line := range strings.Split(blob, "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				doc.Links = append(doc.Links, line)
+			}
+		}
+	}
+	doc.Desync = &qrDesync{Strategy: cfg.Desync.Strategy, TTL: cfg.Desync.TTL, Repeats: cfg.Desync.Repeats}
+	if len(cfg.Exclusions.CIDRs) > 0 || len(cfg.Exclusions.Domains) > 0 {
+		doc.Exclusions = &qrExcl{CIDRs: cfg.Exclusions.CIDRs, Domains: cfg.Exclusions.Domains}
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return QRBundle{}, err
+	}
+	text, err := encodeQRPayload(raw)
+	if err != nil {
+		return QRBundle{}, err
+	}
+	summary := qrSummary(cfg, &doc, len(raw))
+	// Каналы уезжают из links.json. Если файла нет (руками удалили, старая
+	// установка), честно предупреждаем: иначе человек отсканирует QR на
+	// телефоне и получит конфиг без единого канала.
+	if len(doc.Links) == 0 && cfg.Tunnels != nil {
+		summary += " · ⚠ каналы не уедут: нет links.json"
+	}
 	return QRBundle{
 		Text:    text,
-		Summary: qrSummary(cfg, len(data)),
-		Bytes:   len(data),
+		Summary: summary,
+		Bytes:   len(raw),
 		TooBig:  len(text) > qrMaxText,
 	}, nil
 }
 
-// ImportQR принимает payload, проверяет его как обычный конфиг и применяет тем
-// же путём, что «Сохранить»: валидация → .bak → атомарная замена → reload
-// демона → откат, если демон отказал. Возвращает сводку применённого.
+// ImportQR принимает payload (JSON от десктопа или Android, а также старый
+// YAML), проверяет его как обычный конфиг и применяет тем же путём, что
+// «Сохранить»: валидация → .bak → атомарная замена → reload демона → откат,
+// если демон отказал. Возвращает сводку применённого.
 func (c *Controller) ImportQR(text string) (string, error) {
-	data, err := decodeQRPayload(text)
+	raw, err := decodeQRPayload(text)
 	if err != nil {
 		return "", err
 	}
-	cfg, err := config.Unmarshal(data)
+	cfg, doc, linksBlob, err := c.applyQRPayload(raw)
 	if err != nil {
-		return "", fmt.Errorf("конфиг из QR не принят: %w", err)
+		return "", err
 	}
 	if err := c.writeConfig(*cfg); err != nil {
 		return "", err
 	}
-	return qrSummary(cfg, len(data)), nil
+	// links.json трогаем только после успешной записи конфига: иначе отказ
+	// демона оставил бы каналы в state, которых нет в rupas.yaml.
+	if linksBlob != "" {
+		if err := saveLinksFile(linksBlob); err != nil {
+			return "", fmt.Errorf("конфиг применён, но каналы не сохранились: %w", err)
+		}
+	}
+	return qrSummary(cfg, doc, len(raw)), nil
 }
 
-func encodeQRPayload(yaml []byte) (string, error) {
+// applyQRPayload превращает payload в конфиг. Текущий файл — основа: импорт с
+// телефона не должен стирать откалиброванный desync, geoip и всё, чего в
+// payload нет по определению (телефон не знает про fake_template).
+func (c *Controller) applyQRPayload(raw []byte) (*config.Config, *qrDoc, string, error) {
+	if !looksJSON(raw) {
+		cfg, err := config.Unmarshal(raw) // старый YAML-payload
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("конфиг из QR не принят: %w", err)
+		}
+		return cfg, nil, "", nil
+	}
+	var doc qrDoc
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, nil, "", fmt.Errorf("это не конфиг Rupas: %w", err)
+	}
+	if doc.V != 1 {
+		return nil, nil, "", fmt.Errorf("конфиг из QR версии %d — эта сборка понимает только 1", doc.V)
+	}
+	cur, err := loadCurrentConfig(c.configPath())
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if doc.Profile != "" {
+		cur.Profile = doc.Profile
+	}
+	if len(doc.Rules) > 0 {
+		cur.Rules = nil
+		for _, r := range doc.Rules {
+			// Android кладёт в конец массива правило-маркер {action:…} без
+			// матчера — это его «действие по умолчанию», а не правило.
+			if r.App == "" && r.CIDR == "" && r.SNI == "" && r.Ports == "" && r.GeoIP == "" && r.Proto == "" {
+				continue
+			}
+			act, err := config.ParseAction(r.Action)
+			if err != nil {
+				return nil, nil, "", err
+			}
+			cur.Rules = append(cur.Rules, config.Rule{
+				App: r.App, CIDR: r.CIDR, SNI: r.SNI, Ports: r.Ports,
+				GeoIP: r.GeoIP, Proto: r.Proto, Action: act,
+			})
+		}
+	}
+	if doc.Desync != nil {
+		if doc.Desync.Strategy != "" {
+			cur.Desync.Strategy = doc.Desync.Strategy
+		}
+		if doc.Desync.TTL > 0 {
+			cur.Desync.TTL = doc.Desync.TTL
+		}
+		if doc.Desync.Repeats > 0 {
+			cur.Desync.Repeats = doc.Desync.Repeats
+		}
+	}
+	if doc.Exclusions != nil {
+		cur.Exclusions = config.Exclusions{CIDRs: doc.Exclusions.CIDRs, Domains: doc.Exclusions.Domains}
+	}
+	// Пустой список каналов живые туннели не трогает: иначе «поделился»
+	// конфиг без каналов оставил бы устройство без интернета.
+	var blob string
+	if len(doc.Links) > 0 {
+		blob = strings.Join(doc.Links, "\n")
+		tcp, udp, fb, _, err := channelsToPlan(blob)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("каналы из QR: %w", err)
+		}
+		if tcp != nil || udp != nil || fb != nil {
+			cur.Tunnels = &config.TunnelConfig{TCP: tcp, UDP: udp, Fallback: fb}
+		}
+	}
+	return cur, &doc, blob, nil
+}
+
+func looksJSON(raw []byte) bool {
+	for _, b := range raw {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '{':
+			return true
+		}
+		return false
+	}
+	return false
+}
+func loadCurrentConfig(path string) (*config.Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		cfg := config.Default()
+		return cfg, nil
+	}
+	cfg, err := config.Unmarshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("текущий конфиг не читается, импорт отменён: %w", err)
+	}
+	return cfg, nil
+}
+
+func encodeQRPayload(raw []byte) (string, error) {
 	var buf bytes.Buffer
 	zw, err := gzip.NewWriterLevel(&buf, gzip.BestCompression)
 	if err != nil {
 		return "", err
 	}
-	if _, err := zw.Write(yaml); err != nil {
+	if _, err := zw.Write(raw); err != nil {
 		return "", err
 	}
 	if err := zw.Close(); err != nil {
@@ -140,17 +324,20 @@ func decodeQRPayload(text string) ([]byte, error) {
 }
 
 // qrSummary — одна строка для экрана: человек должен видеть, что именно он
-// сейчас отдаёт или забирает, не открывая YAML.
-func qrSummary(cfg *config.Config, yamlLen int) string {
+// сейчас отдаёт или забирает, не открывая конфиг.
+func qrSummary(cfg *config.Config, doc *qrDoc, rawLen int) string {
 	channels := 0
-	if cfg.Tunnels != nil {
+	if doc != nil {
+		channels = len(doc.Links)
+	}
+	if channels == 0 && cfg.Tunnels != nil {
 		for _, ep := range []*config.Endpoint{cfg.Tunnels.TCP, cfg.Tunnels.UDP, cfg.Tunnels.Fallback} {
 			if ep != nil {
 				channels++
 			}
 		}
 	}
-	if cfg.Tunnel.Address != "" {
+	if channels == 0 && cfg.Tunnel.Address != "" {
 		channels++
 	}
 	excl := len(cfg.Exclusions.CIDRs) + len(cfg.Exclusions.Domains)
@@ -159,10 +346,17 @@ func qrSummary(cfg *config.Config, yamlLen int) string {
 		fmt.Sprintf("%d канал(ов)", channels),
 		fmt.Sprintf("%d исключений", excl),
 	}
-	if cfg.GeoIP != nil {
+	if doc != nil {
+		if len(doc.Apps) > 0 {
+			parts = append(parts, fmt.Sprintf("%d приложений", len(doc.Apps)))
+		}
+		if doc.Adblock != nil && (doc.Adblock.Ads || doc.Adblock.Trackers) {
+			parts = append(parts, "adblock")
+		}
+	} else if cfg.GeoIP != nil {
 		parts = append(parts, "geoip")
 	}
 	parts = append(parts, fmt.Sprintf("desync %s t=%d", cfg.Desync.Strategy, cfg.Desync.TTL),
-		fmt.Sprintf("%.1f КБ", float64(yamlLen)/1024))
+		fmt.Sprintf("%.1f КБ", float64(rawLen)/1024))
 	return strings.Join(parts, " · ")
 }

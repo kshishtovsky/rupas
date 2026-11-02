@@ -122,6 +122,27 @@
     <string name="import_failed">Не удалось прочитать ссылку: %1$s</string>
     <string name="import_warning">Загружено с замечанием: %1$s</string>
     <string name="settings_saved">Настройки сохранены</string>
+
+    <!-- Обмен конфигом через QR -->
+    <string name="qr_section">Перенос настройки на другое устройство</string>
+    <string name="qr_section_hint">QR содержит каналы, правила маршрутизации, правила по приложениям и фильтр рекламы — всё, кроме файла geoip.</string>
+    <string name="btn_share_qr">Показать QR конфигурации</string>
+    <string name="btn_scan_qr">Импорт из QR</string>
+    <string name="qr_dialog_title">Конфигурация Rupas</string>
+    <string name="qr_dialog_scan_from_pc">Отсканируйте это со второго устройства</string>
+    <string name="qr_copy">Копировать текст</string>
+    <string name="qr_copied">Текст конфигурации в буфере</string>
+    <string name="qr_too_big">Конфиг больше одного QR — скопируйте текстом</string>
+    <string name="qr_export_failed">Не удалось собрать конфигурацию: %1$s</string>
+    <string name="qr_scan_prompt">Наведите камеру на QR конфигурации</string>
+    <string name="qr_import_title">Импорт конфигурации</string>
+    <string name="qr_import_hint">RUPAS1:… (или вставьте текст с другого устройства)</string>
+    <string name="qr_import_ok">Импортировать</string>
+    <string name="qr_import_scan">Сканировать QR</string>
+    <string name="qr_import_done">Применено: %1$s</string>
+    <string name="qr_import_failed">Импорт не удался: %1$s</string>
+    <string name="qr_import_restarted">VPN перезапущен с новыми настройками</string>
+    <string name="qr_no_camera">Камера недоступна — импортируйте вставкой текста</string>
     <string name="settings_bad_port">Порт должен быть от 1 до 65535</string>
     <string name="settings_incomplete">Укажите UUID и сервер либо очистите оба поля для режима без туннеля</string>
     <string name="settings_save_failed">Не удалось сохранить конфигурацию</string>

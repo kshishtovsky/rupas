@@ -71,3 +71,9 @@ dependencies {
     // Версия — та, что уже приходит транзитивно из material 1.12.0, поэтому сборка офлайн.
     implementation 'androidx.recyclerview:recyclerview:1.1.0'
 }
+
+// QR: обмен конфигом между устройствами (генерация + сканирование).
+dependencies {
+    implementation 'com.google.zxing:core:3.5.3'
+    implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
+}

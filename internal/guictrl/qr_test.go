@@ -50,6 +50,10 @@ exclusions:
 func qrController(t *testing.T, yaml string) *Controller {
 	t.Helper()
 	dir := t.TempDir()
+	// links.json и onboarded.json живут в общем state-каталоге, а не рядом с
+	// конфигом: без подмены LocalAppData тест перезаписал бы каналы живой
+	// установки (так и случилось один раз — links.json уехал в temp).
+	t.Setenv("LocalAppData", dir)
 	path := filepath.Join(dir, "configs", "rupas.yaml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
@@ -64,6 +68,11 @@ func qrController(t *testing.T, yaml string) *Controller {
 
 func TestQRRoundTripKeepsWholeConfig(t *testing.T) {
 	c := qrController(t, qrTestYAML)
+	// links.json в реальной установке есть всегда (его пишет «Сохранить»);
+	// каналы уезжают именно оттуда — без него QR остался бы без туннеля.
+	if err := saveLinksFile("tmn://00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff@203.0.113.10:18443?sni=example.com&conns=2#tmn"); err != nil {
+		t.Fatalf("links: %v", err)
+	}
 	b, err := c.ExportQR()
 	if err != nil {
 		t.Fatalf("ExportQR: %v", err)

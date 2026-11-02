@@ -1,3 +1,9 @@
+## v0.16.1
+
+- chore(release): v0.16.1 (e7e7233)
+- fix(tmn): tuman v0.3.1 — шейпер больше не тормозит пул и не рвёт потоки (0d4edfc)
+- docs(changelog): v0.16.0 (ee6f26b)
+
 ## v0.16.0
 
 - chore(release): v0.16.0 (b7e3f13)

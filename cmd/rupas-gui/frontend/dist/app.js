@@ -53,7 +53,7 @@ function setBusy(on, caption) {
   busyTimer = null;
   if (on) {
     $("powerCaption").textContent = caption;
-    busyTimer = setTimeout(() => setBusy(false), 8000); // демон молчит — снимаем дугу
+    busyTimer = setTimeout(() => { setBusy(false); render(snap); }, 8000); // демон молчит — снимаем дугу и возвращаем подпись
   } else {
     busyFrom = null;
   }

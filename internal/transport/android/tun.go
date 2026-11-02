@@ -15,6 +15,7 @@ import (
 	"github.com/sagernet/sing/common/buf"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+
 )
 
 // run assembles the TUN device (from the Java-owned file descriptor) and
@@ -354,18 +355,7 @@ func (h *flowHandler) relayUDPTunnel(ctx context.Context, conn N.PacketConn, dst
 	defer h.engine.panicGuard("relayUDPTunnel")
 	e := h.engine
 	e.counters.TunnelDial()
-	if !e.relay.Available() {
-		st, detail := e.TunnelInfo()
-		e.logf("udp %s: tunnel unavailable (%s: %s)", dst, st, detail)
-		e.counters.TunnelEscalate()
-		if !e.fallbackAllowed() {
-			e.counters.Drop()
-			closeOnce()
-			return true
-		}
-		return false
-	}
-	up, err := e.relay.DialUDP(ctx)
+	up, err := e.openUDP(ctx)
 	if err != nil {
 		e.logf("udp %s: tunnel associate failed: %v", dst, err)
 		e.counters.TunnelEscalate()

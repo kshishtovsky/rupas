@@ -61,24 +61,40 @@ type dgram struct {
 	data []byte
 }
 
+// UDPRelay is the exported face of an association: the Android engine keeps
+// its own tmn pool (one carrier per endpoint) and cannot reach packetRelay's
+// unexported methods.
+type UDPRelay struct{ r packetRelay }
+
+func (u *UDPRelay) Send(dst netip.AddrPort, payload []byte) error { return u.r.send(dst, payload) }
+func (u *UDPRelay) Receive(buf []byte) (netip.AddrPort, []byte, error) {
+	return u.r.receive(buf)
+}
+func (u *UDPRelay) Close() { u.r.close() }
+
+// NewUDPRelay opens a tmn UDP association over an existing client pool.
+func NewUDPRelay(ctx context.Context, c TMNUDPClient) (*UDPRelay, error) {
+	r := &tmnRelay{c: c, in: make(chan dgram, tmnUDPQueue), dest: make(map[netip.AddrPort]*tmnDest)}
+	// ctx here is dial-scoped: the engine cancels it right after the call
+	// returns, so inheriting it would kill the association before the first
+	// datagram. The relay lives until close().
+	r.ctx, r.cancel = context.WithCancel(context.WithoutCancel(ctx))
+	go r.reap()
+	return &UDPRelay{r: r}, nil
+}
+
 // udpAssociate opens one association (one relay object). Destinations are
 // created lazily on the first send.
 func (p *tmnPath) udpAssociate(ctx context.Context) (packetRelay, error) {
-	r := &tmnRelay{
-		c:    p.c,
-		in:   make(chan dgram, tmnUDPQueue),
-		dest: make(map[netip.AddrPort]*tmnDest),
+	u, err := NewUDPRelay(ctx, p.c)
+	if err != nil {
+		return nil, err
 	}
-	// ctx here is dial-scoped: the engine cancels it right after the call
-	// returns (tunnel/udp.go), so inheriting it would kill the association
-	// before the first datagram. The relay lives until close().
-	r.ctx, r.cancel = context.WithCancel(context.WithoutCancel(ctx))
-	go r.reap()
-	return r, nil
+	return u.r, nil
 }
 
 type tmnRelay struct {
-	c      tmUDPClient
+	c      TMNUDPClient
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -90,8 +106,8 @@ type tmnRelay struct {
 	wg sync.WaitGroup
 }
 
-// tmUDPClient is the slice of *client.Client the relay needs; a test seam.
-type tmUDPClient interface {
+// TMNUDPClient is the slice of *client.Client the relay needs; a test seam.
+type TMNUDPClient interface {
 	OpenUDP(ctx context.Context, host, port string) (*mux.Stream, error)
 }
 

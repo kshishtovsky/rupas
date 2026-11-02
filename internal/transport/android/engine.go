@@ -12,9 +12,18 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kshishtovsky/tuman/mux"
+
 	"github.com/kshishtovsky/rupas/internal/config"
-	"github.com/kshishtovsky/tuman/client"
 )
+
+// tmnClient is the slice of *client.Client the engine needs: the UDP path
+// (openUDP) and shutdown. A seam — the association itself lives in
+// internal/tunnel and is covered by its own tests.
+type tmnClient interface {
+	OpenUDP(ctx context.Context, host, port string) (*mux.Stream, error)
+	Close() error
+}
 
 // Engine owns one TUN-backed transport session. It is created per Start and
 // parked under the mobile/ package's lifecycle guard. Start is non-blocking:
@@ -49,7 +58,7 @@ type Engine struct {
 	carriers []tcpCarrier
 	// tmn: the per-run TMN/1 session pools behind the tmn carriers. Their
 	// lifecycle is the transport run's: closeTMN on stop/restart.
-	tmn []*client.Client
+	tmn []tmnClient
 	// health: per-carrier failure cooldowns, same length/order as carriers
 	// (engine_chain.go carrierHealth).
 	health []carrierHealth

@@ -4,6 +4,7 @@ import { ByName as callRaw } from "./vendor/runtime/calls.js";
 import { On } from "./vendor/runtime/events.js";
 import Window from "./vendor/runtime/window.js";
 import "./vendor/runtime/drag.js"; // side-effect: installs --wails-draggable handlers
+import { initQR } from "./qr.js";
 
 const $ = (id) => document.getElementById(id);
 const FQN = "github.com/kshishtovsky/rupas/internal/guictrl.Controller";
@@ -83,19 +84,25 @@ function render(s) {
   // telemetry cards (Android W3 home parity)
   $("cardDown").textContent = s.online ? fmtRate(s.rxRate || 0) : "—";
   $("cardUp").textContent = s.online ? fmtRate(s.txRate || 0) : "—";
-  $("cardGateway").innerHTML = !s.online
-    ? "—"
-    : s.gateway
-      ? s.gateway
-      : '<span class="chip">напрямую</span>';
+  // Chips are updated in place: innerHTML every second dropped the card's
+  // nodes and re-laid it out.
+  if (!s.online) $("cardGateway").textContent = "—";
+  else if (s.gateway) $("cardGateway").textContent = s.gateway;
+  else setChip($("cardGateway"), "напрямую", "");
   const flows = s.tcpFlows || 0;
   $("cardFlows").textContent = !s.online ? "—" : `${flows} TCP`;
-  $("cardHealth").innerHTML = !s.online
-    ? "—"
-    : s.healthFails > 0
-      ? `<span class="chip warn">Сбоев: ${s.healthFails}</span>`
-      : '<span class="chip accent">Потерь нет</span>';
+  if (!s.online) $("cardHealth").textContent = "—";
+  else if (s.healthFails > 0) setChip($("cardHealth"), `Сбоев: ${s.healthFails}`, "warn");
+  else setChip($("cardHealth"), "Потерь нет", "accent");
   renderAlert(s);
+}
+
+// setChip writes a chip into a card, reusing the span if it is already there.
+function setChip(box, text, cls) {
+  let chip = box.firstElementChild;
+  if (!chip) { box.textContent = ""; chip = document.createElement("span"); box.appendChild(chip); }
+  chip.className = cls ? "chip " + cls : "chip";
+  chip.textContent = text;
 }
 
 // renderAlert says WHY traffic is not flowing. A chip reading «Сбой» left the
@@ -145,8 +152,11 @@ async function refreshSoon() { setTimeout(() => call("Status").then(render), 400
 function showPage(name) {
   document.querySelectorAll(".nav-item").forEach((x) => x.classList.toggle("active", x.dataset.page === name));
   document.querySelectorAll(".page").forEach((x) => x.classList.toggle("active", x.id === "page-" + name));
+  // Before the branch: any transition kills the previous poller, so re-entering
+  // «Логи» (or clicking «Логи» while on it) cannot stack intervals.
+  clearInterval(logsTimer);
+  logsTimer = null;
   if (name === "logs") { loadLogs(); logsTimer = setInterval(loadLogs, 2000); }
-  else { clearInterval(logsTimer); logsTimer = null; }
   if (name === "settings") { loadSettings(); rtEnter(); }   // the settings entry shows the rule summary
   if (name === "routing") rtEnter();
 }
@@ -154,19 +164,29 @@ document.querySelectorAll(".nav-item").forEach((b) => b.addEventListener("click"
 let logsTimer = null;
 // detail: show the daemon's verbose log file instead of the lifecycle ring.
 let logsDetail = false;
+// logsSig is what the log box currently shows: the log is append-only, so
+// length + last line is enough to know there is nothing new to paint.
+let logsSig = "";
 
 // ---------- logs ----------
 async function loadLogs() {
   try {
     const lines = logsDetail ? await call("DetailedLogs", 1500) : await call("Logs");
     const box = $("logBox");
+    const tail = (lines || []).slice(-800);
+    const sig = (lines ? lines.length : 0) + "|" + (tail[tail.length - 1] || "");
+    // Autoscroll only for a reader who is already at the bottom: yanking the
+    // box while someone scrolls back makes the log unreadable.
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+    if (sig === logsSig) return; // nothing new — leave the DOM alone
+    logsSig = sig;
     box.innerHTML = "";
     if (!lines || !lines.length) {
       box.innerHTML = logsDetail
         ? '<div class="log-empty">Подробный лог пуст: демон ещё не писал файл.</div>'
         : '<div class="log-empty">Пусто. Включите Rupas.</div>';
     } else {
-      for (const l of lines.slice(-800)) {
+      for (const l of tail) {
         const d = document.createElement("div");
         d.className = "log-line";
         d.textContent = l;
@@ -178,10 +198,11 @@ async function loadLogs() {
         if (l.includes("verdict=")) d.classList.add("hl");
         box.appendChild(d);
       }
-      box.scrollTop = box.scrollHeight;
+      if (atBottom) box.scrollTop = box.scrollHeight;
     }
     $("chipLogsCount").textContent = lines ? lines.length : 0;
   } catch (e) {
+    logsSig = ""; // keep the "unavailable" note until a fresh read arrives
     $("logBox").innerHTML = '<div class="log-empty">Демон недоступен</div>';
   }
 }
@@ -189,6 +210,7 @@ $("btnLogsDetail").addEventListener("click", () => {
   logsDetail = !logsDetail;
   $("btnLogsDetail").classList.toggle("active", logsDetail);
   $("btnLogsDetail").textContent = logsDetail ? "События" : "Подробно";
+  logsSig = ""; // other source — the box must be rebuilt
   loadLogs();
 });
 $("btnLogsRefresh").addEventListener("click", loadLogs);
@@ -252,6 +274,13 @@ const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": 
 function syncLinks() {
   $("setLinks").value = channels.map((c) => (c.disabled ? "#" : "") + c.link).join("\n");
 }
+
+// Импорт конфига заменяет его целиком: сбрасываем гейт, иначе на экране
+// останутся каналы прошлой конфигурации (loadSettings пишет их только раз).
+window.__rupasReloadSettings = async () => {
+  linksInitialized = false;
+  await loadSettings();
+};
 
 async function loadSettings() {
   try {
@@ -2014,11 +2043,18 @@ function rtOnDragEnd() {
     $("mainApp").style.display = "flex";
     render({ online: false, state: "" });
   }
-  // live snapshot events from Go
+  // live snapshot events from Go (1 Hz while the window is visible)
+  let lastEventAt = 0;
   try {
-    On("rupas:snapshot", (ev) => render(ev.data));
+    On("rupas:snapshot", (ev) => { lastEventAt = Date.now(); render(ev.data); });
   } catch (_) { /* polling fallback below */ }
+  // The stream is authoritative; the RPC poll only covers a silent stream
+  // (hidden window, broken bridge): a Status answer arrives ~2 s later than a
+  // fresh event and would paint older numbers over it.
   setInterval(async () => {
+    if (document.hidden) return;                    // in the tray: nothing to paint
+    if (Date.now() - lastEventAt < 5000) return;    // events alive — RPC not needed
     try { render(await call("Status")); } catch (_) {}
   }, 2000);
+  initQR();
 })();

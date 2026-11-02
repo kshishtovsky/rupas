@@ -185,6 +185,17 @@
           </div>
         </div>
         <div class="section">
+          <div class="section-title">Перенос настроек</div>
+          <div class="row">
+            <div><div class="lbl">Поделиться конфигом</div><div class="sub">QR со всей маршрутизацией, каналами и исключениями</div></div>
+            <button class="btn ghost small" id="btnQrExport" type="button">QR-код</button>
+          </div>
+          <div class="row">
+            <div><div class="lbl">Импорт из QR</div><div class="sub">Сканировать камерой или вставить текст</div></div>
+            <button class="btn ghost small" id="btnQrImport" type="button">Сканировать</button>
+          </div>
+        </div>
+        <div class="section">
           <div class="section-title">Обход блокировок (DPI)</div>
           <div class="row">
             <div><div class="lbl">DPI-обход (фейки)</div><div class="sub">Локальный desync без сервера</div></div>
@@ -269,6 +280,39 @@
   </div>
 </div>
 
+<div class="modal" id="qrModal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="qrTitle">
+    <div class="modal-title" id="qrTitle">Конфиг в QR</div>
+    <div class="qr-box" id="qrBox"></div>
+    <div class="hint" id="qrSummary"></div>
+    <div class="hint warn">В QR лежат ключи каналов: показывай его только тому, кому доверяешь ключ.</div>
+    <div class="hint warn" id="qrTooBig" hidden></div>
+    <div class="modal-acts">
+      <button class="btn ghost" id="qrCopy" type="button">Скопировать</button>
+      <button class="btn" id="qrClose" type="button">Готово</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="scanModal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="scanTitle">
+    <div class="modal-title" id="scanTitle">Сканировать QR</div>
+    <div class="qr-video-wrap" id="scanWrap"><video id="scanVideo" playsinline muted></video></div>
+    <div class="hint" id="scanHint">Наведи камеру на QR — импорт начнётся сам.</div>
+    <div class="field">
+      <label for="scanText">Камеры нет? Вставь текст из QR</label>
+      <textarea class="textarea mono" id="scanText" rows="3" wrap="off" spellcheck="false" placeholder="RUPAS1:…"></textarea>
+    </div>
+    <div class="hint warn" id="scanErr"></div>
+    <div class="modal-acts">
+      <button class="btn ghost" id="scanCancel" type="button">Отмена</button>
+      <button class="btn" id="scanApply" type="button">Импортировать</button>
+    </div>
+  </div>
+</div>
+
+<script src="/vendor/qrcode/qrcode.js"></script>
+<script src="/vendor/jsqr/jsQR.js"></script>
 <script type="module" src="/app.js"></script>
 </body>
 </html>

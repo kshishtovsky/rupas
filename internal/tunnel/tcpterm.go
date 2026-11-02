@@ -169,7 +169,12 @@ type TermPkt struct {
 	Flags            byte // tcpFlagSYN/ACK/PSH/FIN/RST
 	Window           uint16
 	// WScale is the client's window-scale shift from the SYN (RFC 7323).
-	WScale          uint8
+	WScale uint8
+	// HasWS reports that the SYN CARRIED the window-scale option: a shift of
+	// 0 is a legal offer, so the value alone cannot tell "offered 0" from
+	// "did not offer" (RFC 7323 §2.2 — a client that did not offer it must
+	// not scale, and neither may we towards it).
+	HasWS           bool
 	Payload         []byte
 	IfIdx, SubIfIdx uint32
 }
@@ -388,26 +393,39 @@ const (
 	// forged packets ride the inbound NIC path; keep them comfortably
 	// under a 1500-byte MTU.
 	termMSS = 1240
-	// termWindow is the INITIAL window advertised in the SYN-ACK; every
+	// recvWSShift is the window-scale shift WE advertise in the SYN-ACK
+	// (RFC 7323): it scales our OWN receive window, not the client's.
+	recvWSShift = 5 // ×32
+	// recvBufCap is the upload receive buffer in bytes: each ACK advertises
+	// its free part (relay-queue bytes + reorder-buffer bytes), scaled by
+	// recvWSShift. 512 KiB / 30 ms = 136 Mbit/s per flow, while the old
+	// 64 KiB buffer capped upload at 64 KiB / RTT — 21 Mbit/s at 25 ms,
+	// exactly the ceiling download had before the client-side WS fix.
+	// Live upload finding 2026-10-25: while the window was a CONSTANT
+	// 0xFFFF the client kept a full 64KB in flight regardless of the
+	// carrier drain rate; the relay queue hit its slot cap, the deferred
+	// head turned every already-in-flight successor into an out-of-order
+	// segment, and the reorder buffer overflowed (575+ evictions per flow —
+	// self-inflicted loss, recovered only by retransmits). The advertised
+	// window is therefore always derived from the REAL free space
+	// (win=0 → the client's persist timer; our window-update ACK on
+	// drain) and the queue never overfills: zero evictions, zero deferrals.
+	recvBufCap = 512 << 10
+	// termWindow is the window advertised in the SYN-ACK, in FIELDS
+	// (recvBufCap >> recvWSShift = 0x4000: 512 KiB once scaled); every
 	// later segment advertises the real free space (recvWindowLocked).
-	termWindow = 0xFFFF
-	// recvBufCap is the upload receive buffer in bytes: each ACK
-	// advertises its free part (relay-queue bytes + reorder-buffer
-	// bytes). Live upload finding 2026-10-25: the old code advertised a
-	// CONSTANT 0xFFFF window, so the client kept a full 64KB in flight
-	// regardless of the carrier drain rate; the relay queue hit its slot
-	// cap, the deferred head turned every already-in-flight successor
-	// into an out-of-order segment, and the reorder buffer overflowed
-	// (575+ evictions per flow — self-inflicted loss, recovered only by
-	// retransmits). With the real window the client throttles itself
-	// (win=0 → its persist timer; our window-update ACK on drain) and
-	// the queue never overfills: zero evictions, zero deferrals.
-	recvBufCap = 0xFFFF
+	termWindow = recvBufCap >> recvWSShift
 	// oooBatchReserve: the in-order path enqueues the current segment
 	// plus up to this many reorder-buffer segments in one batch; the
 	// slot part of the advertised window keeps at least that many
 	// queue slots free (see recvWindowLocked).
 	oooBatchReserve = 8
+	// termQueueSlots sizes the relay queue so the BYTE cap binds first:
+	// recvBufCap is only reachable when the slots can hold that many
+	// MSS-sized segments plus the reorder-flush reserve. The slot bound in
+	// recvWindowLocked stays the second limiter (a client sending tiny
+	// segments would otherwise exhaust slots long before bytes).
+	termQueueSlots = (recvBufCap+termMSS-1)/termMSS + oooBatchReserve
 	// dialWait bounds the carrier dial (the client's own SYN retransmit
 	// backoff paces the wait). It must COVER the carrier's own
 	// DefaultDialTimeout (tunnel.go): a shorter deadline here reset the
@@ -445,12 +463,17 @@ type termConn struct {
 	// flight (0.9 MB/s on a 71 ms path — the observed single-stream ceiling).
 	clientWin   uint32
 	clientShift uint8
-	serverISN   uint32
-	serverNext  uint32 // next seq WE send
-	serverUna   uint32 // oldest unacked byte we sent (from client ACKs)
-	clientFIN   bool   // client half-closed
-	finSent     bool
-	dead        bool
+	// wsShift is the shift WE apply to our own receive window (RFC 7323),
+	// agreed at SYN time: recvWSShift when the client offered WS, else 0 —
+	// a client that did not offer it must send unscaled fields, so scaling
+	// towards it is illegal. Immutable after newTermConn.
+	wsShift    uint8
+	serverISN  uint32
+	serverNext uint32 // next seq WE send
+	serverUna  uint32 // oldest unacked byte we sent (from client ACKs)
+	clientFIN  bool   // client half-closed
+	finSent    bool
+	dead       bool
 
 	// upstream relay
 	upstream net.Conn
@@ -520,6 +543,12 @@ func (a *atomicTime) Load() time.Time   { return time.Unix(0, a.ns.Load()) }
 
 func newTermConn(tm *Terminator, k termKey, syn TermPkt) *termConn {
 	isn := rand.Uint32()
+	// A nonzero shift proves the SYN carried the option, so this also
+	// covers producers that do not report HasWS.
+	ws := uint8(0)
+	if syn.HasWS || syn.WScale != 0 {
+		ws = recvWSShift
+	}
 	c := &termConn{
 		tm:          tm,
 		k:           k,
@@ -528,12 +557,13 @@ func newTermConn(tm *Terminator, k termKey, syn TermPkt) *termConn {
 		clientNext:  syn.Seq + 1,
 		clientWin:   uint32(syn.Window), // SYN's window is never scaled
 		clientShift: syn.WScale,
+		wsShift:     ws,
 		serverISN:   isn,
 		serverNext:  isn + 1,
 		serverUna:   isn + 1,
 		advWin:      termWindow,
 		dialDone:    make(chan struct{}),
-		writeCh:     make(chan []byte, 128),
+		writeCh:     make(chan []byte, termQueueSlots),
 		finSignal:   make(chan struct{}, 1),
 		ackSignal:   make(chan struct{}, 1),
 		closed:      make(chan struct{}),
@@ -1046,12 +1076,13 @@ func (c *termConn) enqueueLocked(out [][]byte) int {
 	return 0
 }
 
-// recvWindowLocked computes the window to advertise to the client
+// recvWindowLocked computes the window field to advertise to the client
 // (caller holds mu): the free part of the receive buffer — recvBufCap
 // minus the bytes still unconsumed by the carrier (relay queue) or held
-// out-of-order — clamped to [0, 0xFFFF]. The queue's slot capacity joins
-// the byte cap (minus the reorder-flush reserve): tiny client segments
-// would otherwise exhaust slots long before the byte budget.
+// out-of-order — converted to FIELDS (>> wsShift, RFC 7323) and clamped to
+// [0, 0xFFFF]. The queue's slot capacity joins the byte cap (minus the
+// reorder-flush reserve): tiny client segments would otherwise exhaust
+// slots long before the byte budget.
 func (c *termConn) recvWindowLocked() uint16 {
 	free := int64(recvBufCap) - c.queuedBytes.Load() - int64(c.oooBytes)
 	if slotFree := int64(cap(c.writeCh)-len(c.writeCh)-oooBatchReserve) * termMSS; slotFree < free {
@@ -1060,6 +1091,7 @@ func (c *termConn) recvWindowLocked() uint16 {
 	if free < 0 {
 		free = 0
 	}
+	free >>= c.wsShift
 	if free > 0xFFFF {
 		free = 0xFFFF
 	}
@@ -1069,8 +1101,9 @@ func (c *termConn) recvWindowLocked() uint16 {
 // windowUpdateStep: re-advertise the window proactively once the free
 // part of the receive buffer has regrown by this much (or crosses zero)
 // — bounds the extra injected ACKs to ~4 per window while keeping the
-// client from stalling on its persist timer.
-const windowUpdateStep = recvBufCap / 4
+// client from stalling on its persist timer. It is compared against the
+// advertised FIELD, so it too is scaled.
+const windowUpdateStep = (recvBufCap / 4) >> recvWSShift
 
 // maybeWindowUpdate sends a window-update ACK after the relay queue
 // drained (called from pumpWrites). The client may be blocked waiting
@@ -1391,15 +1424,17 @@ func (c *termConn) subIfIdx() uint32 { return c.subifidx }
 // the client thinks it talks to), dst = client.
 //
 // Payload must be ≤ termMSS. Options: MSS + NOP + WS on SYN-ACK only. win is
-// the receive window advertised (real free receive-buffer space; see
-// recvWindowLocked — the SYN-ACK uses termWindow).
+// the window advertised, in FIELDS when the flow scales (see
+// recvWindowLocked; the SYN-ACK uses termWindow).
 //
 // The WS option on the SYN-ACK is what makes window scaling legal at all: RFC
 // 7323 §2.2 says a peer that does NOT see it in the SYN-ACK MUST send unscaled
 // window fields. The client's receive window was therefore hard-capped at
 // 65535 bytes, and our send rate at 64 KiB / RTT — 0.9 MB/s per flow on a
 // 71 ms path, which is exactly the "2-3 MB/s download" seen on the desktop
-// while the phone (our own stack on both ends) ran ten times faster.
+// while the phone (our own stack on both ends) ran ten times faster. The same
+// option now carries OUR shift, which lifts the upload off its own 64 KiB
+// ceiling.
 func (c *termConn) craft(seq, ack uint32, flags byte, payload []byte, win uint16) []byte {
 	optLen := 0
 	if flags&termSYN != 0 {
@@ -1431,12 +1466,12 @@ func (c *termConn) craft(seq, ack uint32, flags byte, payload []byte, win uint16
 	if optLen == 8 {
 		tcp[20], tcp[21] = 2, 4 // MSS kind, len
 		binary.BigEndian.PutUint16(tcp[22:], termMSS)
-		tcp[24] = 1 // NOP: pads the WS option to the 4-byte boundary
+		tcp[24] = 1             // NOP: pads the WS option to the 4-byte boundary
 		tcp[25], tcp[26] = 3, 3 // WS kind, len
-		// Our own receive buffer is 64 KiB (recvBufCap), so we advertise
-		// shift 0 and send literal windows. The client's shift, which is
-		// what lifts OUR send rate, comes from its SYN.
-		tcp[27] = 0
+		// The shift WE apply to our own receive window (recvBufCap).
+		// Zero for a client that did not offer WS in its SYN: it must
+		// send unscaled fields and must not scale ours either.
+		tcp[27] = c.wsShift
 	}
 	copy(tcp[20+optLen:], payload)
 

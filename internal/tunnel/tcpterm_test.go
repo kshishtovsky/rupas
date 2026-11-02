@@ -488,12 +488,12 @@ func TestTerminatorReorderDeliversInOrder(t *testing.T) {
 }
 
 // TestTerminatorBurstBeyondQueueSurvives: a burst deeper than the relay
-// queue (128 segments) must neither kill the connection nor lose data.
-// Deferred segments come back via the client's retransmit (dup-ack
-// backpressure) — the old code reset the flow on queue overflow.
+// queue must neither kill the connection nor lose data. Deferred segments
+// come back via the client's retransmit (dup-ack backpressure) — the old
+// code reset the flow on queue overflow.
 func TestTerminatorBurstBeyondQueueSurvives(t *testing.T) {
 	const (
-		segs   = 200 // > writeCh cap (128)
+		segs   = termQueueSlots + 72 // > writeCh cap
 		segLen = 100
 	)
 	sender := &fakeTermSender{}
@@ -740,9 +740,9 @@ func TestTerminatorEvictionSendsDupAck(t *testing.T) {
 
 // TestTerminatorAdvertisesRealWindow: with the carrier blocked (nobody
 // reads the pipe, so pumpWrites cannot drain) every fed byte must be
-// charged against the advertised window: win == recvBufCap - queued, and
-// a full buffer closes the window to zero — the point where a real
-// client throttles itself instead of overflowing our buffers.
+// charged against the advertised window: win == free buffer space in
+// fields, and a full buffer closes the window to zero — the point where a
+// real client throttles itself instead of overflowing our buffers.
 func TestTerminatorAdvertisesRealWindow(t *testing.T) {
 	sender := &fakeTermSender{}
 	clientEnd, serverEnd := net.Pipe()
@@ -759,40 +759,54 @@ func TestTerminatorAdvertisesRealWindow(t *testing.T) {
 	}
 	termFeed(tm, termACK, 9001, sa.seq+1, nil)
 
+	// No WS in the SYN here (termFeed offers none), so our shift is 0 and
+	// the field is the byte count — still bounded by 0xFFFF and by the
+	// queue's slot capacity.
 	const segLen = 1000
 	feedSeg := func(i int) {
 		termFeed(tm, termACK|termPSH, uint32(9001+i*segLen), sa.seq+1, make([]byte, segLen))
 	}
-	checkWin := func(queuedSegs int) {
+	checkWin := func(queuedSegs int) uint16 {
 		t.Helper()
+		c := termConnOf(tm)
 		ack := parseTerm(t, sender.sent()[len(sender.sent())-1])
-		want := uint64(recvBufCap) - uint64(queuedSegs*segLen)
-		if want < 0 {
-			want = 0
+		free := int64(recvBufCap) - int64(queuedSegs*segLen)
+		// The slot term uses the live queue: pumpWrites has already popped
+		// (and is blocked writing) the first segment, so one slot is free
+		// while its bytes are still charged.
+		if slot := int64(cap(c.writeCh)-len(c.writeCh)-oooBatchReserve) * termMSS; slot < free {
+			free = slot
 		}
-		if uint64(ack.win) != want {
-			t.Fatalf("after %d queued segments win = %d, want %d", queuedSegs, ack.win, want)
+		if free < 0 {
+			free = 0
 		}
-		if ack.win > recvBufCap {
-			t.Fatalf("advertised window %d exceeds the buffer cap %d", ack.win, recvBufCap)
+		if free > 0xFFFF {
+			free = 0xFFFF
 		}
+		if int64(ack.win) != free {
+			t.Fatalf("after %d queued segments win = %d, want %d", queuedSegs, ack.win, free)
+		}
+		return ack.win
 	}
 	for i := 0; i < 30; i++ {
 		feedSeg(i)
 		checkWin(i + 1)
 	}
-	// Fill the rest of the buffer: the final ACK must advertise win=0.
-	for i := 30; i <= int(recvBufCap)/segLen; i++ {
+	// Keep filling until the window closes: with a 512 KiB buffer the queue's
+	// slot cap is what a real client would hit first.
+	c := termConnOf(tm)
+	win := uint16(1)
+	for i := 30; win != 0 && i < cap(c.writeCh); i++ {
 		feedSeg(i)
+		win = checkWin(i + 1)
 	}
-	last := parseTerm(t, sender.sent()[len(sender.sent())-1])
-	if last.win != 0 {
-		t.Fatalf("win = %d with a full receive buffer, want 0", last.win)
+	if win != 0 {
+		t.Fatalf("win = %d with a full receive buffer, want 0", win)
 	}
 	// With window flow control active the relay queue never reaches its
 	// slot cap: the old deferred-segment path must stay at zero.
-	if c := termConnOf(tm); c.qFullN.Load() != 0 {
-		t.Fatalf("qFullN = %d with window flow control active, want 0", c.qFullN.Load())
+	if q := c.qFullN.Load(); q != 0 {
+		t.Fatalf("qFullN = %d with window flow control active, want 0", q)
 	}
 }
 
@@ -813,14 +827,16 @@ func TestTerminatorZeroWindowUpdate(t *testing.T) {
 	termFeed(tm, termACK, 9501, sa.seq+1, nil)
 
 	const segLen = 1000
-	for i := 0; i <= int(recvBufCap)/segLen; i++ {
+	// Fill until the advertised window closes. 1000-byte segments cannot
+	// reach the 512 KiB byte cap before the queue's slot cap, so the queue
+	// length is the bound of this loop.
+	win := uint16(1)
+	var zeroAt = -1
+	for i := 0; win != 0 && i < cap(termConnOf(tm).writeCh); i++ {
 		termFeed(tm, termACK|termPSH, uint32(9501+i*segLen), sa.seq+1, make([]byte, segLen))
-	}
-	zeroAt := -1
-	for i, p := range sender.sent() {
-		if pp := parseTerm(t, p); pp.flags == termACK && pp.win == 0 {
-			zeroAt = i
-			break
+		ps := sender.sent()
+		if win = parseTerm(t, ps[len(ps)-1]).win; win == 0 {
+			zeroAt = len(ps) - 1
 		}
 	}
 	if zeroAt < 0 {
@@ -892,9 +908,10 @@ func TestTerminatorSlowCarrierZeroLoss(t *testing.T) {
 	termFeed(tm, termACK, uint32(base), sa.seq+1, nil)
 
 	// Window-respecting client: track the right edge (highest ack+win
-	// over all feedback) and never push the next segment past it.
+	// over all feedback) and never push the next segment past it. This flow
+	// offered no WS in its SYN, so our shift is 0 and win is literal bytes.
 	edge := func() uint64 {
-		e := base + recvBufCap // SYN-ACK: ack = base, win = termWindow
+		e := base + termWindow // SYN-ACK: ack = base, win = termWindow
 		for _, p := range sender.sent() {
 			pp := parseTerm(t, p)
 			if pp.flags&termACK != 0 {
@@ -949,17 +966,17 @@ func TestTerminatorSlowCarrierZeroLoss(t *testing.T) {
 	}
 
 	// (c) every advertised window fits the cap and its right edge
-	// (ack+win) never moved backwards across the flow.
+	// (ack+win<<shift) never moved backwards across the flow.
 	prevEdge := uint64(0)
 	for _, p := range sender.sent() {
 		pp := parseTerm(t, p)
 		if pp.flags&termACK == 0 {
 			continue
 		}
-		if pp.win > recvBufCap {
-			t.Fatalf("advertised window %d exceeds the buffer cap %d", pp.win, recvBufCap)
+		if lim := uint64(0xFFFF) << c.wsShift; uint64(pp.win)<<c.wsShift > min(lim, uint64(recvBufCap)) {
+			t.Fatalf("advertised window %d exceeds the %d-byte cap", uint64(pp.win)<<c.wsShift, min(lim, uint64(recvBufCap)))
 		}
-		re := uint64(pp.ack) + uint64(pp.win)
+		re := uint64(pp.ack) + uint64(pp.win)<<c.wsShift
 		if re < prevEdge {
 			t.Fatalf("window right edge moved backwards: %d → %d", prevEdge, re)
 		}

@@ -16,18 +16,20 @@ func TestSynWScale(t *testing.T) {
 		seg  []byte
 		hdr  int
 		want uint8
+		ws   bool // опция присутствует
 	}{
-		{"нет опций", mk(), 20, 0},
-		{"WS=8 как у Windows", mk(2, 4, 0x05, 0xb4, 1, 3, 3, 8), 28, 8},
-		{"WS=7", mk(1, 3, 3, 7), 24, 7},
-		{"WS=0", mk(3, 3, 0), 24, 0},
-		{"WS=14 предел", mk(3, 3, 14), 24, 14},
-		{"WS=15 вне RFC", mk(3, 3, 15), 24, 0},
-		{"обрезка заголовка", mk(3, 3, 8), 20, 0},
+		{"нет опций", mk(), 20, 0, false},
+		{"WS=8 как у Windows", mk(2, 4, 0x05, 0xb4, 1, 3, 3, 8), 28, 8, true},
+		{"WS=7", mk(1, 3, 3, 7), 24, 7, true},
+		{"WS=0 — легальный ноль", mk(3, 3, 0), 24, 0, true},
+		{"WS=14 предел", mk(3, 3, 14), 24, 14, true},
+		{"WS=15 вне RFC", mk(3, 3, 15), 24, 0, false},
+		{"обрезка заголовка", mk(3, 3, 8), 20, 0, false},
 	}
 	for _, c := range cases {
-		if got := synWScale(c.seg, c.hdr); got != c.want {
-			t.Fatalf("%s: synWScale = %d, ждали %d", c.name, got, c.want)
+		got, present := synWScale(c.seg, c.hdr)
+		if got != c.want || present != c.ws {
+			t.Fatalf("%s: synWScale = (%d,%v), ждали (%d,%v)", c.name, got, present, c.want, c.ws)
 		}
 	}
 	// Мусор в опциях не должен паниковать: пакет приходит из сети.
@@ -39,8 +41,8 @@ func TestSynWScale(t *testing.T) {
 		{0, 3, 3, 8},
 	}
 	for _, g := range garbage {
-		if s := synWScale(append([]byte{}, append(make([]byte, 20), g...)...), 20+len(g)); s > 14 {
-			t.Fatalf("мусор %v дал shift %d", g, s)
+		if s, ok := synWScale(append([]byte{}, append(make([]byte, 20), g...)...), 20+len(g)); s > 14 || (ok && g[0] != 3) {
+			t.Fatalf("мусор %v дал (%d,%v)", g, s, ok)
 		}
 	}
 }

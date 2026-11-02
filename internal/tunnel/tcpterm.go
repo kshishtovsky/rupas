@@ -1390,13 +1390,20 @@ func (c *termConn) subIfIdx() uint32 { return c.subifidx }
 // craft builds one forged packet: src = original destination (the server
 // the client thinks it talks to), dst = client.
 //
-// Payload must be ≤ termMSS. Options: MSS on SYN-ACK only. win is the
-// receive window advertised (real free receive-buffer space; see
+// Payload must be ≤ termMSS. Options: MSS + NOP + WS on SYN-ACK only. win is
+// the receive window advertised (real free receive-buffer space; see
 // recvWindowLocked — the SYN-ACK uses termWindow).
+//
+// The WS option on the SYN-ACK is what makes window scaling legal at all: RFC
+// 7323 §2.2 says a peer that does NOT see it in the SYN-ACK MUST send unscaled
+// window fields. The client's receive window was therefore hard-capped at
+// 65535 bytes, and our send rate at 64 KiB / RTT — 0.9 MB/s per flow on a
+// 71 ms path, which is exactly the "2-3 MB/s download" seen on the desktop
+// while the phone (our own stack on both ends) ran ten times faster.
 func (c *termConn) craft(seq, ack uint32, flags byte, payload []byte, win uint16) []byte {
 	optLen := 0
 	if flags&termSYN != 0 {
-		optLen = 4
+		optLen = 8 // MSS(4) + NOP(1) + WS(3)
 	}
 	ipLen, tcpLen := 20, 20+optLen+len(payload)
 	pkt := craftBuf(ipLen + tcpLen)
@@ -1421,9 +1428,15 @@ func (c *termConn) craft(seq, ack uint32, flags byte, payload []byte, win uint16
 	tcp[12] = byte((20+optLen)/4) << 4 // data offset in 32-bit words
 	binary.BigEndian.PutUint16(tcp[14:], win)
 	tcp[13] = flags
-	if optLen == 4 {
+	if optLen == 8 {
 		tcp[20], tcp[21] = 2, 4 // MSS kind, len
 		binary.BigEndian.PutUint16(tcp[22:], termMSS)
+		tcp[24] = 1 // NOP: pads the WS option to the 4-byte boundary
+		tcp[25], tcp[26] = 3, 3 // WS kind, len
+		// Our own receive buffer is 64 KiB (recvBufCap), so we advertise
+		// shift 0 and send literal windows. The client's shift, which is
+		// what lifts OUR send rate, comes from its SYN.
+		tcp[27] = 0
 	}
 	copy(tcp[20+optLen:], payload)
 

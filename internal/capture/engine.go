@@ -113,7 +113,10 @@ type TCPPkt struct {
 	// WScale is the client's window-scale shift from the SYN (RFC 7323
 	// §2.2), 0 when absent. Without it the 16-bit window field is read
 	// literally and every flow is capped at 64 KiB in flight.
-	WScale          uint8
+	WScale uint8
+	// HasWS is true when the SYN actually carried the WS option: shift 0 is
+	// a legal offer and must not be read as "no option".
+	HasWS           bool
 	Payload         []byte
 	IfIdx, SubIfIdx uint32 // re-injection interface (captured address)
 }
@@ -1077,42 +1080,45 @@ func (e *Engine) tgFastTunnel(p *pktInfo) bool {
 }
 
 // synWScale reads the window-scale shift out of a SYN's TCP options
-// (RFC 7323 §2.2). seg is the TCP segment, hdr its header length.
+// (RFC 7323 §2.2). seg is the TCP segment, hdr its header length. present
+// reports that the option was THERE: shift 0 is a legal offer, and the
+// terminator must not confuse it with a client that offered nothing (such a
+// client cannot scale at all, and neither may we towards it).
 //
 // Every modern stack sends 7-8 here, and the client then advertises its real
 // receive window DIVIDED by 2^shift. Reading the field literally therefore
 // caps our in-flight data at 64 KiB: on a 71 ms path that is 0.9 MB/s per
 // flow — the single-stream ceiling seen in the field (2.5-3 MB/s across three
 // parallel downloads) while a many-connection speed test showed 700 Mbit/s.
-func synWScale(seg []byte, hdr int) uint8 {
+func synWScale(seg []byte, hdr int) (shift uint8, present bool) {
 	if hdr <= 20 || hdr > len(seg) {
-		return 0
+		return 0, false
 	}
 	opt := seg[20:hdr]
 	for i := 0; i < len(opt); {
 		switch opt[i] {
 		case 0: // end of option list
-			return 0
+			return 0, false
 		case 1: // NOP
 			i++
 			continue
 		}
 		if i+1 >= len(opt) || opt[i+1] < 2 {
-			return 0
+			return 0, false
 		}
 		end := i + int(opt[i+1])
 		if end > len(opt) {
-			return 0
+			return 0, false
 		}
 		if opt[i] == 3 && opt[i+1] == 3 {
 			if s := opt[i+2]; s <= 14 {
-				return s
+				return s, true
 			}
-			return 0
+			return 0, false
 		}
 		i = end
 	}
-	return 0
+	return 0, false
 }
 
 // relayTunnelTCP carries one tunnel-verdict TCP packet (wave 7): to the
@@ -1126,14 +1132,14 @@ func (e *Engine) relayTunnelTCP(pkt []byte, addr *windivert.Address, p *pktInfo,
 		if p.ipLen+16 <= len(pkt) {
 			win = binary.BigEndian.Uint16(pkt[p.ipLen+14 : p.ipLen+16])
 		}
-		ws := uint8(0)
+		ws, hasWS := uint8(0), false
 		if p.syn() {
-			ws = synWScale(pkt[p.ipLen:], p.trLen)
+			ws, hasWS = synWScale(pkt[p.ipLen:], p.trLen)
 		}
 		tp := TCPPkt{
 			SrcIP: p.src4, DstIP: p.dst4,
 			SrcPort: p.srcPort, DstPort: p.dstPort,
-			Seq: p.seq, Ack: p.ackNum, Flags: p.flags, Window: win, WScale: ws,
+			Seq: p.seq, Ack: p.ackNum, Flags: p.flags, Window: win, WScale: ws, HasWS: hasWS,
 			Payload: p.payload,
 		}
 		if na := addr.Network(); na != nil {

@@ -62,7 +62,7 @@ func TestTMNPlanOrdering(t *testing.T) {
 	if tcp == nil || tcp.Kind != config.KindTMN || tcp.Host != "203.0.113.10" || tcp.Port != 18443 {
 		t.Fatalf("tcp: %+v", tcp)
 	}
-	if tcp.SNI != "example.com" || tcp.PSK != testPSK || tcp.Conns != 4 {
+	if tcp.SNI != "example.com" || tcp.PSK != testPSK || tcp.Conns != config.MaxTMNConns {
 		t.Fatalf("tcp tmn fields: %+v", tcp)
 	}
 	if udp == nil || udp.Kind != "hysteria2" || udp.Password != "hy2secret" {

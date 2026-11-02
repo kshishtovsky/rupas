@@ -173,13 +173,15 @@ func parseTMNLink(raw string) (Endpoint, error) {
 		}
 		sni = host
 	}
-	conns := 4
+	conns := config.MaxTMNConns
 	if v := q.Get("conns"); v != "" {
 		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 || n > config.MaxTMNConns {
+		if err != nil || n < 1 {
 			return Endpoint{}, fmt.Errorf("sharelink: tmn: conns %q: want 1..%d", v, config.MaxTMNConns)
 		}
-		conns = n
+		// A link written for a multi-endpoint pool still imports; the pool
+		// shrinks to what one endpoint allows instead of refusing the link.
+		conns = min(n, config.MaxTMNConns)
 	}
 	if p := q.Get("profile"); p != "" {
 		switch p {

@@ -140,10 +140,12 @@ func EndpointKinds() []string {
 	return []string{KindVLESSTCP, KindVLESSXHTTP, KindVLESSReality, KindHysteria2, KindTMN}
 }
 
-// MaxTMNConns caps the TMN/1 session pool: one TLS connection is capped by
-// its own TCP window, four reach the path bandwidth (measured 422 of 540
-// Mbit/s), more than eight only multiplies the connect footprint.
-const MaxTMNConns = 8
+// MaxTMNConns caps the TMN/1 session pool. Conns is the size of the WHOLE
+// pool, not a per-endpoint count: the library allows 2 per endpoint, and rupas
+// always hands it one endpoint — so 2 is the hard ceiling here. Two TLS
+// connections already reach the path bandwidth; the cover site sees a browser
+// opening a second tab, not a connect flood.
+const MaxTMNConns = 2
 
 // Endpoint describes one user-side tunnel exit (wave 5). Fields are shared
 // across kinds; Validate enforces the per-kind subset and applies defaults.
@@ -201,7 +203,7 @@ type Endpoint struct {
 	// key is bound to the TLS exporter of every session (TMN/1 §4), so it
 	// never crosses the wire.
 	PSK string `yaml:"psk,omitempty"`
-	// Conns is the tmn session pool size (1..MaxTMNConns, default 4). The
+	// Conns is the tmn session pool size (1..MaxTMNConns, default 2). The
 	// pool is what gives TMN/1 its bandwidth: streams are spread over
 	// independent TCP connections, a single one stalls at its own window.
 	Conns int `yaml:"conns,omitempty"`
@@ -308,11 +310,11 @@ func (e *Endpoint) Validate() error {
 			return fmt.Errorf("tunnel endpoint: %v", err)
 		}
 		e.PSK = psk
-		if e.Conns == 0 {
-			e.Conns = 4
-		}
-		if e.Conns < 1 || e.Conns > MaxTMNConns {
-			return fmt.Errorf("tunnel endpoint: conns %d: want 1..%d", e.Conns, MaxTMNConns)
+		// Clamp, not reject: a profile saved when the default was 4 (or a link
+		// written for a 4-endpoint pool) must still start — the pool only sizes
+		// the fan-out, it is not a security knob.
+		if e.Conns <= 0 || e.Conns > MaxTMNConns {
+			e.Conns = MaxTMNConns
 		}
 	default: // hysteria2
 		if e.Password == "" {

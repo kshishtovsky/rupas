@@ -57,7 +57,7 @@ func newTMNPath(ep config.Endpoint, logger *slog.Logger) (*tmnPath, error) {
 		PSK:      key,
 		SNI:      ep.SNI,
 		Insecure: ep.Insecure,
-		Conns:    ep.Conns, // 0 → the library default (4)
+		Conns:    ep.Conns, // 0 → the library default (min(4, 2×endpoints))
 		Profile:  "off",    // the shaper stays off by default
 		// Cooldown 0 → the library default (30 s).
 		Logger:      prefixLogger(logger, "tmn: "),

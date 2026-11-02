@@ -98,15 +98,24 @@ func TestEndpointValidatePerKind(t *testing.T) {
 			e.Kind = KindTMN
 			e.PSK = "0011"
 		}, "psk"},
-		{"tmn conns out of range", func(e *Endpoint) {
+		{"tmn conns out of range clamps", func(e *Endpoint) {
 			e.Kind = KindTMN
 			e.PSK = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
 			e.Conns = 9
-		}, "conns"},
+			if err := e.Validate(); err != nil {
+				t.Fatalf("conns 9 отвергнут: %v", err)
+			}
+			if e.Conns != MaxTMNConns {
+				t.Fatalf("conns 9 → %d, ждали %d", e.Conns, MaxTMNConns)
+			}
+		}, ""},
 	}
 	for _, c := range cases {
 		e := validEndpoint(KindVLESSTCP)
 		c.mut(&e)
+		if c.want == "" { // кейс сам проверяет себя и не ждёт ошибки
+			continue
+		}
 		err := e.Validate()
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: got %v, want error containing %q", c.name, err, c.want)
@@ -409,8 +418,8 @@ func TestTMNEndpointDefaults(t *testing.T) {
 	if err := e.Validate(); err != nil {
 		t.Fatalf("valid tmn endpoint rejected: %v", err)
 	}
-	if e.Conns != 4 {
-		t.Errorf("conns default = %d, want 4", e.Conns)
+	if e.Conns != MaxTMNConns {
+		t.Errorf("conns default = %d, want %d", e.Conns, MaxTMNConns)
 	}
 	if e.PSK != strings.ToLower(e.PSK) {
 		t.Errorf("psk not lower-cased: %q", e.PSK)

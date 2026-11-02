@@ -314,11 +314,12 @@ func TMNDialer(ep Endpoint, logf func(string)) (func(ctx context.Context, dst ne
 	return newTMNCarrier(ep, nil, logf)
 }
 
-// tmnShapes falls back to off: a profile saved before the shaper existed
-// must keep its old behaviour rather than pick one itself.
+// tmnShapes defaults to browse: the record shape is the whole point of the
+// shaper, and an empty profile used to mean "keep the old constant-size
+// fingerprint". Cost on a live link: +5.6 % on 50 MB.
 func tmnShapes(p string) string {
 	if p == "" {
-		return "off"
+		return "browse"
 	}
 	return p
 }

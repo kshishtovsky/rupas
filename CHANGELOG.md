@@ -1,3 +1,10 @@
+## v0.20.0
+
+- chore(release): v0.20.0 (cf9480f)
+- Merge branch 'master' of github.com:kshishtovsky/rupas (025d380)
+- feat(qr): перенос конфига через QR на Android, общий payload с десктопом (34af5c0)
+- docs(changelog): v0.19.0 (a6fff01)
+
 ## v0.19.0
 
 - chore(release): v0.19.0 (1f93eac)

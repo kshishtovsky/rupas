@@ -24,7 +24,7 @@ const (
 	ProbeTarget = "104.16.124.96:443"
 	ProbeName   = "medium.com"
 
-	probeDialBudget = 5 * time.Second
+	probeDialBudget = 15 * time.Second
 	probeTLSBudget  = 4 * time.Second
 )
 

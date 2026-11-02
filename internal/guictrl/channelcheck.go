@@ -49,5 +49,12 @@ func (c *Controller) CheckChannel(link string) (tunnel.ProbeResult, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), channelProbeBudget)
 	defer cancel()
-	return tunnel.ProbeEndpoint(ctx, mapped, nil), nil
+	r := tunnel.ProbeEndpoint(ctx, mapped, nil)
+	// tmn держит пул долгих сессий: холодная — это подъём TLS+uTLS и AUTH, и на
+	// живом канале замерено 12 с (probe.dial режет по 5 с, поэтому проба врала
+	// «не работает», пока туннель в это же время возил трафик).
+	if !r.OK && r.Stage == "dial" && mapped.Kind == config.KindTMN {
+		r.Err += " (новая сессия не поднялась; уже открытая живёт своей жизнью)"
+	}
+	return r, nil
 }

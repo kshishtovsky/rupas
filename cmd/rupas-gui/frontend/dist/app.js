@@ -380,6 +380,24 @@ async function testChannel(i) {
   renderChannels();
 }
 
+// «Проверить все»: по очереди, потому что проба держит один канал за раз и
+// каждый tmn-дил способен занять до 15 с — параллель упёрлась бы в лимитер.
+let testingAll = false;
+async function testAllChannels() {
+  const btn = $("btnTestAllChannels");
+  if (testingAll || testingIndex !== -1 || !channels.length) return;
+  testingAll = true;
+  btn.disabled = true;
+  for (let i = 0; i < channels.length; i++) {
+    btn.textContent = `Проверяю ${i + 1}/${channels.length}`;
+    await testChannel(i);
+  }
+  btn.textContent = "Проверить все";
+  btn.disabled = false;
+  testingAll = false;
+}
+$("btnTestAllChannels").addEventListener("click", testAllChannels);
+
 
 // One dialog for every kind: the link is edited through its own URL parts, so
 // unknown params (pbk, fp, conns, profile…) survive untouched — no link builder.

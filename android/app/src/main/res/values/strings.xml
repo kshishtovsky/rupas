@@ -78,6 +78,8 @@
     <string name="profile_move_up">Выше</string>
     <string name="profile_move_down">Ниже</string>
     <string name="profile_test_running">Проверяю…</string>
+    <string name="profile_test_all">Проверить все</string>
+    <string name="profile_test_all_progress">Проверяю %1$d из %2$d…</string>
     <string name="profile_test_ok">Работает · %1$d мс</string>
     <string name="profile_test_fail">Не работает: %1$s</string>
     <string name="profile_test_unavailable">проверка недоступна</string>

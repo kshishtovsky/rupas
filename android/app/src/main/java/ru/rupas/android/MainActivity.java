@@ -118,6 +118,10 @@ public class MainActivity extends AppCompatActivity {
     private LinearLayout llServerFields;
     /** id профиля, который сейчас проверяется (null — проверок нет). */
     private String runningTestId;
+    /** «Проверить все»: очередь идёт в testExecutor, метка — для заголовка кнопки. */
+    private MaterialButton btnTestAllProfiles;
+    private boolean testingAll;
+    private int testAllDone, testAllTotal;
     /** Результаты тестов по id профиля: только в памяти, в prefs не пишутся. */
     private final Map<String, TestResult> testResults = new HashMap<>();
     /** Один поток: ядро тестирует один профиль за раз. */
@@ -292,6 +296,7 @@ public class MainActivity extends AppCompatActivity {
         switchBlockAds = findViewById(R.id.switchBlockAds);
         switchBlockTrackers = findViewById(R.id.switchBlockTrackers);
         btnImport = findViewById(R.id.btnImport);
+        btnTestAllProfiles = findViewById(R.id.btnTestAllProfiles);
         btnSave = findViewById(R.id.btnSave);
         llProfiles = findViewById(R.id.llProfiles);
         tvNoProfiles = findViewById(R.id.tvNoProfiles);
@@ -397,6 +402,7 @@ public class MainActivity extends AppCompatActivity {
     private void setupSettingsTab() {
         loadSettingsForm();
         btnImport.setOnClickListener(v -> showImportDialog());
+        btnTestAllProfiles.setOnClickListener(v -> startAllProfileTests());
         btnSave.setOnClickListener(v -> saveSettingsForm());
         // Вход в «Маршруты» — отдельная activity, bottom-nav не расширяем (§3).
         View cardRouting = findViewById(R.id.cardRouting);
@@ -1055,9 +1061,65 @@ public class MainActivity extends AppCompatActivity {
         tvProfilesEmpty.setVisibility(pendingProfiles.isEmpty() ? View.VISIBLE : View.GONE);
         tvNoProfiles.setVisibility(!pendingProfiles.isEmpty() && enabled == 0
                 ? View.VISIBLE : View.GONE);
+        renderTestAllButton();
         for (int i = 0; i < pendingProfiles.size(); i++) {
             llProfiles.addView(profileCard(inflater, pendingProfiles.get(i), i));
         }
+    }
+
+    /** «Проверить все»: видна только когда есть что проверять, и не мешает одиночной проверке. */
+    private void renderTestAllButton() {
+        if (btnTestAllProfiles == null) return;
+        boolean idle = testAvailable() && !pendingProfiles.isEmpty() && runningTestId == null;
+        btnTestAllProfiles.setVisibility(pendingProfiles.isEmpty() ? View.GONE : View.VISIBLE);
+        btnTestAllProfiles.setEnabled(idle || testingAll);
+        btnTestAllProfiles.setAlpha(idle || testingAll ? 1f : 0.4f);
+        btnTestAllProfiles.setText(testingAll
+                ? getString(R.string.profile_test_all_progress, testAllDone, testAllTotal)
+                : getString(R.string.profile_test_all));
+    }
+
+    /**
+     * Проверка всех конфигов подряд: ядро тестирует один профиль за раз, поэтому
+     * очередь последовательная на том же testExecutor. Список копируется — за
+     * время прогона пользователь может включить/выключить карточку.
+     */
+    private void startAllProfileTests() {
+        if (!testAvailable() || runningTestId != null || testingAll || pendingProfiles.isEmpty()) {
+            return;
+        }
+        final List<SettingsStore.Profile> queue = new ArrayList<>(pendingProfiles);
+        testingAll = true;
+        testAllDone = 0;
+        testAllTotal = queue.size();
+        renderProfiles();
+        testExecutor.execute(() -> {
+            for (SettingsStore.Profile p : queue) {
+                final String id = p.id;
+                runOnUiThread(() -> {
+                    runningTestId = id;
+                    renderProfiles();
+                });
+                TestResult r;
+                try {
+                    r = parseTestResult(callTestProfile(p.link));
+                } catch (Throwable t) {
+                    String why = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
+                    r = new TestResult(false, getString(R.string.profile_test_fail, why));
+                }
+                final TestResult result = r;
+                runOnUiThread(() -> {
+                    testResults.put(id, result);
+                    testAllDone++;
+                    runningTestId = null;
+                    renderProfiles();
+                });
+            }
+            runOnUiThread(() -> {
+                testingAll = false;
+                if (!isFinishing() && !isDestroyed()) renderProfiles();
+            });
+        });
     }
 
     private View profileCard(LayoutInflater inflater, final SettingsStore.Profile p, int index) {

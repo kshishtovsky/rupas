@@ -161,7 +161,11 @@
           </button>
         </div>
         <div class="section" id="channelsSection">
-          <div class="section-title">Каналы</div>
+          <div class="section-title" style="display:flex;align-items:center;gap:var(--space-s)">
+            <span>Каналы</span>
+            <span style="flex:1"></span>
+            <button class="btn ghost small" id="btnTestAllChannels" type="button">Проверить все</button>
+          </div>
           <div class="chan-add">
             <input class="input" id="chanInput" placeholder="Вставь ссылку vless:// hysteria2:// tmn://" spellcheck="false" autocomplete="off">
             <button class="btn" id="btnChanAdd" type="button">Добавить</button>

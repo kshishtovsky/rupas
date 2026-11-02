@@ -156,6 +156,15 @@
                     android:orientation="vertical" />
 
                 <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnTestAllProfiles"
+                    style="@style/Widget.Rupas.Button.Secondary"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/control_height"
+                    android:layout_marginTop="@dimen/space_xs"
+                    android:visibility="gone"
+                    android:text="@string/profile_test_all" />
+
+                <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnImport"
                     style="@style/Widget.Rupas.Button.Secondary"
                     android:layout_width="match_parent"

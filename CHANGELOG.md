@@ -1,3 +1,9 @@
+## v0.18.2
+
+- chore(release): v0.18.2 (0764c1e)
+- fix(tcpterm): SYN-ACK без опции WS запирал окно клиента в 64 КиБ (6e79bee)
+- docs(changelog): v0.18.1 (da1dcdc)
+
 ## v0.18.1
 
 - chore(release): v0.18.1 (2f405d5)

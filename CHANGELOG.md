@@ -1,3 +1,9 @@
+## v0.17.3
+
+- chore(release): v0.17.3 (b676bcd)
+- fix(gui): проба tmn называет реальную причину — сервер отверг AUTH (8523566)
+- docs(changelog): v0.17.2 (bcbc510)
+
 ## v0.17.2
 
 - chore(release): v0.17.2 (2f33745)

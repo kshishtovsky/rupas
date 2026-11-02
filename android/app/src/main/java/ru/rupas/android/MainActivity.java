@@ -404,6 +404,11 @@ public class MainActivity extends AppCompatActivity {
         btnImport.setOnClickListener(v -> showImportDialog());
         btnTestAllProfiles.setOnClickListener(v -> startAllProfileTests());
         btnSave.setOnClickListener(v -> saveSettingsForm());
+        // Перенос конфигурации между устройствами: тот же сценарий, что «Добавить
+        // конфиг», но целиком (правила, per-app, adblock), а не одна ссылка.
+        findViewById(R.id.btnShareQr).setOnClickListener(v -> QrUi.share(this));
+        findViewById(R.id.btnScanQr).setOnClickListener(
+                v -> QrUi.importDialog(this, this::reloadAfterQrImport));
         // Вход в «Маршруты» — отдельная activity, bottom-nav не расширяем (§3).
         View cardRouting = findViewById(R.id.cardRouting);
         if (cardRouting != null) {
@@ -562,6 +567,10 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        // Сканер QR конфигурации: импорт настроек с другого устройства.
+        if (QrUi.onScanResult(this, requestCode, resultCode, data, this::reloadAfterQrImport)) {
+            return;
+        }
         if (requestCode == VPN_REQUEST_CODE) {
             if (resultCode == RESULT_OK) {
                 startVpnService();
@@ -572,6 +581,19 @@ public class MainActivity extends AppCompatActivity {
                 Toast.makeText(this, R.string.vpn_permission_denied, Toast.LENGTH_SHORT).show();
             }
         }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+        super.onRequestPermissionsResult(code, perms, results);
+        QrUi.onPermissions(this, code, results);
+    }
+
+    /** После импорта QR форма и профили должны показать новое состояние. */
+    private void reloadAfterQrImport() {
+        loadSettingsForm();
+        updateRoutingSummary();
+        refreshUI();
     }
 
     private void startVpnService() {

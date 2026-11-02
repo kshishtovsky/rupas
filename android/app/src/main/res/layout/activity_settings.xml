@@ -222,41 +222,6 @@
             android:layout_marginTop="@dimen/space_l"
             android:text="@string/btn_import" />
 
-        <!-- Перенос конфигурации между устройствами (QR). -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/space_l"
-            android:text="@string/qr_section"
-            android:textColor="@color/ink"
-            android:textSize="14sp"
-            android:fontFamily="sans-serif-medium" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/space_xs"
-            android:text="@string/qr_section_hint"
-            android:textColor="@color/ink_soft"
-            android:textSize="12sp"
-            android:fontFamily="sans-serif" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnShareQr"
-            style="@style/Widget.Rupas.Button.Secondary"
-            android:layout_width="match_parent"
-            android:layout_height="@dimen/control_height"
-            android:layout_marginTop="@dimen/space_s"
-            android:text="@string/btn_share_qr" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnScanQr"
-            style="@style/Widget.Rupas.Button.Secondary"
-            android:layout_width="match_parent"
-            android:layout_height="@dimen/control_height"
-            android:layout_marginTop="@dimen/space_xs"
-            android:text="@string/btn_scan_qr" />
-
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnSave"
             style="@style/Widget.Rupas.Button.Primary"

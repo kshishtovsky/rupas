@@ -1,3 +1,10 @@
+## v0.20.1
+
+- chore(release): v0.20.1 (d95d8fb)
+- Merge branch 'master' of github.com:kshishtovsky/rupas (18ef811)
+- fix(android): кнопки QR на живой вкладке настроек, а не в мёртвом экране (3591c52)
+- docs(changelog): v0.20.0 (224dc7a)
+
 ## v0.20.0
 
 - chore(release): v0.20.0 (cf9480f)

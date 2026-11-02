@@ -62,7 +62,7 @@ type Options struct {
 	// exactly this way on a TMN-only setup (field 2026-11-01) while the
 	// same network passed UDP fine without Rupas at all.
 	UDPRelay bool
-	TGCIDRs      []string            // Telegram CIDRs, widen the capture filter
+	TGCIDRs  []string // Telegram CIDRs, widen the capture filter
 	// TermFilter443 declares that SNI-rule TUNNEL flows to :443 (YouTube/
 	// Discord, wave 7) will be served by the terminator: the factory relay
 	// (Options.TunnelTCP) is then installed even without TG CIDRs and
@@ -110,8 +110,12 @@ type TCPPkt struct {
 	Seq, Ack         uint32
 	Flags            byte // SYN/ACK/PSH/FIN/RST
 	Window           uint16
-	Payload          []byte
-	IfIdx, SubIfIdx  uint32 // re-injection interface (captured address)
+	// WScale is the client's window-scale shift from the SYN (RFC 7323
+	// §2.2), 0 when absent. Without it the 16-bit window field is read
+	// literally and every flow is capped at 64 KiB in flight.
+	WScale          uint8
+	Payload         []byte
+	IfIdx, SubIfIdx uint32 // re-injection interface (captured address)
 }
 
 // Engine is the capture hot path: one WinDivert NETWORK-layer receive loop
@@ -1072,6 +1076,45 @@ func (e *Engine) tgFastTunnel(p *pktInfo) bool {
 	return false
 }
 
+// synWScale reads the window-scale shift out of a SYN's TCP options
+// (RFC 7323 §2.2). seg is the TCP segment, hdr its header length.
+//
+// Every modern stack sends 7-8 here, and the client then advertises its real
+// receive window DIVIDED by 2^shift. Reading the field literally therefore
+// caps our in-flight data at 64 KiB: on a 71 ms path that is 0.9 MB/s per
+// flow — the single-stream ceiling seen in the field (2.5-3 MB/s across three
+// parallel downloads) while a many-connection speed test showed 700 Mbit/s.
+func synWScale(seg []byte, hdr int) uint8 {
+	if hdr <= 20 || hdr > len(seg) {
+		return 0
+	}
+	opt := seg[20:hdr]
+	for i := 0; i < len(opt); {
+		switch opt[i] {
+		case 0: // end of option list
+			return 0
+		case 1: // NOP
+			i++
+			continue
+		}
+		if i+1 >= len(opt) || opt[i+1] < 2 {
+			return 0
+		}
+		end := i + int(opt[i+1])
+		if end > len(opt) {
+			return 0
+		}
+		if opt[i] == 3 && opt[i+1] == 3 {
+			if s := opt[i+2]; s <= 14 {
+				return s
+			}
+			return 0
+		}
+		i = end
+	}
+	return 0
+}
+
 // relayTunnelTCP carries one tunnel-verdict TCP packet (wave 7): to the
 // userspace terminator when installed, else to the legacy NAT→tproxy leg —
 // but ONLY with a configured tproxy port (live finding: that forward leg
@@ -1083,10 +1126,14 @@ func (e *Engine) relayTunnelTCP(pkt []byte, addr *windivert.Address, p *pktInfo,
 		if p.ipLen+16 <= len(pkt) {
 			win = binary.BigEndian.Uint16(pkt[p.ipLen+14 : p.ipLen+16])
 		}
+		ws := uint8(0)
+		if p.syn() {
+			ws = synWScale(pkt[p.ipLen:], p.trLen)
+		}
 		tp := TCPPkt{
 			SrcIP: p.src4, DstIP: p.dst4,
 			SrcPort: p.srcPort, DstPort: p.dstPort,
-			Seq: p.seq, Ack: p.ackNum, Flags: p.flags, Window: win,
+			Seq: p.seq, Ack: p.ackNum, Flags: p.flags, Window: win, WScale: ws,
 			Payload: p.payload,
 		}
 		if na := addr.Network(); na != nil {

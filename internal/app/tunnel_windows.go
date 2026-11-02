@@ -120,7 +120,7 @@ func (a termAdapter) FeedTCP(p capture.TCPPkt) {
 	a.tm.Feed(tunnel.TermPkt{
 		SrcIP: p.SrcIP, DstIP: p.DstIP,
 		SrcPort: p.SrcPort, DstPort: p.DstPort,
-		Seq: p.Seq, Ack: p.Ack, Flags: p.Flags, Window: p.Window,
+		Seq: p.Seq, Ack: p.Ack, Flags: p.Flags, Window: p.Window, WScale: p.WScale,
 		Payload: p.Payload, IfIdx: p.IfIdx, SubIfIdx: p.SubIfIdx,
 	})
 }

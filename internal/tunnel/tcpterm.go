@@ -168,8 +168,10 @@ type TermPkt struct {
 	Seq, Ack         uint32
 	Flags            byte // tcpFlagSYN/ACK/PSH/FIN/RST
 	Window           uint16
-	Payload          []byte
-	IfIdx, SubIfIdx  uint32
+	// WScale is the client's window-scale shift from the SYN (RFC 7323).
+	WScale          uint8
+	Payload         []byte
+	IfIdx, SubIfIdx uint32
 }
 
 // TCP flags (mirror of the capture layer's tcpFlag*).
@@ -437,13 +439,18 @@ type termConn struct {
 
 	mu         sync.Mutex // guards the fields below
 	clientNext uint32     // next expected client byte
-	clientWin  uint16     // client's advertised window
-	serverISN  uint32
-	serverNext uint32 // next seq WE send
-	serverUna  uint32 // oldest unacked byte we sent (from client ACKs)
-	clientFIN  bool   // client half-closed
-	finSent    bool
-	dead       bool
+	// clientWin is the client's advertised window AFTER applying its
+	// window-scale shift: the raw field is 16 bits and the client sends it
+	// divided by 2^shift, so the unscaled value caps the flow at 64 KiB in
+	// flight (0.9 MB/s on a 71 ms path — the observed single-stream ceiling).
+	clientWin   uint32
+	clientShift uint8
+	serverISN   uint32
+	serverNext  uint32 // next seq WE send
+	serverUna   uint32 // oldest unacked byte we sent (from client ACKs)
+	clientFIN   bool   // client half-closed
+	finSent     bool
+	dead        bool
 
 	// upstream relay
 	upstream net.Conn
@@ -494,6 +501,15 @@ type termConn struct {
 	oooWarnAt atomic.Int64
 }
 
+// winApply scales a client-advertised window by the shift negotiated in the
+// SYN (RFC 7323 §2.3). Nothing else may read the raw field on the send path.
+func (c *termConn) winApply(w uint16) uint32 {
+	if c.clientShift == 0 {
+		return uint32(w)
+	}
+	return uint32(w) << c.clientShift
+}
+
 // atomicTime is a lock-free timestamp: feed stores it on EVERY packet of a
 // tunnel flow (i.e. on the capture receive goroutine), so a mutex here is
 // pure per-packet contention for a value only the 30 s sweeper reads.
@@ -505,24 +521,25 @@ func (a *atomicTime) Load() time.Time   { return time.Unix(0, a.ns.Load()) }
 func newTermConn(tm *Terminator, k termKey, syn TermPkt) *termConn {
 	isn := rand.Uint32()
 	c := &termConn{
-		tm:         tm,
-		k:          k,
-		ifidx:      syn.IfIdx,
-		subifidx:   syn.SubIfIdx,
-		clientNext: syn.Seq + 1,
-		clientWin:  syn.Window,
-		serverISN:  isn,
-		serverNext: isn + 1,
-		serverUna:  isn + 1,
-		advWin:     termWindow,
-		dialDone:   make(chan struct{}),
-		writeCh:    make(chan []byte, 128),
-		finSignal:  make(chan struct{}, 1),
-		ackSignal:  make(chan struct{}, 1),
-		closed:     make(chan struct{}),
+		tm:          tm,
+		k:           k,
+		ifidx:       syn.IfIdx,
+		subifidx:    syn.SubIfIdx,
+		clientNext:  syn.Seq + 1,
+		clientWin:   uint32(syn.Window), // SYN's window is never scaled
+		clientShift: syn.WScale,
+		serverISN:   isn,
+		serverNext:  isn + 1,
+		serverUna:   isn + 1,
+		advWin:      termWindow,
+		dialDone:    make(chan struct{}),
+		writeCh:     make(chan []byte, 128),
+		finSignal:   make(chan struct{}, 1),
+		ackSignal:   make(chan struct{}, 1),
+		closed:      make(chan struct{}),
 	}
 	if c.clientWin == 0 {
-		c.clientWin = termWindow // defensive: zero-window SYN
+		c.clientWin = c.winApply(termWindow) // defensive: zero-window SYN
 	}
 	c.lastSeen.Store(time.Now())
 	return c
@@ -607,8 +624,8 @@ func (c *termConn) feed(p TermPkt) {
 					slog.Uint64("ack", uint64(p.Ack)), slog.Uint64("serverNext", uint64(c.serverNext)))
 			}
 		}
-		if c.clientWin != p.Window {
-			c.clientWin = p.Window
+		if w := c.winApply(p.Window); c.clientWin != w {
+			c.clientWin = w
 		}
 		select {
 		case c.ackSignal <- struct{}{}:
@@ -657,7 +674,7 @@ func (c *termConn) feed(p TermPkt) {
 				c.sendACK() // dup-ack: prompts the client's fast retransmit
 				return
 			}
-			c.clientWin = p.Window
+			c.clientWin = c.winApply(p.Window)
 			// Build the batch within the room reserved under this same
 			// lock (only feed enqueues; pumpWrites only drains), so
 			// enqueueLocked cannot hit its full-queue arm here.
@@ -769,7 +786,7 @@ func (c *termConn) feed(p TermPkt) {
 	}
 
 	// Zero-window / keep-alive / pure ACK updates.
-	c.clientWin = p.Window
+	c.clientWin = c.winApply(p.Window)
 	c.mu.Unlock()
 }
 
@@ -1219,7 +1236,7 @@ func (c *termConn) waitWindowFor(n int, stall time.Duration) bool {
 			c.mu.Unlock()
 			return false
 		}
-		usable := int32(uint32(c.clientWin) - (c.serverNext - c.serverUna))
+		usable := int32(c.clientWin - (c.serverNext - c.serverUna))
 		una, win := c.serverUna, c.clientWin
 		c.mu.Unlock()
 		if usable >= int32(n) {

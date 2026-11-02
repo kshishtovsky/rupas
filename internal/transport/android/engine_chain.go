@@ -317,9 +317,10 @@ func TMNDialer(ep Endpoint, logf func(string)) (func(ctx context.Context, dst ne
 // tmnShapes defaults to browse: the record shape is the whole point of the
 // shaper, and an empty profile used to mean "keep the old constant-size
 // fingerprint". Cost on a live link: +5.6 % on 50 MB.
+// tmnShapes: пусто = off, см. tmnProfile.
 func tmnShapes(p string) string {
 	if p == "" {
-		return "browse"
+		return "off"
 	}
 	return p
 }

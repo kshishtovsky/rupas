@@ -44,9 +44,11 @@ type tmnPath struct {
 // fingerprint, and leaving the shape off by default meant every profile
 // written before the shaper existed kept that fingerprint. Cost measured on
 // a live link: +5.6 % on a 50 MB transfer.
+// tmnProfile: пусто = off. Форма трафика — опция, а не поведение по умолчанию:
+// включённая всем подряд она уже один раз стоила скорости всему туннелю.
 func tmnProfile(p string) string {
 	if p == "" {
-		return "browse"
+		return "off"
 	}
 	return p
 }

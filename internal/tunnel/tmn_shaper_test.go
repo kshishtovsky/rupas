@@ -7,7 +7,7 @@ import "testing"
 // всем, кто не вписал настройку руками. Явный off остаётся явным.
 func TestTMNProfileDefault(t *testing.T) {
 	for in, want := range map[string]string{
-		"":       "browse",
+		"":       "off",
 		"browse": "browse",
 		"off":    "off",
 		"video":  "video",

@@ -1,3 +1,10 @@
+## v0.13.0
+
+- chore(release): v0.13.0 (1ec2402)
+- Merge pull request #3 from kshishtovsky/feat/tmn-v020 (7d810b6)
+- feat(tmn): tuman v0.2.0 — AUTH v2, браузерный отпечаток, UDP, QUIC (63716e1)
+- docs(changelog): v0.12.0 (97e9f45)
+
 ## v0.12.0
 
 - chore(release): v0.12.0 (e5d67c0)

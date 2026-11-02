@@ -205,6 +205,18 @@ type Endpoint struct {
 	// pool is what gives TMN/1 its bandwidth: streams are spread over
 	// independent TCP connections, a single one stalls at its own window.
 	Conns int `yaml:"conns,omitempty"`
+	// Insecure skips certificate verification for a tmn endpoint. Emergency
+	// only (a self-signed server before the certificate is in place): it
+	// turns the one property that keeps a MITM with a trusted CA out of the
+	// tunnel — AUTH v2 — into the only line of defence.
+	Insecure bool `yaml:"insecure,omitempty"`
+	// QUIC carries a tmn endpoint over QUIC (UDP) instead of TLS over TCP
+	// (tmn only). The same tunnel: TLS 1.3 lives inside QUIC, stream
+	// multiplexing stays ours, and the server must listen on the UDP port
+	// (tmns `quic_listen`). Two transports for one endpoint kind exist
+	// because they fail differently under filtering: when TCP:443 is
+	// throttled the UDP path still carries, and vice versa.
+	QUIC bool `yaml:"quic,omitempty"`
 }
 
 // IsZero reports whether no meaningful field of the endpoint is set.
@@ -214,7 +226,7 @@ func (e Endpoint) IsZero() bool {
 		e.Flow == "" && e.Path == "" && e.Mode == "" && e.XPadding == "" &&
 		e.HTTPHost == "" &&
 		e.RealityPBK == "" && e.RealitySID == "" && e.UDPMode == "" &&
-		e.PSK == "" && e.Conns == 0
+		e.PSK == "" && e.Conns == 0 && !e.QUIC && !e.Insecure
 }
 
 // SingBoxKind reports whether the endpoint kind is carried by the embedded
@@ -232,7 +244,9 @@ func (e Endpoint) SingBoxKind() bool {
 // whether the UDP fallback chain exists).
 func (e Endpoint) SupportsUDP() bool {
 	switch e.Kind {
-	case KindVLESSTCP, KindVLESSReality, KindHysteria2:
+	case KindVLESSTCP, KindVLESSReality, KindHysteria2, KindTMN:
+		// tmn got UDP flows in tuman v0.2.0 (FlagUDP): a datagram becomes a
+		// mux stream of its own, so voice and QUIC ride the tunnel too.
 		return true
 	}
 	return false
@@ -304,6 +318,11 @@ func (e *Endpoint) Validate() error {
 		if e.Password == "" {
 			return errors.New("tunnel endpoint: password is empty")
 		}
+	}
+	// quic is a tmn transport: silently ignoring it on another kind would
+	// send TCP where the operator asked for UDP.
+	if e.QUIC && e.Kind != KindTMN {
+		return errors.New("tunnel endpoint: quic is only supported on tmn")
 	}
 	if e.Kind == KindVLESSReality && e.RealityPBK == "" {
 		return errors.New("tunnel endpoint: reality_public_key is empty")

@@ -35,6 +35,7 @@ const (
 	secReality = "reality"
 
 	transportTCP         = "tcp"
+	transportQUIC        = "quic" // tmn only: the same tunnel over QUIC
 	transportWS          = "ws"
 	transportGRPC        = "grpc"
 	transportXHTTP       = "xhttp"
@@ -55,6 +56,8 @@ type Endpoint struct {
 	PBK         string // reality public key
 	SID         string // reality short id
 	Insecure    bool   // tls allowInsecure/insecure=1
+	// QUIC carries a tmn endpoint over QUIC (UDP) instead of TLS/TCP.
+	QUIC bool
 
 	Transport string // tcp | ws | grpc | xhttp | httpupgrade
 	Path      string // ws/httpupgrade/xhttp path
@@ -132,7 +135,10 @@ func ParseShareLink(raw string) (Endpoint, error) {
 
 // parseTMNLink parses:
 //
-//	tmn://<psk-hex64>@host:port?sni=<cover>&conns=4&profile=off&insecure=0#name
+//	tmn://<psk-hex64>@host:port?sni=<cover>&conns=4&profile=off&insecure=0&fp=chrome&quic=0#name
+//
+// fp picks the ClientHello shape (empty → chrome), quic=1 puts the endpoint on
+// the UDP door (`quic_listen` on the server) instead of TLS/TCP.
 //
 // The PSK rides the userinfo slot like a vless uuid. SNI is mandatory for an
 // IP host (the cover domain is what the server's certificate is issued for);
@@ -182,17 +188,32 @@ func parseTMNLink(raw string) (Endpoint, error) {
 			return Endpoint{}, fmt.Errorf("sharelink: tmn: profile %q: want off|browse|video|bulk|voice", p)
 		}
 	}
+	// fp chooses the ClientHello shape; an unknown name would fail later, in
+	// the TLS layer, with a message the user cannot act on.
+	fp := q.Get("fp")
+	switch fp {
+	case "", "chrome", "firefox", "safari", "golang", "off":
+	default:
+		return Endpoint{}, fmt.Errorf("sharelink: tmn: fp %q: want chrome|firefox|safari|golang|off", fp)
+	}
+	quic := isTrue(q.Get("quic"))
+	transport := transportTCP
+	if quic {
+		transport = transportQUIC
+	}
 	return Endpoint{
-		Kind:      KindTMN,
-		Host:      host,
-		Port:      uint16(port),
-		PSK:       psk,
-		SNI:       sni,
-		Conns:     conns,
-		Insecure:  isTrue(q.Get("insecure")),
-		Security:  secTLS,
-		Transport: transportTCP,
-		Name:      u.Fragment,
+		Kind:        KindTMN,
+		Host:        host,
+		Port:        uint16(port),
+		PSK:         psk,
+		SNI:         sni,
+		Fingerprint: fp,
+		Conns:       conns,
+		Insecure:    isTrue(q.Get("insecure")),
+		QUIC:        quic,
+		Security:    secTLS,
+		Transport:   transport,
+		Name:        u.Fragment,
 	}, nil
 }
 

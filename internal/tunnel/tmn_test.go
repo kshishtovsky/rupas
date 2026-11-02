@@ -265,14 +265,15 @@ func TestTMNLazyCloseNeverDialed(t *testing.T) {
 	}
 }
 
-// Единственный tmn-ендпоинт не требует sing-box: ни портов, ни UDP-пути,
-// ни outbound'ов.
+// Единственный tmn-ендпоинт не требует sing-box: ни портов, ни outbound'ов.
+// UDP идёт тем же tmn-путём (флаг FlagUDP в потоке), поэтому plan.udp — тот же
+// ендпоинт, а не отдельный выход sing-box.
 func TestTMNOnlyPlanNeedsNoSingbox(t *testing.T) {
 	ep := &config.Endpoint{Kind: config.KindTMN, Host: "h", Port: 1, SNI: "s", PSK: strings.Repeat("5a", 32), Conns: 4}
 	cfg := config.TunnelConfig{TCP: ep}
 	plan := effectivePlan(cfg)
-	if plan.tcp != ep || plan.udp != nil {
-		t.Fatalf("план: tcp=%v udp=%v, ждали только tcp", plan.tcp, plan.udp)
+	if plan.tcp != ep || plan.udp != ep {
+		t.Fatalf("план: tcp=%v udp=%v, ждали тот же tmn-ендпоинт для обоих", plan.tcp, plan.udp)
 	}
 	ports, err := sbPortsForPlan(cfg)
 	if err != nil {

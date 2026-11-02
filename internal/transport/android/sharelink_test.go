@@ -294,10 +294,28 @@ func TestParseTMNLink(t *testing.T) {
 		t.Fatalf("defaults %+v", ep)
 	}
 
+	// quic=1 puts the endpoint on the UDP door; fp picks the ClientHello,
+	// and its absence leaves the choice to the carrier (chrome).
+	ep, err = ParseShareLink("tmn://" + psk + "@vps.example.net:18443?fp=firefox&quic=1")
+	if err != nil {
+		t.Fatalf("quic link rejected: %v", err)
+	}
+	if !ep.QUIC || ep.Transport != "quic" || ep.Fingerprint != "firefox" {
+		t.Fatalf("quic/fp не разобраны: %+v", ep)
+	}
+	ep, err = ParseShareLink("tmn://" + psk + "@vps.example.net:18443")
+	if err != nil {
+		t.Fatalf("plain link rejected: %v", err)
+	}
+	if ep.QUIC || ep.Transport != "tcp" || ep.Fingerprint != "" {
+		t.Fatalf("дефолты транспорта: %+v", ep)
+	}
+
 	bad := []struct{ name, link, want string }{
 		{"ip without sni", "tmn://" + psk + "@203.0.113.10:18443", "sni is required"},
 		{"no psk", "tmn://@203.0.113.10:18443?sni=a.example", "missing psk"},
 		{"short psk", "tmn://00112233@203.0.113.10:18443?sni=a.example", "psk"},
+		{"bad fp", "tmn://" + psk + "@203.0.113.10:18443?sni=a.example&fp=curl", "fp"},
 		{"conns too big", "tmn://" + psk + "@203.0.113.10:18443?sni=a.example&conns=9", "conns"},
 		{"bad profile", "tmn://" + psk + "@203.0.113.10:18443?sni=a.example&profile=weird", "profile"},
 	}

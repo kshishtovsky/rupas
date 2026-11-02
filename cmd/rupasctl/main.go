@@ -210,7 +210,7 @@ func renderTunnel(w io.Writer, s core.Snapshot) {
 	}
 	switch t.Mode {
 	case "tunnel":
-		fmt.Fprintf(w, "  tunnel:     %s (mode: tunnel — NAT → tproxy → vless+reality)\n", state)
+		fmt.Fprintf(w, "  tunnel:     %s (mode: tunnel — NAT → tproxy → carrier)\n", state)
 	case "escalated":
 		fmt.Fprintf(w, "  tunnel:     %s (mode: escalated — no endpoint, %d TUNNEL rule(s) → sni:desync / cidr,port:direct)\n",
 			state, t.EscalatedRules)

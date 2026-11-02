@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"math/rand/v2"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -571,12 +572,26 @@ func (s *Supervisor) run() {
 			}
 			if ev.kind == evReload && ev.cfg != nil {
 				old := cfg.Profile
+				// «Сохранить» с неизменённым конфигом не должно рвать живой
+				// туннель: Stop+Start убивает все потоки (замерено 2026-11-02:
+				// 1582 потока на пустом сохранении) и заново жжёт лимит
+				// соединений сервера. DeepEqual, а не сравнение по полям: в
+				// конфиге есть указатели и срезы (Tunnels, GeoIP, ALPN).
+				same := reflect.DeepEqual(cfg, ev.cfg)
 				// A calibration must not outlive the parameters it was
 				// measured for, and an unrelated rule edit must not throw
 				// it away: drop the probed profile only when the desync
 				// section itself changed.
 				desyncChanged := ev.cfg.Desync != cfg.Desync
 				cfg = ev.cfg
+				if same {
+					s.logf("config reloaded (без изменений, туннель не перезапускаю)")
+					store()
+					if ev.done != nil {
+						ev.done <- nil
+					}
+					continue
+				}
 				if desyncChanged {
 					if d, ok := s.deps.Pipeline.(interface{ DropProfile() }); ok {
 						d.DropProfile()

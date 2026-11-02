@@ -6,8 +6,8 @@ import (
 	"io"
 	"log"
 	"math/rand/v2"
-	"sync"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -545,5 +545,34 @@ func TestTunnelHealthWatchThreshold(t *testing.T) {
 		if strings.Contains(ev, "tunnel unhealthy") {
 			t.Fatalf("spurious tunnel degradation: %v", s.evlog.Last(50))
 		}
+	}
+}
+
+// TestReloadUnchangedConfigKeepsTunnel: «Сохранить» без правок не должно
+// рвать живой туннель. Раньше любой reload делал Stop+Start и убивал все
+// потоки, а заодно заново жёг лимит соединений на сервере.
+func TestReloadUnchangedConfigKeepsTunnel(t *testing.T) {
+	pipe := &fakePipeline{}
+	prober := &scriptProber{script: []ProfileResult{okDesync("open")}}
+	s := newTestSup(t, fastHysteresis(), pipe, prober)
+
+	_ = s.On()
+	waitForState(t, s, StateActive, 5*time.Second)
+	pipe.mu.Lock()
+	before := pipe.starts
+	pipe.mu.Unlock()
+
+	if err := s.Reload(config.Default()); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond) // дать циклу шанс перезапустить
+	pipe.mu.Lock()
+	after, stops := pipe.starts, pipe.stops
+	pipe.mu.Unlock()
+	if after != before || stops != 0 {
+		t.Fatalf("пустой reload перезапустил конвейер: starts %d->%d, stops %d", before, after, stops)
+	}
+	if s.Snapshot().State != string(StateActive) {
+		t.Fatalf("состояние после пустого reload: %s", s.Snapshot().State)
 	}
 }

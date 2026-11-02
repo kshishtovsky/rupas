@@ -280,7 +280,8 @@ func TestParseTMNLink(t *testing.T) {
 	}
 	// conns=6 в ссылке ужимается до потолка одного ендпоинта, а не отвергается:
 	// пул задаёт только ширину разветвления.
-	if ep.PSK != psk || ep.SNI != "camo.example.org" || ep.Conns != 2 || !ep.Insecure || ep.Name != "tuman" {
+	if ep.PSK != psk || ep.SNI != "camo.example.org" || ep.Conns != 2 || !ep.Insecure ||
+		ep.Profile != "browse" || ep.Name != "tuman" {
 		t.Fatalf("fields %+v", ep)
 	}
 	if !ep.NeedsNative() || ep.NeedsXHTTP() {
@@ -292,7 +293,7 @@ func TestParseTMNLink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("domain link rejected: %v", err)
 	}
-	if ep.SNI != "vps.example.net" || ep.Conns != 2 {
+	if ep.SNI != "vps.example.net" || ep.Conns != 2 || ep.Profile != "" {
 		t.Fatalf("defaults %+v", ep)
 	}
 
@@ -329,5 +330,23 @@ func TestParseTMNLink(t *testing.T) {
 		if err != nil && strings.Contains(err.Error(), psk) {
 			t.Errorf("%s: error leaks the psk: %v", c.name, err)
 		}
+	}
+}
+
+// profile= включает шейпер формы TLS-записей; неизвестное имя отвергается,
+// чтобы опечатка не оставила канал ровным и незамеченным.
+func TestParseTMNLinkProfile(t *testing.T) {
+	const psk = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+	for _, shape := range []string{"off", "browse", "video", "bulk", "voice"} {
+		ep, err := ParseShareLink("tmn://" + psk + "@vps.example.net:18443?profile=" + shape)
+		if err != nil {
+			t.Fatalf("%s отвергнут: %v", shape, err)
+		}
+		if ep.Profile != shape {
+			t.Fatalf("profile %q: получили %q", shape, ep.Profile)
+		}
+	}
+	if _, err := ParseShareLink("tmn://" + psk + "@vps.example.net:18443?profile=brows"); err == nil {
+		t.Fatal("опечатка в profile принята")
 	}
 }

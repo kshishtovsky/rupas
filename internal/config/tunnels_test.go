@@ -460,3 +460,28 @@ func TestEndpointQUICOnlyTMN(t *testing.T) {
 		t.Fatal("Endpoint{Insecure:true}.IsZero() == true")
 	}
 }
+
+// profile — единственный способ включить шейпер из приложения: пустое
+// значение значит off, а на не-tmn ендпоинте настройка обязана быть ошибкой,
+// иначе она молча не применится и будет выглядеть как применённая.
+func TestEndpointProfile(t *testing.T) {
+	base := Endpoint{Kind: KindTMN, Host: "h", Port: 443, SNI: "h", PSK: strings.Repeat("ab", 32)}
+	base.Profile = "browse"
+	if err := base.Validate(); err != nil {
+		t.Fatalf("browse отклонён: %v", err)
+	}
+	for _, bad := range []string{"brows", "BROWSE", "random"} {
+		e := base
+		e.Profile = bad
+		if err := e.Validate(); err == nil {
+			t.Fatalf("profile %q принят", bad)
+		}
+	}
+	other := Endpoint{Kind: KindVLESSReality, Host: "h", Port: 443, SNI: "h", UUID: "u", RealityPBK: "k", Profile: "browse"}
+	if err := other.Validate(); err == nil {
+		t.Fatal("profile на vless принят: он бы молча не применился")
+	}
+	if (Endpoint{Profile: ""}).IsZero() != (Endpoint{}).IsZero() {
+		t.Fatal("пустой profile делает ендпоинт непустым")
+	}
+}

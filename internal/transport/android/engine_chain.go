@@ -314,6 +314,15 @@ func TMNDialer(ep Endpoint, logf func(string)) (func(ctx context.Context, dst ne
 	return newTMNCarrier(ep, nil, logf)
 }
 
+// tmnShapes falls back to off: a profile saved before the shaper existed
+// must keep its old behaviour rather than pick one itself.
+func tmnShapes(p string) string {
+	if p == "" {
+		return "off"
+	}
+	return p
+}
+
 // tmnFP picks the ClientHello shape: a browser one by default, so a passive
 // classifier sees Chrome and not a Go TLS stack. AUTH v2 is on, which is what
 // makes uTLS possible at all (it exposes no TLS exporter).
@@ -353,7 +362,7 @@ func newTMNCarrier(ep Endpoint, dialer *net.Dialer, logf func(string)) (func(ctx
 		SNI:         ep.SNI,
 		Insecure:    ep.Insecure,
 		Conns:       ep.Conns,
-		Profile:     "off",
+		Profile:     tmnShapes(ep.Profile),
 		AuthV2:      true, // MAC of the server key: a MITM CA cannot answer AUTH_OK
 		Fingerprint: tmnFP(ep.Fingerprint),
 		Dialer:   dialer, // the protecting dialer: without it the sockets loop into the TUN

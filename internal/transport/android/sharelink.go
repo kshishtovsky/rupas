@@ -79,6 +79,9 @@ type Endpoint struct {
 	PSK string
 	// Conns is the TMN/1 session pool size (1..8, default 4).
 	Conns int
+	// Profile shapes the TLS record sizes of a tmn endpoint (off|browse|
+	// video|bulk|voice). Empty keeps the old behaviour (off).
+	Profile string
 
 	Name string // fragment (#tag), logging only
 }
@@ -135,7 +138,7 @@ func ParseShareLink(raw string) (Endpoint, error) {
 
 // parseTMNLink parses:
 //
-//	tmn://<psk-hex64>@host:port?sni=<cover>&conns=4&profile=off&insecure=0&fp=chrome&quic=0#name
+//	tmn://<psk-hex64>@host:port?sni=<cover>&conns=4&insecure=0&fp=chrome&quic=0&profile=browse#name
 //
 // fp picks the ClientHello shape (empty → chrome), quic=1 puts the endpoint on
 // the UDP door (`quic_listen` on the server) instead of TLS/TCP.
@@ -199,6 +202,12 @@ func parseTMNLink(raw string) (Endpoint, error) {
 		return Endpoint{}, fmt.Errorf("sharelink: tmn: fp %q: want chrome|firefox|safari|golang|off", fp)
 	}
 	quic := isTrue(q.Get("quic"))
+	shape := q.Get("profile")
+	switch shape {
+	case "", "off", "browse", "video", "bulk", "voice":
+	default:
+		return Endpoint{}, fmt.Errorf("sharelink: tmn: profile %q: want off|browse|video|bulk|voice", shape)
+	}
 	transport := transportTCP
 	if quic {
 		transport = transportQUIC
@@ -213,6 +222,7 @@ func parseTMNLink(raw string) (Endpoint, error) {
 		Conns:       conns,
 		Insecure:    isTrue(q.Get("insecure")),
 		QUIC:        quic,
+		Profile:     shape,
 		Security:    secTLS,
 		Transport:   transport,
 		Name:        u.Fragment,

@@ -39,6 +39,15 @@ type tmnPath struct {
 	dialTO time.Duration
 }
 
+// tmnProfile falls back to off: a link or config written before the shaper
+// existed must keep its old behaviour instead of picking a profile itself.
+func tmnProfile(p string) string {
+	if p == "" {
+		return "off"
+	}
+	return p
+}
+
 func newTMNPath(ep config.Endpoint, logger *slog.Logger) (*tmnPath, error) {
 	psk, err := config.NormalizePSK(ep.PSK)
 	if err != nil {
@@ -58,7 +67,7 @@ func newTMNPath(ep config.Endpoint, logger *slog.Logger) (*tmnPath, error) {
 		SNI:      ep.SNI,
 		Insecure: ep.Insecure,
 		Conns:    ep.Conns, // 0 → the library default (min(4, 2×endpoints))
-		Profile:  "off",    // the shaper stays off by default
+		Profile:  tmnProfile(ep.Profile),
 		// Cooldown 0 → the library default (30 s).
 		Logger:      prefixLogger(logger, "tmn: "),
 		AuthV2:      true, // MAC of the server key: a MITM CA cannot answer AUTH_OK

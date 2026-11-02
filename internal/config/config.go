@@ -219,6 +219,11 @@ type Endpoint struct {
 	// because they fail differently under filtering: when TCP:443 is
 	// throttled the UDP path still carries, and vice versa.
 	QUIC bool `yaml:"quic,omitempty"`
+	// Profile shapes the TLS record sizes of a tmn endpoint (off|browse|
+	// video|bulk|voice). A tunnel that writes one record size forever is a
+	// fingerprint in itself; the shaper draws sizes from a measured browser
+	// distribution instead. Empty keeps the old behaviour (off).
+	Profile string `yaml:"profile,omitempty"`
 }
 
 // IsZero reports whether no meaningful field of the endpoint is set.
@@ -228,7 +233,17 @@ func (e Endpoint) IsZero() bool {
 		e.Flow == "" && e.Path == "" && e.Mode == "" && e.XPadding == "" &&
 		e.HTTPHost == "" &&
 		e.RealityPBK == "" && e.RealitySID == "" && e.UDPMode == "" &&
-		e.PSK == "" && e.Conns == 0 && !e.QUIC && !e.Insecure
+		e.PSK == "" && e.Conns == 0 && !e.QUIC && !e.Insecure && e.Profile == ""
+}
+
+// tmnProfileValid mirrors the shaper's profile names. Kept as a list, not an
+// import: config must not depend on the tunnel package's dependency graph.
+func tmnProfileValid(p string) bool {
+	switch p {
+	case "off", "browse", "video", "bulk", "voice":
+		return true
+	}
+	return false
 }
 
 // SingBoxKind reports whether the endpoint kind is carried by the embedded
@@ -325,6 +340,14 @@ func (e *Endpoint) Validate() error {
 	// send TCP where the operator asked for UDP.
 	if e.QUIC && e.Kind != KindTMN {
 		return errors.New("tunnel endpoint: quic is only supported on tmn")
+	}
+	// profile is a tmn shaper setting: another kind's transport has its own
+	// padding knobs, and a silent no-op would look like it was applied.
+	if e.Profile != "" && e.Kind != KindTMN {
+		return errors.New("tunnel endpoint: profile is only supported on tmn")
+	}
+	if e.Profile != "" && !tmnProfileValid(e.Profile) {
+		return fmt.Errorf("tunnel endpoint: profile %q: off|browse|video|bulk|voice", e.Profile)
 	}
 	if e.Kind == KindVLESSReality && e.RealityPBK == "" {
 		return errors.New("tunnel endpoint: reality_public_key is empty")

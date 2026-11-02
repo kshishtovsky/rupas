@@ -1,3 +1,10 @@
+## v0.13.2
+
+- chore(release): v0.13.2 (c9b978e)
+- Merge pull request #5 from kshishtovsky/feat/tmn-v020 (3757b84)
+- fix(tmn): Conns — весь пул, а не число на ендпоинт (телефон не поднимал канал) (5cd4c06)
+- docs(changelog): v0.13.1 (8e90ca1)
+
 ## v0.13.1
 
 - chore(release): v0.13.1 (e63b590)

@@ -50,9 +50,9 @@ exclusions:
 func qrController(t *testing.T, yaml string) *Controller {
 	t.Helper()
 	dir := t.TempDir()
-	// links.json и onboarded.json живут в общем state-каталоге, а не рядом с
-	// конфигом: без подмены LocalAppData тест перезаписал бы каналы живой
-	// установки (так и случилось один раз — links.json уехал в temp).
+	// links.json и onboarded.json живут в state-каталоге, а не рядом с
+	// конфигом: без подмены тест перезаписал бы каналы живой установки
+	// (случалось дважды — второй раз 2026-11-03 fixture уехал в живой links.json).
 	t.Setenv("LocalAppData", dir)
 	path := filepath.Join(dir, "configs", "rupas.yaml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -63,14 +63,14 @@ func qrController(t *testing.T, yaml string) *Controller {
 	}
 	// Демона в тесте нет: writeConfig вернёт ErrDaemonDown, но файл уже
 	// заменён атомарно — этого достаточно, чтобы проверить применяемость.
-	return &Controller{opts: Options{ConfigPath: path}}
+	return &Controller{opts: Options{ConfigPath: path, StateDir: filepath.Join(dir, "rupas")}}
 }
 
 func TestQRRoundTripKeepsWholeConfig(t *testing.T) {
 	c := qrController(t, qrTestYAML)
 	// links.json в реальной установке есть всегда (его пишет «Сохранить»);
 	// каналы уезжают именно оттуда — без него QR остался бы без туннеля.
-	if err := saveLinksFile("tmn://00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff@203.0.113.10:18443?sni=example.com&conns=2#tmn"); err != nil {
+	if err := c.saveLinksFile("tmn://00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff@203.0.113.10:18443?sni=example.com&conns=2#tmn"); err != nil {
 		t.Fatalf("links: %v", err)
 	}
 	b, err := c.ExportQR()
@@ -91,7 +91,7 @@ func TestQRRoundTripKeepsWholeConfig(t *testing.T) {
 	}
 
 	// Импорт в ЧИСТЫЙ каталог: конфиг должен появиться целиком.
-	c2 := &Controller{opts: Options{ConfigPath: filepath.Join(t.TempDir(), "configs", "rupas.yaml")}}
+	c2 := &Controller{opts: Options{ConfigPath: filepath.Join(t.TempDir(), "configs", "rupas.yaml"), StateDir: t.TempDir()}}
 	if err := os.MkdirAll(filepath.Dir(c2.configPath()), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestImportQRToleratesWrappedText(t *testing.T) {
 		wrapped.WriteString(b.Text[i:end])
 		wrapped.WriteString("\r\n ")
 	}
-	target := &Controller{opts: Options{ConfigPath: filepath.Join(t.TempDir(), "configs", "rupas.yaml")}}
+	target := &Controller{opts: Options{ConfigPath: filepath.Join(t.TempDir(), "configs", "rupas.yaml"), StateDir: t.TempDir()}}
 	if err := os.MkdirAll(filepath.Dir(target.configPath()), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestImportQRRejectsInvalidConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &Controller{opts: Options{ConfigPath: filepath.Join(t.TempDir(), "configs", "rupas.yaml")}}
+	c := &Controller{opts: Options{ConfigPath: filepath.Join(t.TempDir(), "configs", "rupas.yaml"), StateDir: t.TempDir()}}
 	if err := os.MkdirAll(filepath.Dir(c.configPath()), 0o700); err != nil {
 		t.Fatal(err)
 	}

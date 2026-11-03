@@ -29,6 +29,10 @@ type Options struct {
 	DaemonPath string
 	// ConfigPath is the rupas YAML config the daemon runs with.
 	ConfigPath string
+	// StateDir overrides the state directory (links.json, onboarding marker).
+	// Tests must set it to t.TempDir(): the default is the live
+	// %LocalAppData%\rupas installation, which a test run would overwrite.
+	StateDir string
 	// LogPath is where the daemon stderr/stdout is appended.
 	LogPath string
 	// PollInterval is the status poll period (default 1s).
@@ -167,7 +171,7 @@ func (c *Controller) poll() Snapshot {
 	}
 	// Speeds: byte deltas over the poll gap (field-gated on state change so
 	// a jump from OFF does not produce a spike).
-	s.Gateway = c.gateway()
+	s.Gateway = c.gatewayForStatus()
 	s.RxRate, s.TxRate = c.rates(s.State, s.RxBytes, s.TxBytes)
 	return s
 }

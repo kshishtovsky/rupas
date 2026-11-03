@@ -74,7 +74,7 @@ func TestImportQRAcceptsAndroidPayload(t *testing.T) {
 
 func TestExportQRCarriesChannelsAndRules(t *testing.T) {
 	c := qrController(t, qrTestYAML)
-	if err := saveLinksFile(qrTestYAML); err != nil {
+	if err := c.saveLinksFile(qrTestYAML); err != nil {
 		t.Fatalf("links: %v", err)
 	}
 	b, err := c.ExportQR()

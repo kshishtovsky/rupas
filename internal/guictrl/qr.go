@@ -111,7 +111,7 @@ func (c *Controller) ExportQR() (QRBundle, error) {
 			GeoIP: r.GeoIP, Proto: r.Proto, Action: strings.ToLower(r.Action.String()),
 		})
 	}
-	if blob, err := loadLinksFile(); err == nil && strings.TrimSpace(blob) != "" {
+	if blob, err := c.loadLinksFile(); err == nil && strings.TrimSpace(blob) != "" {
 		for _, line := range strings.Split(blob, "\n") {
 			if line = strings.TrimSpace(line); line != "" {
 				doc.Links = append(doc.Links, line)
@@ -164,7 +164,7 @@ func (c *Controller) ImportQR(text string) (string, error) {
 	// links.json трогаем только после успешной записи конфига: иначе отказ
 	// демона оставил бы каналы в state, которых нет в rupas.yaml.
 	if linksBlob != "" {
-		if err := saveLinksFile(linksBlob); err != nil {
+		if err := c.saveLinksFile(linksBlob); err != nil {
 			return "", fmt.Errorf("конфиг применён, но каналы не сохранились: %w", err)
 		}
 	}

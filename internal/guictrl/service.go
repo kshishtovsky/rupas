@@ -315,7 +315,7 @@ func (c *Controller) SaveLinks(blob string) ([]string, error) {
 	if err != nil && !errors.Is(err, ErrDaemonDown) {
 		return warnings, err
 	}
-	if lerr := saveLinksFile(blob); lerr != nil {
+	if lerr := c.saveLinksFile(blob); lerr != nil {
 		return warnings, fmt.Errorf("конфиг сохранён, но список ссылок — нет: %w", lerr)
 	}
 	c.setGateway(tcp, udp)
@@ -462,7 +462,7 @@ type GUIState struct {
 // LoadState returns the persisted links blob + flags for Settings.
 func (c *Controller) LoadState() GUIState {
 	st := GUIState{DPI: true}
-	if blob, err := loadLinksFile(); err == nil {
+	if blob, err := c.loadLinksFile(); err == nil {
 		st.Links = blob
 	}
 	st.Autostart = c.Autostart()
@@ -565,6 +565,19 @@ func presetConfig(dpi bool) config.Config {
 
 // ---------- links + gateway persistence ----------
 
+// stateDir returns the controller's state directory (links.json, onboarding
+// marker). Tests MUST set Options.StateDir: without it the package-level
+// stateDir() points at the live %LocalAppData%\rupas installation, and a plain
+// `go test ./internal/guictrl` overwrites the user's own channel list with a
+// fixture — that is exactly how links.json got replaced by a 203.0.113.10
+// placeholder on 2026-11-03 ("all my configs are gone").
+func (c *Controller) stateDir() string {
+	if c != nil && c.opts.StateDir != "" {
+		return c.opts.StateDir
+	}
+	return stateDir()
+}
+
 func stateDir() string {
 	base := os.Getenv("LocalAppData")
 	if base == "" {
@@ -573,19 +586,19 @@ func stateDir() string {
 	return filepath.Join(base, "rupas")
 }
 
-func linksPath() string  { return filepath.Join(stateDir(), "links.json") }
-func markerPath() string { return filepath.Join(stateDir(), "onboarded.json") }
+func (c *Controller) linksPath() string  { return filepath.Join(c.stateDir(), "links.json") }
+func (c *Controller) markerPath() string { return filepath.Join(c.stateDir(), "onboarded.json") }
 
-func saveLinksFile(blob string) error {
-	if err := os.MkdirAll(stateDir(), 0o700); err != nil {
+func (c *Controller) saveLinksFile(blob string) error {
+	if err := os.MkdirAll(c.stateDir(), 0o700); err != nil {
 		return err
 	}
 	data, _ := json.Marshal(map[string]string{"links": blob})
-	return os.WriteFile(linksPath(), data, 0o600)
+	return os.WriteFile(c.linksPath(), data, 0o600)
 }
 
-func loadLinksFile() (string, error) {
-	data, err := os.ReadFile(linksPath())
+func (c *Controller) loadLinksFile() (string, error) {
+	data, err := os.ReadFile(c.linksPath())
 	if err != nil {
 		return "", err
 	}
@@ -594,6 +607,23 @@ func loadLinksFile() (string, error) {
 		return "", err
 	}
 	return m["links"], nil
+}
+
+// gatewayForStatus labels the Home «Шлюз» card. The in-memory value only
+// exists after «Сохранить», so a fresh GUI start showed "напрямую" while the
+// daemon was dialing tmn — a scary lie on the screen that matters most.
+// Fallback: whatever the config file actually dials.
+func (c *Controller) gatewayForStatus() string {
+	if gw := c.gateway(); gw != "" {
+		return gw
+	}
+	cfg, err := c.loadConfigForRules()
+	if err != nil || cfg.Tunnels == nil {
+		return ""
+	}
+	plan := cfg.TunnelPlan()
+	c.setGateway(plan.TCP, plan.UDP)
+	return c.gateway()
 }
 
 // setGateway remembers the primary channel for the Home «Шлюз» line.
@@ -631,7 +661,7 @@ func appendUniq(list []string, v string) []string {
 
 // Onboarded reports whether the first-run wizard has been completed.
 func (c *Controller) Onboarded() bool {
-	data, err := os.ReadFile(markerPath())
+	data, err := os.ReadFile(c.markerPath())
 	if err != nil {
 		return false
 	}
@@ -643,9 +673,9 @@ func (c *Controller) Onboarded() bool {
 
 // FinishOnboarding persists the wizard completion marker.
 func (c *Controller) FinishOnboarding() error {
-	if err := os.MkdirAll(stateDir(), 0o700); err != nil {
+	if err := os.MkdirAll(c.stateDir(), 0o700); err != nil {
 		return err
 	}
 	data, _ := json.Marshal(map[string]any{"done": true, "at": time.Now().Format(time.RFC3339)})
-	return os.WriteFile(markerPath(), data, 0o600)
+	return os.WriteFile(c.markerPath(), data, 0o600)
 }

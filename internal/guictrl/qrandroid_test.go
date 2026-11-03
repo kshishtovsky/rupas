@@ -38,21 +38,26 @@ func TestImportQRAcceptsAndroidPayload(t *testing.T) {
 	}
 	// Демона в тесте нет: ImportQR вернул ErrDaemonDown и пустую сводку, но
 	// конфиг уже заменён атомарно — проверяем именно файл.
-	if err == nil && !strings.Contains(summary, "2 правил") {
-		t.Fatalf("сводка = %q, ждали 2 правила (маркер default не правило)", summary)
+	// 3 = 2 правила + маркер {action:tunnel} из payload, который теперь
+	// применяется как default (раньше выбрасывался → default=DIRECT → IP-утечка).
+	if err == nil && !strings.Contains(summary, "3 правил") {
+		t.Fatalf("сводка = %q, ждали 3 правила (2 + default-маркер)", summary)
 	}
 	cfg, err := loadCurrentConfig(c.configPath())
 	if err != nil {
 		t.Fatalf("конфиг не читается после импорта: %v", err)
 	}
-	if len(cfg.Rules) != 2 {
-		t.Fatalf("правил %d, ждали 2: %+v", len(cfg.Rules), cfg.Rules)
+	if len(cfg.Rules) != 3 {
+		t.Fatalf("правил %d, ждали 3: %+v", len(cfg.Rules), cfg.Rules)
 	}
 	if cfg.Rules[0].CIDR != "10.0.0.0/8" || strings.ToLower(cfg.Rules[0].Action.String()) != "direct" {
 		t.Fatalf("первое правило искажено: %+v", cfg.Rules[0])
 	}
 	if cfg.Rules[1].SNI != "youtube.com" || strings.ToLower(cfg.Rules[1].Action.String()) != "tunnel" {
 		t.Fatalf("второе правило искажено: %+v", cfg.Rules[1])
+	}
+	if cfg.Rules[2].SNI != "" || cfg.Rules[2].CIDR != "" || strings.ToLower(cfg.Rules[2].Action.String()) != "tunnel" {
+		t.Fatalf("маркер default не применён: %+v", cfg.Rules[2])
 	}
 	// Каналы из QR применяются: без них телефон приехал бы с пустым туннелем.
 	if cfg.Tunnels == nil || cfg.Tunnels.TCP == nil {

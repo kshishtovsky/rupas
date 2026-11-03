@@ -103,8 +103,13 @@ func TestQRRoundTripKeepsWholeConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("применённый конфиг не читается: %v", err)
 	}
-	if len(got.Rules) != 3 || got.Desync.Strategy != "fake_split" || got.Desync.TTL != 4 {
+	// 4 = 3 исходных правила + catch-all, который writeConfig дописывает
+	// конфигу БЕЗ правила по умолчанию (иначе default=DIRECT = утечка IP).
+	if len(got.Rules) != 4 || got.Desync.Strategy != "fake_split" || got.Desync.TTL != 4 {
 		t.Fatalf("правила/desync потерялись: %+v / %+v", got.Rules, got.Desync)
+	}
+	if last := got.Rules[3]; last.SNI != "" || last.CIDR != "" || last.Ports != "" || last.Action != config.ActionTunnel {
+		t.Fatalf("catch-all не дописан или не tunnel: %+v", last)
 	}
 	if got.Tunnels == nil || got.Tunnels.TCP == nil || got.Tunnels.TCP.Port != 18443 {
 		t.Fatalf("канал потерян: %+v", got.Tunnels)

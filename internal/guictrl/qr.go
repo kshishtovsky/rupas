@@ -198,10 +198,21 @@ func (c *Controller) applyQRPayload(raw []byte) (*config.Config, *qrDoc, string,
 	}
 	if len(doc.Rules) > 0 {
 		cur.Rules = nil
+		// Android кладёт в конец массива правило-маркер {action:…} без
+		// матчера — это выбранное на телефоне действие по умолчанию.
+		// Раньше маркер ВЫБРАСЫВАЛСЯ, и конфиг уезжал без catch-all:
+		// default=DIRECT (нулевое значение Action) → всё несмаченное шло
+		// с реальным IP (живьём 2026-11-03). Теперь он применяется как
+		// есть; отсутствие маркера закроет ensureCatchAll.
+		var defAction config.Action
+		var haveDefault bool
 		for _, r := range doc.Rules {
-			// Android кладёт в конец массива правило-маркер {action:…} без
-			// матчера — это его «действие по умолчанию», а не правило.
 			if r.App == "" && r.CIDR == "" && r.SNI == "" && r.Ports == "" && r.GeoIP == "" && r.Proto == "" {
+				act, err := config.ParseAction(r.Action)
+				if err != nil {
+					return nil, nil, "", err
+				}
+				defAction, haveDefault = act, true
 				continue
 			}
 			act, err := config.ParseAction(r.Action)
@@ -212,6 +223,9 @@ func (c *Controller) applyQRPayload(raw []byte) (*config.Config, *qrDoc, string,
 				App: r.App, CIDR: r.CIDR, SNI: r.SNI, Ports: r.Ports,
 				GeoIP: r.GeoIP, Proto: r.Proto, Action: act,
 			})
+		}
+		if haveDefault {
+			cur.Rules = append(cur.Rules, config.Rule{Action: defAction})
 		}
 	}
 	if doc.Desync != nil {

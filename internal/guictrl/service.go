@@ -389,9 +389,26 @@ func (c *Controller) CheckLinks(blob string) ([]string, error) {
 	return warnings, nil
 }
 
+// ensureCatchAll keeps the fail-closed doctrine on every save. A rule list
+// without a catch-all rule means default=DIRECT, because DIRECT is Action's
+// zero value — i.e. a silent real-IP leak on every unmatched destination
+// (live 2026-11-03: a save dropped the trailing rule and the whole machine
+// went out with the ISP address while the panel still said "tunnel: healthy").
+// A rule whose matchers are all empty IS the catch-all; a deliberate
+// `default: direct` comes through with ActionDirect and is left alone.
+func ensureCatchAll(list []config.Rule) []config.Rule {
+	for _, r := range list {
+		if r.App == "" && r.CIDR == "" && r.SNI == "" && r.Ports == "" && r.GeoIP == "" {
+			return list
+		}
+	}
+	return append(list, config.Rule{Action: config.ActionTunnel})
+}
+
 // writeConfig runs the TUI save contract: engine validation on a temp file,
 // backup, atomic replace, hot-reload a live daemon, rollback on refusal.
 func (c *Controller) writeConfig(cfg config.Config) error {
+	cfg.Rules = ensureCatchAll(cfg.Rules)
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return err

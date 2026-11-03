@@ -1,3 +1,8 @@
+## v0.20.2
+
+- chore(release): v0.20.2 (6809454)
+- fix(capture): IPv6 CIDR-правило и утёкший tproxy-порт больше не убивают туннель (6d8bda6)
+
 ## v0.20.1
 
 - chore(release): v0.20.1 (d95d8fb)

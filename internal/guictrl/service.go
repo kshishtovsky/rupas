@@ -6,6 +6,7 @@ package guictrl
 import (
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -579,6 +580,12 @@ func (c *Controller) stateDir() string {
 }
 
 func stateDir() string {
+	// Safety net: a test binary must never touch the live installation. It
+	// already did twice (links.json replaced by a fixture, "all my configs are
+	// gone"), and every test that forgets Options.StateDir would repeat it.
+	if flag.Lookup("test.v") != nil {
+		return filepath.Join(os.TempDir(), "rupas-test-state")
+	}
 	base := os.Getenv("LocalAppData")
 	if base == "" {
 		base = os.TempDir()

@@ -116,8 +116,9 @@ func TestDemoteTunnelRules(t *testing.T) {
 func TestTunnelCIDRsAndFirstIPAndHostOf(t *testing.T) {
 	rules := []config.Rule{
 		{CIDR: "149.154.160.0/20", Action: config.ActionTunnel},
-		{CIDR: "91.108.0.0/16", Action: config.ActionDesync}, // wrong action: ignored
-		{SNI: "x", Action: config.ActionTunnel},              // not a CIDR rule
+		{CIDR: "91.108.0.0/16", Action: config.ActionDesync},     // wrong action: ignored
+		{CIDR: "2001:67c:4e8::/48", Action: config.ActionTunnel}, // v6: WinDivert filter cannot carry it
+		{SNI: "x", Action: config.ActionTunnel},                  // not a CIDR rule
 	}
 	got := tunnelCIDRs(rules)
 	if len(got) != 1 || got[0] != "149.154.160.0/20" {

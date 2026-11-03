@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -391,14 +392,22 @@ func escalateTunnelRules(effCfg *config.Config, base *config.Config, log *log.Lo
 	return n
 }
 
-// tunnelCIDRs lists the CIDR matchers of TUNNEL rules (widens the capture
-// filter for the NAT branch, SYSTEM_DESIGN §3.1).
+// tunnelCIDRs lists the CIDRs the capture filter must watch for the tunnel
+// branch. IPv6 prefixes are dropped: this WinDivert build rejects IPv6
+// literals, and one bad prefix used to kill the whole capture handle
+// (2026-11-03: v6 ТГ-CIDR rule → "capture run failed" → tunnel left holding
+// its tproxy port → every TUNNEL rule escalated to direct). The rules
+// themselves stay in the table; v6 traffic is simply never captured.
 func tunnelCIDRs(rules []config.Rule) []string {
 	var out []string
 	for _, r := range rules {
-		if r.Action == config.ActionTunnel && r.CIDR != "" {
-			out = append(out, r.CIDR)
+		if r.Action != config.ActionTunnel || r.CIDR == "" {
+			continue
 		}
+		if p, err := netip.ParsePrefix(r.CIDR); err != nil || !p.Addr().Is4() {
+			continue
+		}
+		out = append(out, r.CIDR)
 	}
 	return out
 }

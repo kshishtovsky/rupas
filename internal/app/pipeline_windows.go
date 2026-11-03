@@ -271,6 +271,15 @@ func (p *capturePipeline) admissionGate(hl tunnel.Tunnel) func() bool {
 func (p *capturePipeline) startLocked(cfg *config.Config) error {
 	if p.running {
 		p.stopLocked()
+	} else if p.tun != nil {
+		// Capture died on its own (run goroutine cleared `running` but left
+		// the tunnel): its tproxy listeners still hold the port, so the
+		// fresh tunnel below would fail to bind and every TUNNEL rule would
+		// escalate to direct for the rest of the process lifetime.
+		if err := p.tun.Stop(); err != nil {
+			p.log.Printf("app: stale tunnel stop: %v", err)
+		}
+		p.tun = nil
 	}
 	eff := effectiveDesync(cfg.Desync, p.override)
 
@@ -308,6 +317,12 @@ func (p *capturePipeline) startLocked(cfg *config.Config) error {
 		tun = newTunnel(cfg, p.tproxyPort, p.provider, p.log, p.tunnelOpts)
 		if err := tun.Start(context.Background()); err != nil {
 			p.log.Printf("app: tunnel start failed: %v; escalating TUNNEL rules (sni→desync, cidr/port→direct)", err)
+			// A half-started tunnel already owns its listeners: dropping the
+			// object without Stop leaks the port and every later start fails
+			// to bind (observed 2026-11-03: 12 failed starts, Telegram direct).
+			if serr := tun.Stop(); serr != nil {
+				p.log.Printf("app: tunnel cleanup after failed start: %v", serr)
+			}
 			escal = escalateTunnelRules(&effCfg, cfg, p.log)
 			mode = tunnelModeEscalated
 			tun = nil

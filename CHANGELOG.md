@@ -1,3 +1,9 @@
+## v0.20.4
+
+- chore(release): v0.20.4 (4f89366)
+- fix(guictrl): тесты больше не затирают links.json живой установки (ce3b10d)
+- docs(changelog): v0.20.3 (78752ea)
+
 ## v0.20.3
 
 - chore(release): v0.20.3 (7c700d0)

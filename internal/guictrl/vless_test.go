@@ -105,6 +105,37 @@ func TestChannelsToPlan(t *testing.T) {
 	}
 }
 
+// TestVLESTLSCarriesVisionFlow: a panel inbound with Vision enabled answers a
+// flow-less client with EOF, so the link's flow must reach the endpoint even
+// when security=tls (not only reality). Live-verified against 3x-ui.
+func TestVLESTLSCarriesVisionFlow(t *testing.T) {
+	blob := "vless://0f4e1c2d-3b5a-4c6d-8e9f-aabbccddeeff@vps.example.net:443?type=tcp&security=tls" +
+		"&sni=camo.net&fp=chrome&flow=xtls-rprx-vision#vision\n" +
+		"vless://0f4e1c2d-3b5a-4c6d-8e9f-aabbccddeeff@vps.example.net:8443?type=tcp&security=tls&sni=camo.net#plain\n"
+
+	tcp, _, _, _, err := channelsToPlan(blob)
+	if err != nil {
+		t.Fatalf("channelsToPlan: %v", err)
+	}
+	if tcp == nil || tcp.Kind != "vless_tcp" {
+		t.Fatalf("tcp: %+v", tcp)
+	}
+	if tcp.Flow != "xtls-rprx-vision" {
+		t.Fatalf("flow = %q, want xtls-rprx-vision (server rejects flow-less clients)", tcp.Flow)
+	}
+	if err := tcp.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+
+	plain, _, _, _, err := channelsToPlan("vless://uuid@vps.example.net:8443?type=tcp&security=tls&sni=camo.net#plain")
+	if err != nil {
+		t.Fatalf("channelsToPlan plain: %v", err)
+	}
+	if plain == nil || plain.Flow != "" {
+		t.Fatalf("plain flow = %q, want empty", plain.Flow)
+	}
+}
+
 // presetConfig must survive engine validation in desync-only mode too.
 func TestPresetConfigValidates(t *testing.T) {
 	cfg := presetConfig(true)

@@ -166,8 +166,17 @@ desync:
 	if !tanuki || !lan {
 		t.Fatalf("custom rules dropped: tanuki=%v lan=%v (%d rules)", tanuki, lan, len(cfg.Rules))
 	}
-	if len(cfg.Exclusions.Domains) != 1 || cfg.Exclusions.Domains[0] != "spiderssense.com" {
+	if len(cfg.Exclusions.Domains) < 1 || cfg.Exclusions.Domains[0] != "spiderssense.com" {
 		t.Fatalf("exclusions dropped: %v", cfg.Exclusions.Domains)
+	}
+	// The channel's own server must be excluded too, or the carrier's dial is
+	// captured into the tunnel it is bringing up (tunnel never comes up).
+	var own bool
+	for _, d := range cfg.Exclusions.Domains {
+		own = own || d == "camo.net"
+	}
+	if !own {
+		t.Fatalf("channel endpoint not excluded: %v", cfg.Exclusions.Domains)
 	}
 	if cfg.Desync.TTL != 7 {
 		t.Fatalf("calibrated desync replaced by the preset: ttl=%d, want 7", cfg.Desync.TTL)

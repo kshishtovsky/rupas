@@ -143,12 +143,15 @@ func endpointFor(ep android.Endpoint) (config.Endpoint, string) {
 			SNI:         ep.SNI,
 			ALPN:        orDefault2(ep.ALPN, []string{"h2", "http/1.1"}),
 			Fingerprint: orDefault(ep.Fingerprint, "chrome"),
+			// A panel inbound with Vision enabled answers a flow-less client
+			// with EOF at the TLS stage, so the link's flow is part of the
+			// channel, not a Reality-only detail.
+			Flow: ep.Flow,
 		}
 		if ep.Security == "reality" {
 			out.Kind = "vless_reality"
 			out.RealityPBK = ep.PBK
 			out.RealitySID = ep.SID
-			out.Flow = ep.Flow
 		}
 		return out, "tcp"
 	default:

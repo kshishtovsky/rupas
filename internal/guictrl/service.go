@@ -295,21 +295,12 @@ func (c *Controller) SaveLinks(blob string) ([]string, error) {
 			}
 		}
 	}
-	// The TMN client dials its own endpoint (TLS to host:port with the cover
-	// SNI); WinDivert would capture that connection and, with the plan's
-	// TUNNEL default, loop it back into the tunnel that is not up yet —
-	// «туннель молчит» forever (docs/TMN_INTEGRATION.md §5).
-	for _, ep := range []*config.Endpoint{tcp, fb} {
-		if ep == nil || ep.Kind != config.KindTMN {
-			continue
-		}
-		if ep.SNI != "" {
-			cfg.Exclusions.Domains = appendUniq(cfg.Exclusions.Domains, ep.SNI)
-		}
-		if ip := net.ParseIP(ep.Host); ip != nil {
-			cfg.Exclusions.CIDRs = appendUniq(cfg.Exclusions.CIDRs, ip.String()+"/32")
-		}
-	}
+	// The carrier dials its own endpoint; WinDivert would capture that
+	// connection and, with the plan's TUNNEL default, loop it back into the
+	// tunnel that is not up yet — «туннель молчит» forever
+	// (docs/TMN_INTEGRATION.md §5). Applies to every kind, not only TMN: a
+	// vless-tls channel was RST'd the same way (live 2026-11-06, 3x-ui VPS).
+	cfg.Exclusions = excludeCarrierEndpoints(cfg.Exclusions, tcp, udp, fb)
 	// ErrDaemonDown means "written to disk, not confirmed": keep the file
 	// (design contract) but still surface it so the UI can say so.
 	err = c.writeConfig(cfg)
@@ -321,6 +312,27 @@ func (c *Controller) SaveLinks(blob string) ([]string, error) {
 	}
 	c.setGateway(tcp, udp)
 	return warnings, err
+}
+
+// excludeCarrierEndpoints adds every channel's own server to the DIRECT
+// exclusions: the carrier's dial to host:port is captured by WinDivert too, and
+// under the plan's TUNNEL default it would be reset and re-dialed against a
+// tunnel that is not up yet.
+func excludeCarrierEndpoints(ex config.Exclusions, eps ...*config.Endpoint) config.Exclusions {
+	for _, ep := range eps {
+		if ep == nil || ep.Host == "" {
+			continue
+		}
+		if ep.SNI != "" {
+			ex.Domains = appendUniq(ex.Domains, ep.SNI)
+		}
+		if ip := net.ParseIP(ep.Host); ip != nil {
+			ex.CIDRs = appendUniq(ex.CIDRs, ip.String()+"/32")
+		} else {
+			ex.Domains = appendUniq(ex.Domains, ep.Host)
+		}
+	}
+	return ex
 }
 
 // keepLiveSecret copies the credential fields from the endpoint the daemon is

@@ -67,3 +67,4 @@
 - chore(release): v0.18.1 (0a906a5)
 - test(tcpterm): регресс на потолок окна — синтетический RTT (0a906a5)
 - test: all internal packages green (config/prober/inspector/desync/flowtable/tunnel/rules/supervisor — ~250 tests); cmd/ failures pre-existing Windows-only build tag issue (pipelineDeps, SetDeadline)
+- fix(tests): internal/app (pipelineDeps), capture (TCPPkt/Engine — //go:build windows), guictrl (SetDeadline) known pre-existing on Linux; all non-windows internal packages green

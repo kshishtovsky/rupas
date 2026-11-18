@@ -127,3 +127,24 @@ func TestSaveProfileFillsDefaults(t *testing.T) {
 		t.Fatalf("ttl_star = %d", out.TTLStar)
 	}
 }
+
+func TestProfileVerify(t *testing.T) {
+	p := &PersistedProfile{SchemaVersion: 1, TTLStar: 13, TTLMargin: 2}
+	path := t.TempDir() + "/profile.json"
+	if err := SaveProfile(path, p); err != nil {
+		t.Fatalf("SaveProfile: %v", err)
+	}
+
+	// Empty key → nil (forward-compatible).
+	if err := VerifyProfile(path, nil); err != nil {
+		t.Errorf("nil key: %v", err)
+	}
+
+	// Tampered file → ErrProfileTampered.
+	data, _ := os.ReadFile(path)
+	data = append(data, byte('x'))
+	os.WriteFile(path, data, 0644)
+	if err := VerifyProfile(path, []byte("k")); err != ErrProfileTampered {
+		t.Errorf("tampered: %v, want %v", err, ErrProfileTampered)
+	}
+}

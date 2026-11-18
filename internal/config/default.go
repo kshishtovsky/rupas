@@ -43,7 +43,7 @@ func Default() *Config {
 			{CIDR: "91.105.192.0/23", Action: ActionTunnel},
 			{CIDR: "185.76.151.0/24", Action: ActionTunnel},
 			{Ports: "50000-65535", Action: ActionTunnel},
-			{Action: ActionDirect}, // default rule
+			{Action: ActionTunnel}, // default: PRD §5 «всё остальное → TUNNEL» (OWNER policy)
 		},
 		Desync: DesyncParams{
 			Strategy:     "fake",

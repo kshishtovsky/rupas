@@ -62,7 +62,7 @@ func (nopPlatform) FindConnectionOwner(*adapter.FindConnectionOwnerRequest) (*ad
 
 func (nopPlatform) UsePlatformWIFIMonitor() bool { return false }
 
-func (nopPlatform) UsePlatformNotification() bool                { return false }
+func (nopPlatform) UsePlatformNotification() bool { return true }
 func (nopPlatform) SendNotification(*adapter.Notification) error { return errNotSupported }
 func (nopPlatform) CancelNotification(string, int32) error       { return errNotSupported }
 

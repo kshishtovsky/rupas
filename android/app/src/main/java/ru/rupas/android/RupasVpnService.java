@@ -4,6 +4,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.app.PowerManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -64,6 +65,9 @@ public class RupasVpnService extends VpnService {
 
     private ParcelFileDescriptor tun;
     private PlatformImpl platform;
+    // WakeLock: PARTIAL, держит CPU во время probe (~3 мин), отпускает после SaveProfile.
+    private volatile PowerManager.WakeLock wakeLock;
+    private volatile int wakeRefCount;
     // Последнее собранное уведомление (честный статус туннеля после старта).
     private Notification notification;
     // Ядро запускалось именно этим экземпляром (binding с BIND_AUTO_CREATE
@@ -438,6 +442,42 @@ public class RupasVpnService extends VpnService {
         nm.notify(NOTIFICATION_ID, b.build());
     }
 
+    /**
+     * Acquire: держит CPU, пока probe (Classify/CalibrateTTL, ~3 мин) не завершится.
+     * Re-entrant — счётчик, чтобы вложенные вызовы не выкинули lock.
+     */
+    public static void acquireWakeLock(Context ctx) {
+        if (ctx == null) return;
+        PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+        if (pm == null) return;
+        synchronized (RupasVpnService.class) {
+            if (instance.wakeLock == null) {
+                instance.wakeLock = pm.newWakeLock(
+                        PowerManager.PARTIAL_WAKE_LOCK, "rupas:probe");
+            }
+            instance.wakeLock.acquire();
+            instance.wakeRefCount++;
+        }
+    }
+
+    /** Release: matched to acquire; last release wakes CPU. */
+    public static void releaseWakeLock() {
+        PowerManager.WakeLock wl;
+        synchronized (RupasVpnService.class) {
+            if (instance.wakeRefCount <= 0) return;
+            instance.wakeRefCount--;
+            if (instance.wakeRefCount == 0 && instance.wakeLock != null) {
+                wl = instance.wakeLock;
+                instance.wakeLock = null;
+            } else {
+                wl = null;
+            }
+        }
+        if (wl != null && wl.isHeld()) {
+            try { wl.release(); } catch (Exception ignored) {}
+        }
+    }
+
     private void startForegroundWithStatus() {
         Notification n = buildNotification("Туннель включён", "Защита активна", "Запускаем…");
         if (Build.VERSION.SDK_INT >= 34) {
@@ -448,6 +488,7 @@ public class RupasVpnService extends VpnService {
         }
     }
 
+    /** @param status один из ACTIVE/DEGRADED/OFF — подставляет статус в текст. */
     private Notification buildNotification(String title, String content, String subText) {
         Intent open = new Intent(this, MainActivity.class);
         PendingIntent piOpen = PendingIntent.getActivity(

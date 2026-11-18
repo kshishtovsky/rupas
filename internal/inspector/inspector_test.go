@@ -410,7 +410,7 @@ func TestFeedSynthetic(t *testing.T) {
 		},
 		{
 			name:    "ech_real_payload_is_ech",
-			ch:      synthCH{exts: extBytes(extECH, make([]byte, 256))}.build(),
+			ch:      synthCH{exts: extBytes(extECH, append([]byte{0xfe, 0x01}, make([]byte, 254)...))}.build(), // HPKE version 0xfe01
 			wantECH: true,
 		},
 		{
@@ -915,5 +915,44 @@ func TestParseClientHelloOneByteExtTail(t *testing.T) {
 	b[8]++              // handshake length low byte, same
 	if _, err := parseClientHello(b); !errors.Is(err, ErrMalformed) {
 		t.Fatalf("want ErrMalformed, got %v", err)
+	}
+}
+
+// TestParseECHGreaseStub_4Byte verifies the P1 fix: a GREASE ECH stub
+// with elen=4 (the exact shape that was misclassified as real ECH
+// before — draft-ietf-tls-esni §6.1, clients append {0} → 4-byte value)
+// must NOT be treated as real ECH.
+func TestParseECHGreaseStub_4Byte(t *testing.T) {
+	// ext_value = 0x00 0x00 0x00 0x00 (GREASE stub, elen=4).
+	b := synthCH{exts: extBytes(extECH, []byte{0, 0, 0, 0})}.build()
+	res, err := parseClientHello(b)
+	if err != nil {
+		t.Fatalf("parseClientHello: %v", err)
+	}
+	if res.ECH {
+		t.Errorf("ECH = true for GREASE elen=4 stub, want false")
+	}
+}
+
+// TestParseECHRealHPKE verifies that real ECH (HPKE config list, version 0xfe01)
+// is correctly classified, including a realistic ~80-byte payload.
+func TestParseECHRealHPKE(t *testing.T) {
+	// Minimal HPKE ECHConfigList: version=0xfe01, then 76 bytes of data.
+	hpke := make([]byte, 80)
+	hpke[0] = 0xfe // version high
+	hpke[1] = 0x01 // version low
+	b := synthCH{exts: extBytes(extECH, hpke)}.build()
+	res, _ := parseClientHello(b)
+	if !res.ECH {
+		t.Error("ECH = false for real HPKE config, want true")
+	}
+}
+
+// TestParseECHLegacyGreaseStub checks the legacy code point 0xff0d with elen=4.
+func TestParseECHLegacyGreaseStub(t *testing.T) {
+	b := synthCH{exts: extBytes(extECHLegacy, []byte{0, 0, 0, 0})}.build()
+	res, _ := parseClientHello(b)
+	if res.ECH {
+		t.Error("ECH = true for legacy elen=4 stub, want false")
 	}
 }

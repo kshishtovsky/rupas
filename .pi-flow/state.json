@@ -1,0 +1,45 @@
+{
+  "slug": "android-battery",
+  "stage": "done",
+  "goal": "Реализовать Android battery optimization: WakeLock на probe, foreground notification, exact-alarm; затем merge в master и проверка сборки APK.",
+  "startedAt": "2026-11-18T22:30:28.546Z",
+  "updatedAt": "2026-11-18T22:38:02.391Z",
+  "history": [
+    {
+      "stage": "analysis",
+      "at": "2026-11-18T22:30:28.546Z"
+    },
+    {
+      "stage": "spec",
+      "at": "2026-11-18T22:32:03.441Z"
+    },
+    {
+      "stage": "plan",
+      "at": "2026-11-18T22:32:27.741Z"
+    },
+    {
+      "stage": "tasks",
+      "at": "2026-11-18T22:34:13.930Z"
+    },
+    {
+      "stage": "implement",
+      "at": "2026-11-18T22:34:57.046Z"
+    },
+    {
+      "stage": "review",
+      "at": "2026-11-18T22:36:38.217Z"
+    },
+    {
+      "stage": "verify",
+      "at": "2026-11-18T22:36:49.166Z"
+    },
+    {
+      "stage": "deploy",
+      "at": "2026-11-18T22:37:12.622Z"
+    },
+    {
+      "stage": "done",
+      "at": "2026-11-18T22:38:02.391Z"
+    }
+  ]
+}

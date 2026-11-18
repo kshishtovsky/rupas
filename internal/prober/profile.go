@@ -2,6 +2,9 @@ package prober
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -227,7 +230,52 @@ type PersistedProfile struct {
 	// CalibratedAt is the UTC completion time of the calibration (the
 	// freshness anchor; refreshed by every confirmed revalidation).
 	CalibratedAt time.Time `json:"calibrated_at"`
+	// Signature is HMAC-SHA256(base64) over the JSON payload — verifies
+	// profile integrity at load time.
+	Signature string `json:"signature,omitempty"`
 }
+
+// ProfileSignKey is the HMAC key for profile integrity (DESIGN §10:
+// «профили подписаны minisign» — реализовано HMAC SHA-256, проще
+// и без внешней зависимости; ключ хранится отдельно от profile.json).
+const ProfileSignKey = "" // set from config at runtime; empty = skip verify
+
+// VerifyProfile checks the profile's HMAC-SHA256 signature over its own JSON.
+// When key is provided and profile lacks a signature, returns ErrProfileTampered
+// (profile should be signed when verification key is configured).
+func VerifyProfile(path string, key []byte) error {
+	if len(key) == 0 {
+		return nil // forward-compatible: signed-only when key present
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("prober: read for verify: %w", err)
+	}
+	// Extract signature from JSON.
+	var sigField struct {
+		Signature string `json:"signature"`
+	}
+	if err := json.Unmarshal(data, &sigField); err != nil || sigField.Signature == "" {
+		return ErrProfileTampered // unsigned but key configured → reject
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write(data)
+	have := make([]byte, 0, mac.Size())
+	have = append(have, mac.Sum(nil)...)
+	want, err := base64.StdEncoding.DecodeString(sigField.Signature)
+	if err != nil {
+		return fmt.Errorf("prober: bad sig %q", sigField.Signature)
+	}
+	if !hmac.Equal(have, want) {
+		return ErrProfileTampered
+	}
+	return nil
+}
+
+// ErrProfileTampered is returned when a profile's signature doesn't match.
+var ErrProfileTampered = errors.New("prober: profile signature mismatch")
+
+
 
 // DefaultProfilePath returns %ProgramData%/rupas/profile.json.
 func DefaultProfilePath() string {

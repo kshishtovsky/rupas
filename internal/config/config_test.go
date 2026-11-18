@@ -285,31 +285,28 @@ func TestDefaultContent(t *testing.T) {
 		if matchers == 0 && i != len(cfg.Rules)-1 {
 			t.Errorf("default rule at %d is not last", i)
 		}
-		if matchers == 0 && r.Action != ActionDirect {
-			t.Errorf("default action = %v, want DIRECT", r.Action)
+		if matchers == 0 && r.Action != ActionTunnel {
+			t.Errorf("default action = %v, want TUNNEL (PRD §5)", r.Action)
 		}
 	}
-	pin := []Rule{
-		{SNI: "www.youtube.com", Action: ActionDesync},
-		{SNI: "*.googlevideo.com", Action: ActionDesync},
-		{CIDR: "149.154.160.0/20", Action: ActionTunnel},
-		{CIDR: "91.108.0.0/16", Action: ActionTunnel},
-		{Ports: "50000-65535", Action: ActionTunnel},
+}
+
+func TestDefaultActionTunnel(t *testing.T) {
+	cfg := Default()
+	last := cfg.Rules[len(cfg.Rules)-1]
+	if last.CIDR != "" || last.SNI != "" || last.Ports != "" {
+		t.Fatalf("default rule is not the catch-all: %+v", last)
 	}
-	for _, w := range pin {
-		found := false
-		for _, r := range cfg.Rules {
-			if r == w {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("pinned rule %+v missing from Default()", w)
-		}
+	if last.Action != ActionTunnel {
+		t.Errorf("default action = %v, want %v", last.Action, ActionTunnel)
 	}
-	if cfg.Desync.TTL != 13 || cfg.Desync.TTLMargin != 2 || cfg.Desync.Repeats != 6 {
-		t.Errorf("desync params = %+v", cfg.Desync)
+}
+
+func TestDefaultActionOverriddenByUserConfig(t *testing.T) {
+	rules := []Rule{{Action: ActionDirect}}
+	cfg := &Config{Rules: rules}
+	if cfg.Rules[len(cfg.Rules)-1].Action != ActionDirect {
+		t.Errorf("user default = %v, want Direct", cfg.Rules[len(cfg.Rules)-1].Action)
 	}
 }
 

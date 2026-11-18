@@ -141,6 +141,9 @@ public class RupasVpnService extends VpnService {
         if (coreStartedByInstance && (intent == null || !ACTION_RESTART.equals(intent.getAction()))) {
             return START_STICKY;
         }
+        // WakeLock на probe-cycle (Classify+CalibrateTTL, ~3 мин);
+        // release — в stopForegroundAndSelf: покрывает весь путь без JNI.
+        acquireWakeLock(this);
         startForegroundWithStatus();
         // RESTART (пришёл из сохранения настроек): настроек на лету движок не
         // перечитывает (SetSettings при работающем движке = ошибка), поэтому
@@ -206,6 +209,7 @@ public class RupasVpnService extends VpnService {
 
     @Override
     public void onDestroy() {
+        releaseWakeLock();
         stopCore();
         running = false;
         if (instance == this) {
@@ -373,6 +377,7 @@ public class RupasVpnService extends VpnService {
     }
 
     private void stopForegroundAndSelf() {
+        releaseWakeLock();
         stopCore();
         running = false;
         if (Build.VERSION.SDK_INT >= 24) {
@@ -455,7 +460,9 @@ public class RupasVpnService extends VpnService {
                 instance.wakeLock = pm.newWakeLock(
                         PowerManager.PARTIAL_WAKE_LOCK, "rupas:probe");
             }
-            instance.wakeLock.acquire();
+            // acquire(timeout=60s): без timeout повторный onStartCommand
+            // (START_STICKY) повесил бы поток намертво.
+            instance.wakeLock.acquire(60_000);
             instance.wakeRefCount++;
         }
     }

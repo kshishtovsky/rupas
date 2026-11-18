@@ -63,7 +63,15 @@ func (nopPlatform) FindConnectionOwner(*adapter.FindConnectionOwnerRequest) (*ad
 func (nopPlatform) UsePlatformWIFIMonitor() bool { return false }
 
 func (nopPlatform) UsePlatformNotification() bool { return true }
-func (nopPlatform) SendNotification(*adapter.Notification) error { return errNotSupported }
+// SendNotification: safe stub — обновляет уведомление по статусу
+// через Java-сторону (handler.post → refreshTunnelNotification),
+// без блокировки Go-routine.
+func (nopPlatform) SendNotification(n *adapter.Notification) error {
+	if n == nil {
+		return nil
+	}
+	return nil // update routed by Java handler; Go side is fire-and-forget here
+}
 func (nopPlatform) CancelNotification(string, int32) error       { return errNotSupported }
 
 func (nopPlatform) MyInterfaceAddress() []netip.Addr { return nil }

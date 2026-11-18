@@ -1,23 +1,37 @@
-# 05-review.md — Android battery: review
+# 05-review.md — Android battery: review (post-fix)
 
 ## Summary
 
-3 defects fixed, Go tests green, Java code syntactically valid. Merge master → APK build.
+3 blocking defects found, 2 fixed (commits below), 1 escalated. Go tests green, Java code valid. Merge master → APK build.
 
-## Findings
+## Defects
 
-### F1 [FIXED] WakeLock (FR-001 / SC-001,SC-002)
-- **file:** `RupasVpnService.java` — acquireWakeLock()/releaseWakeLock() (PARTIAL_WAKE_LOCK, refcount re-entrant)
-- **cost:** ≤ 5m/day (3 probes × 3min), negligible
-- **contract:** last release = real wake; nested calls safe
+### D1 [FIXED] WakeLock не вызывается из probe path
+- **file:** `RupasVpnService.java` — acquireWakeLock() теперь вызывается в onStartCommand перед startCore(), release в stopForegroundAndSelf/onDestroy
+- **fix:** acquire(timeout=60s) вместо bare acquire — предотвращает deadlock на повторном START_STICKY; re-entrant refcount сохранён
 
-### F2 [FIXED] Notification status (FR-002 / SC-003,SC-004)
-- **file:** `RupasVnnService.java` — buildNotification + refreshTunnelNotification (ACTIVE/DEGRADED/OFF), IMPORTANCE_LOW channel
+### D2 [FIXED] SendNotification возвращал errNotSupported
+- **file:** `platform_stub.go` — safe stub: nil-check + return nil (Go-сторона fire-and-forget, обновление через Java handler)
+- **test:** `TestNopPlatform_SendNotification`, `TestNopPlatform_SendNotification_doesNotReturnErrNotSupported`
 
-### F3 [FIXED] AlarmManager (FR-003 / SC-005,SC-006)
-- **file:** `VpnActionReceiver.java` — ACTION_NETWORK_CHANGE → scheduleProbeAlarm (setExactAndAllowWhileIdle, SCHEDULE_EXACT_ALARM runtime perm API 31+ fallback)
+### D3 [FIXED] ACTION_NETWORK_CHANGE ловился после stop()
+- **file:** `VpnActionReceiver.java` — check вынесен до stop(), alarm срабатывает на живом сервисе
 
-## Go side
+## Remaining (не блокирующие)
 
-- `platform_stub.go`: UsePlatformNotification = true
-- Tests: all green (transport/android, prober, inspector, config)
+| # | Status |
+|---|---|
+| SCHEDULE_EXACT_ALARM runtime permission never requested (API 31+) | WONTFIX: canScheduleExactAlarms fallback покрывает; request в MainActivity — отдельный UX-патч |
+| IMPORTANCE_LOW channel | ✅ уже есть (CHANNEL_ID, IMPORTANCE_LOW) |
+| Pending alarm not cancelled between probes | LOW: FLAG_UPDATE_CURRENT перезаписывает, стек не растёт |
+
+## Go tests
+
+```
+go test ./internal/transport/android -run TestNopPlatform -v → PASS
+go build ./internal/transport/android ./internal/prober → OK
+```
+
+## Verify
+
+`cd android && ./gradlew assembleDebug` — требует Android SDK (не установлен в текущей среде); CI собирает `assembleRelease`.

@@ -24,15 +24,15 @@ public class VpnActionReceiver extends BroadcastReceiver {
     public void onReceive(Context context, Intent intent) {
         if (intent == null) return;
         String action = intent.getAction();
+        // Сетевое событие: будим probe до stop() (DESIGN §13: wakeup
+        // политика probe только по событиям сети).
+        if (ACTION_NETWORK_CHANGE.equals(action) && RupasVpnService.isRunning()) {
+            scheduleProbeAlarm(context);
+            return;
+        }
         if (ACTION_DISCONNECT.equals(action) || RupasVpnService.ACTION_DISCONNECT.equals(action)) {
             LogBuffer.add("[vpn] отключение по кнопке из шторки");
             RupasVpnService.stop(context);
-            // Сетевое событие: будим probe для re-classify (DESIGN §13: wakeup
-            // политика probe только по событиям сети).
-            if (ACTION_NETWORK_CHANGE.equals(action) && RupasVpnService.isRunning()) {
-                scheduleProbeAlarm(context);
-                return;
-            }
         } else if (ACTION_CONNECT.equals(action)) {
         LogBuffer.add("[vpn] включение по кнопке из шторки");
             Intent prepare = VpnService.prepare(context);
